@@ -9,6 +9,10 @@
 # SQLite module ships N-API prebuilds and electron-builder runs with
 # npmRebuild=false. Windows is built on Windows by choice, not by necessity.
 #
+# The check job runs `npm test`, which is what guards pillar P1. Electron-level
+# checks are NOT in CI: they need a display server the node image does not have.
+# That split is deliberate and is recorded in the spec's verifier section.
+#
 # `npm ci --ignore-scripts` is load-bearing, not hygiene. The SQLite package
 # declares `install: node-gyp rebuild`. Newer npm gates install scripts and
 # warns instead of running them, which is why the local machine and the
@@ -37,6 +41,11 @@ check:
       podman run --rm -v "$CI_PROJECT_DIR:/w:Z" -w /w "$NODE_IMAGE" bash -euo pipefail -c '
         npm ci --ignore-scripts
         npm run build
+        # The P1 pillar gate. These assert that every frame the client sends
+        # reaches the server through our own transport, and that a tolerated
+        # probe costs one process spawn -- the properties an SDK upgrade can
+        # silently take away. Without this job the pillar is unguarded.
+        npm test
         # D11 gate: macOS stays buildable even though it is never built.
         node scripts/check-macos-prebuilds.mjs
       '

@@ -12,7 +12,8 @@
     "dist:win": "npm run build && electron-builder --win nsis",
     "dist:linux": "npm run build && electron-builder --linux AppImage deb",
     "check:macos-prebuilds": "node scripts/check-macos-prebuilds.mjs",
-    "probe:fallback": "node scripts/probe-fallback.mjs"
+    "probe:fallback": "node scripts/probe-fallback.mjs",
+    "test": "node --test \"test/*.test.mjs\""
   },
   "devDependencies": {
     "@types/node": "^24.13.4",

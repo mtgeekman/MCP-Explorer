@@ -16,8 +16,12 @@ hand, and find out what a release actually changed.
   model, across every server in a workspace — and what it costs in tokens.
 - Calls tools through forms generated from their schemas, with a raw JSON
   editor always available beside the form.
+- Speaks **every published protocol revision**, 2024-11-05 through
+  2026-07-28, including surfaces later revisions deprecated. A tool that only
+  opens the newest thing is not an explorer.
 - Answers the server's own requests with a human in the loop: when a server
-  asks for sampling, you type the completion yourself.
+  asks for sampling, you type the completion yourself — whether it asks the
+  old way or through a modern multi-round-trip call.
 - Logs every JSON-RPC frame, raw, in both directions.
 - Stores every version of every server's surface and diffs them, including
   a diff of the rendered context block and the token delta.

@@ -32,18 +32,27 @@ function encryptedRoundTrip() {
   const leaks = raw.includes(Buffer.from('written under encryption'));
   record('ciphertext on disk', !leaks, leaks ? 'PLAINTEXT FOUND IN FILE' : `${raw.length} bytes, no plaintext`);
 
-  // Opening without the key must fail.
-  let refused = false;
+  // Opening without the key must fail, and must fail BECAUSE the file is
+  // encrypted. A bare catch would report PASS for an unrelated error -- a
+  // missing file, a permissions problem, a module that failed to load -- which
+  // turns the one assertion that proves encryption into a false positive
+  // exactly when the environment is broken.
+  let opened = false;
   let refusal = '';
   try {
     const db2 = new Database(dbPath);
     db2.prepare('SELECT note FROM probe').get();
     db2.close();
+    opened = true;
   } catch (e: any) {
-    refused = true;
-    refusal = e.message;
+    refusal = e.message ?? String(e);
   }
-  record('unkeyed open refused', refused, refusal || 'OPENED WITHOUT KEY');
+  const cipherRefusal = /not a database|encrypted|file is not/i.test(refusal);
+  record(
+    'unkeyed open refused',
+    !opened && cipherRefusal,
+    opened ? 'OPENED WITHOUT KEY' : `${refusal}${cipherRefusal ? '' : ' <- not a decryption refusal'}`
+  );
 
   // Windows holds the file briefly after close(); retry rather than fail the run.
   for (let i = 0; i < 5; i++) {
@@ -142,12 +151,30 @@ app.whenReady().then(async () => {
   }
 
   const win = new BrowserWindow({ width: 700, height: 480, show: false });
-  await win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  record('window loaded', true, 'BrowserWindow rendered a file');
+  let loaded = false;
+  let loadDetail = '';
+  try {
+    await win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    // Ask the document itself rather than the loader's state: isLoading() is
+    // still racy the instant loadFile resolves, and a URL proves navigation
+    // was attempted, not that anything rendered.
+    const title = await win.webContents.executeJavaScript('document.title');
+    loaded = title === 'MCP Explorer — Phase 00 spike';
+    loadDetail = `document.title = ${JSON.stringify(title)}`;
+  } catch (e: any) {
+    loadDetail = e.message ?? String(e);
+  }
+  record('window loaded', loaded, loadDetail || 'no URL after load');
 
   const out = path.join(process.cwd(), 'phase00-findings.json');
   fs.writeFileSync(out, JSON.stringify({ platform: process.platform, arch: process.arch, versions: process.versions, findings }, null, 2));
   console.log(`\nwrote ${out}`);
   const failed = findings.filter((f) => !f.ok);
   app.exit(failed.length === 0 ? 0 : 1);
+}).catch((e: unknown) => {
+  // Without this the process hangs: app.exit() is never reached, no findings
+  // are written, and CI waits for a timeout instead of reading a failure.
+  const err = e instanceof Error ? (e.stack ?? e.message) : String(e);
+  console.error(`[FAIL] harness aborted :: ${err}`);
+  app.exit(1);
 });

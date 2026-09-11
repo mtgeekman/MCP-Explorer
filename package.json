@@ -14,7 +14,8 @@
     "check:macos-prebuilds": "node scripts/check-macos-prebuilds.mjs",
     "probe:fallback": "node scripts/probe-fallback.mjs",
     "test": "node --test \"test/*.test.mjs\"",
-    "build:protocol": "tsc -p packages/protocol/tsconfig.json"
+    "build:protocol": "tsc -p packages/protocol/tsconfig.json",
+    "capture:real": "node scripts/capture-real.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.13.4",

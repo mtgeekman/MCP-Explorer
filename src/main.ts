@@ -23,9 +23,17 @@ function encryptedRoundTrip() {
   db.pragma(`key='${key}'`);
   db.exec('CREATE TABLE probe (id INTEGER PRIMARY KEY, note TEXT)');
   db.prepare('INSERT INTO probe (note) VALUES (?)').run('written under encryption');
-  const row = db.prepare('SELECT note FROM probe WHERE id = 1').get() as { note: string };
+  // .get() yields undefined when nothing matches. Dereferencing it threw a
+  // TypeError that the caller's catch reported as a NATIVE MODULE failure --
+  // blaming the wrong subsystem and skipping the two encryption assertions
+  // below, which never ran.
+  const row = db.prepare('SELECT note FROM probe WHERE id = 1').get() as { note: string } | undefined;
   db.close();
-  record('encrypted write+read', row.note === 'written under encryption', row.note);
+  record(
+    'encrypted write+read',
+    row?.note === 'written under encryption',
+    row === undefined ? 'no row returned by SELECT' : row.note
+  );
 
   // The bytes on disk must not contain the plaintext, or "encrypted" is a lie.
   const raw = fs.readFileSync(dbPath);

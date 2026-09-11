@@ -117,3 +117,16 @@ test('normalization drops fields the model does not declare', async () => {
   assert.deepEqual(Object.keys(surface.tools[0]).sort(), ['annotations', 'description', 'icons', 'inputSchema', 'name', 'outputSchema', 'title']);
   assert.equal(surface.tools[0].ttlMs, undefined);
 });
+
+test('capture problems never reach the hash', () => {
+  // Held constant: the same surface, one run with a recorded failure. A
+  // transient error must not register as a new version in the history.
+  const base = {
+    revision: '2026-07-28', era: 'modern', capabilities: {},
+    tools: [{ name: 'a', inputSchema: { type: 'object' } }],
+    prompts: [], resources: [], resourceTemplates: [], unavailable: [], problems: [],
+  };
+  const withProblem = structuredClone(base);
+  withProblem.problems = [{ endpoint: 'prompts/list', message: 'Method not found' }];
+  assert.equal(hashSurface(withProblem), hashSurface(base), 'a recorded problem moved the hash');
+});

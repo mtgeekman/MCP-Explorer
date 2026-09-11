@@ -12,6 +12,7 @@ import type {
   NormalizedTool,
 } from './model.js';
 import { unavailableFields } from './model.js';
+import type { CaptureProblem } from './model.js';
 
 export interface Page<T> {
   items: T[];
@@ -114,13 +115,37 @@ function normalizeResourceTemplate(raw: Record<string, unknown>): NormalizedReso
   };
 }
 
+/**
+ * Walk one list, recording a failure rather than aborting the whole capture.
+ *
+ * A server that advertises a capability and then fails the matching list is a
+ * real and common defect -- and revealing it is this app's job, so one broken
+ * list must not cost the user every other surface the server does expose.
+ *
+ * Not silent: the failure lands in `problems`, which the UI shows. It is
+ * deliberately NOT hashed -- a transient failure would otherwise read as a
+ * surface change and pollute the version history.
+ */
+async function collectOrRecord<T>(
+  list: ((cursor?: string) => Promise<Page<T>>) | undefined,
+  what: string,
+  problems: CaptureProblem[],
+): Promise<T[]> {
+  if (!list) return [];
+  try {
+    return await collectPages(list, what);
+  } catch (e: unknown) {
+    problems.push({ endpoint: what, message: e instanceof Error ? e.message : String(e) });
+    return [];
+  }
+}
+
 export async function captureSurface(source: SurfaceSource): Promise<NormalizedSurface> {
-  const tools = source.listTools ? await collectPages(source.listTools.bind(source), 'tools/list') : [];
-  const prompts = source.listPrompts ? await collectPages(source.listPrompts.bind(source), 'prompts/list') : [];
-  const resources = source.listResources ? await collectPages(source.listResources.bind(source), 'resources/list') : [];
-  const templates = source.listResourceTemplates
-    ? await collectPages(source.listResourceTemplates.bind(source), 'resources/templates/list')
-    : [];
+  const problems: CaptureProblem[] = [];
+  const tools = await collectOrRecord(source.listTools?.bind(source), 'tools/list', problems);
+  const prompts = await collectOrRecord(source.listPrompts?.bind(source), 'prompts/list', problems);
+  const resources = await collectOrRecord(source.listResources?.bind(source), 'resources/list', problems);
+  const templates = await collectOrRecord(source.listResourceTemplates?.bind(source), 'resources/templates/list', problems);
 
   return {
     revision: source.revision,
@@ -134,5 +159,6 @@ export async function captureSurface(source: SurfaceSource): Promise<NormalizedS
     resources: resources.map(normalizeResource),
     resourceTemplates: templates.map(normalizeResourceTemplate),
     unavailable: unavailableFields(source.revision),
+    problems,
   };
 }

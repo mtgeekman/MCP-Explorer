@@ -108,6 +108,15 @@ export interface NormalizedResourceTemplate {
   icons?: unknown;
 }
 
+/**
+ * A list endpoint the server advertised and then failed. Recorded rather than
+ * thrown, and never hashed: it is a runtime condition, not surface.
+ */
+export interface CaptureProblem {
+  endpoint: string;
+  message: string;
+}
+
 export interface NormalizedSurface {
   /** The revision actually negotiated, not the newest the server listed. */
   revision: string;
@@ -122,4 +131,6 @@ export interface NormalizedSurface {
   resourceTemplates: NormalizedResourceTemplate[];
   /** Fields this revision cannot express. Never conflate with "absent". */
   unavailable: string[];
+  /** Endpoints advertised but broken. Shown to the user; never hashed. */
+  problems: CaptureProblem[];
 }

@@ -89,3 +89,27 @@ test('unique names produce no duplicate report (old valid input)', async () => {
   assert.deepEqual(s.problems, []);
   assert.equal(s.tools.length, 2);
 });
+
+test('a programming error is not reported as the server-s fault', async () => {
+  // collectOrRecord exists to survive a broken ENDPOINT. A TypeError from our
+  // own code is not that: recording it would blame the server, silently drop
+  // the list, and move the surface hash -- writing a spurious version into the
+  // history because of our bug.
+  await assert.rejects(
+    () => captureSurface({
+      revision: '2026-07-28', era: 'modern', capabilities: {},
+      async listTools() { throw new TypeError("Cannot read properties of undefined (reading 'tools')"); },
+    }),
+    (e) => e instanceof TypeError,
+  );
+});
+
+test('a server-side failure is still recorded, not thrown (old valid input)', async () => {
+  const s = await captureSurface({
+    revision: '2026-07-28', era: 'modern', capabilities: {},
+    async listTools() { return { items: [{ name: 'a', inputSchema: {} }] }; },
+    async listPrompts() { throw new Error('Method not found: prompts/list'); },
+  });
+  assert.equal(s.tools.length, 1);
+  assert.deepEqual(s.problems.map((p) => p.endpoint), ['prompts/list']);
+});

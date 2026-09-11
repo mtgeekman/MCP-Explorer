@@ -125,6 +125,11 @@ function normalizeResourceTemplate(raw: Record<string, unknown>): NormalizedReso
  * Not silent: the failure lands in `problems`, which the UI shows. It is
  * deliberately NOT hashed -- a transient failure would otherwise read as a
  * surface change and pollute the version history.
+ *
+ * Only the SERVER's failures are recorded. A TypeError, RangeError,
+ * ReferenceError or SyntaxError is a defect in this code by definition, and
+ * recording one would blame the server for our bug, drop the list, and move the
+ * surface hash -- writing a spurious version into the history. Those propagate.
  */
 async function collectOrRecord<T>(
   list: ((cursor?: string) => Promise<Page<T>>) | undefined,
@@ -135,6 +140,9 @@ async function collectOrRecord<T>(
   try {
     return await collectPages(list, what);
   } catch (e: unknown) {
+    if (e instanceof TypeError || e instanceof RangeError || e instanceof ReferenceError || e instanceof SyntaxError) {
+      throw e;
+    }
     problems.push({ endpoint: what, message: e instanceof Error ? e.message : String(e) });
     return [];
   }

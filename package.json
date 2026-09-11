@@ -57,7 +57,8 @@
         "AppImage",
         "deb"
       ],
-      "category": "Development"
+      "category": "Development",
+      "maintainer": "Michael Knudson <mtgeekman@gmail.com>"
     },
     "mac": {
       "target": [
@@ -66,5 +67,14 @@
       "category": "public.app-category.developer-tools"
     },
     "npmRebuild": false
+  },
+  "author": {
+    "name": "Michael Knudson",
+    "email": "mtgeekman@gmail.com"
+  },
+  "homepage": "https://gitlab.mtgeekman.com/mcp-servers/mcpexplorer",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.mtgeekman.com/mcp-servers/mcpexplorer.git"
   }
 }

@@ -8,6 +8,14 @@
 # Phase 00 established that NO native compilation is required: the encrypted
 # SQLite module ships N-API prebuilds and electron-builder runs with
 # npmRebuild=false. Windows is built on Windows by choice, not by necessity.
+#
+# `npm ci --ignore-scripts` is load-bearing, not hygiene. The SQLite package
+# declares `install: node-gyp rebuild`. Newer npm gates install scripts and
+# warns instead of running them, which is why the local machine and the
+# node:24 container silently took the prebuild path -- while miniserver's npm
+# (bundled with node 26) ran the rebuild and failed for want of a Python
+# node-gyp would accept. The flag makes all three environments behave the same
+# and keeps the no-compile property from depending on an npm default.
 
 stages: [check, package]
 
@@ -27,7 +35,7 @@ check:
   script:
     - |
       podman run --rm -v "$CI_PROJECT_DIR:/w:Z" -w /w "$NODE_IMAGE" bash -euo pipefail -c '
-        npm ci
+        npm ci --ignore-scripts
         npm run build
         # D11 gate: macOS stays buildable even though it is never built.
         node scripts/check-macos-prebuilds.mjs
@@ -40,7 +48,7 @@ package:linux:
     - |
       podman run --rm -v "$CI_PROJECT_DIR:/w:Z" -w /w \
         -e ELECTRON_CACHE -e ELECTRON_BUILDER_CACHE "$NODE_IMAGE" bash -euo pipefail -c '
-          npm ci
+          npm ci --ignore-scripts
           npm run build
           npx electron-builder --linux AppImage deb --publish never
         '
@@ -57,7 +65,7 @@ package:windows:
     # The runner is new. Fail with the missing tool named, not with a stack trace.
     - node --version
     - npm --version
-    - npm ci
+    - npm ci --ignore-scripts
     - npm run build
     - npx electron-builder --win nsis --publish never
     - if (-not (Test-Path release/*.exe)) { throw "no installer produced" }

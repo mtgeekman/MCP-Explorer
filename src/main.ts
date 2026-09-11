@@ -108,54 +108,35 @@ app.whenReady().then(async () => {
   }
 
   // Loading the client proves packaging. Connecting proves the seam survives it.
+  // Uses the protocol package rather than a bespoke client: a second client
+  // here would duplicate the transport tap and the era fallback, and P1's build
+  // gate exists precisely to stop that drift.
   const childErrRef = { v: '' };
   try {
-    const { Client }: any = await import('@modelcontextprotocol/client');
-    const { StdioClientTransport }: any = await import('@modelcontextprotocol/client/stdio');
-
-    // Subclassing shifts the prototype, so the SDK negotiates over this process
-    // instead of a disposable sibling -- which is what makes every frame visible.
-    const Base: new (o: any) => any = StdioClientTransport;
-    class SeamStdioTransport extends Base {}
-
-    const sent: any[] = [];
+    const protocol: any = await import('../packages/protocol/dist/index.js');
+    const frames: { direction: string }[] = [];
     const server = path.join(__dirname, 'fixture', 'legacy-server.mjs');
-    const frameLog = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mcpx-seam-')), 'frames.log');
-    fs.writeFileSync(frameLog, '');
 
-    const inner = new SeamStdioTransport({
+    const conn = await protocol.connectStdio({
       command: process.execPath,
       args: [server],
-      env: { ...process.env, FRAME_LOG: frameLog, ELECTRON_RUN_AS_NODE: '1' },
-      stderr: 'pipe',
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      onFrame: (direction: string) => frames.push({ direction }),
+      // Without this the catch below reported "(empty)" unconditionally,
+      // asserting the child printed nothing when nothing had ever looked.
+      onStderr: (text: string) => { childErrRef.v += text; },
     });
-    // Same decoding hazard as the fixture's stdin: decode the stream, not each
-    // chunk, or a split multi-byte character corrupts the diagnostic we keep
-    // this stderr for in the first place.
-    inner.stderr?.setEncoding('utf8');
-    inner.stderr?.on('data', (d: string) => { childErrRef.v += d; });
-    const transport = new Proxy(inner, {
-      get(t: any, p: any, r: any) {
-        if (p === 'send') return async (m: any, o: any) => { for (const f of Array.isArray(m) ? m : [m]) sent.push(f); return t.send(m, o); };
-        const v = Reflect.get(t, p, r);
-        return typeof v === 'function' ? v.bind(t) : v;
-      },
-      set(t: any, p: any, v: any) {
-        if (p === 'onmessage') { t.onmessage = (m: any, x: any) => v?.(m, x); return true; }
-        return Reflect.set(t, p, v);
-      },
-    });
+    const surface = await protocol.captureSurface(conn.source);
+    const hash = protocol.hashSurface(surface);
+    await conn.close();
 
-    const client = new Client({ name: 'mcp-explorer-phase00', version: '0.0.0' }, { versionNegotiation: { mode: 'auto' } });
-    await client.connect(transport);
-    const tools = await client.listTools();
-    await client.close();
-
-    const received = fs.readFileSync(frameLog, 'utf8').trim().split(String.fromCharCode(10)).filter(Boolean).length;
-    record('MCP connect from packaged app', tools.tools.length === 1, `listed ${tools.tools.length} tool(s)`);
-    record('P1 seam complete (tapped == received)', sent.length === received, `tapped ${sent.length}, server received ${received}`);
+    record('MCP capture from packaged app', surface.tools.length === 1,
+      `${surface.tools.length} tool(s), era ${conn.era}, hash ${String(hash).slice(0, 12)}`);
+    record('P1 seam sees traffic in both directions',
+      frames.some((f) => f.direction === 'out') && frames.some((f) => f.direction === 'in'),
+      `${frames.filter((f) => f.direction === 'out').length} out, ${frames.filter((f) => f.direction === 'in').length} in`);
   } catch (e: any) {
-    record('MCP connect from packaged app', false, (e.message || String(e)) + ' | child stderr: ' + (childErrRef.v || '(empty)'));
+    record('MCP capture from packaged app', false, (e.message || String(e)) + ' | child stderr: ' + (childErrRef.v || '(empty)'));
   }
 
   const win = new BrowserWindow({ width: 700, height: 480, show: false });

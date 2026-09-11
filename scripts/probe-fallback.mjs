@@ -1,59 +1,43 @@
-// Phase 00: subclass-in-place probing WITH the fallback a hostile server forces.
-// Proves the strategy is never worse than the SDK's sibling on process spawns
-// and always better on P1 frame visibility.
+// Measure the seam and the spawn cost against a server that DIES on the era
+// probe, alongside one that tolerates it (D20's fallback).
+//
+// Like probe-seam.mjs, this goes through the protocol package rather than a
+// private copy of it -- see that file for why.
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { connectStdio, captureSurface } from '../packages/protocol/dist/index.js';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const server = join(here, 'fixture', 'legacy-server.mjs');
-const { Client } = await import('@modelcontextprotocol/client');
-const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
+const server = join(fileURLToPath(new URL('./fixture/', import.meta.url)), 'legacy-server.mjs');
 
-class SeamStdioTransport extends StdioClientTransport {}
-
-function tap(inner, seen) {
-  return new Proxy(inner, {
-    get(t, p, r) {
-      if (p === 'send') return async (m, o) => { for (const f of Array.isArray(m) ? m : [m]) seen.out.push(f); return t.send(m, o); };
-      const v = Reflect.get(t, p, r);
-      return typeof v === 'function' ? v.bind(t) : v;
-    },
-    set(t, p, v) {
-      if (p === 'onmessage') { t.onmessage = (m, x) => { seen.in.push(m); v?.(m, x); }; return true; }
-      return Reflect.set(t, p, v);
-    },
-  });
-}
-
-async function connectWithSeam(hostile) {
+async function measure(hostile) {
   const work = mkdtempSync(join(tmpdir(), 'mcpx-fb-'));
   const spawnLog = join(work, 'spawns.log');
   const frameLog = join(work, 'frames.log');
-  writeFileSync(spawnLog, ''); writeFileSync(frameLog, '');
-  const env = { ...process.env, SPAWN_LOG: spawnLog, FRAME_LOG: frameLog, ...(hostile ? { HOSTILE_PREINIT: '1' } : {}) };
-  const opts = { command: process.execPath, args: [server], env };
-  const seen = { out: [], in: [] };
+  writeFileSync(spawnLog, '');
+  writeFileSync(frameLog, '');
 
-  let era = 'modern-or-legacy (probed in place)';
-  let client = new Client({ name: 'mcp-explorer-phase00', version: '0.0.0' }, { versionNegotiation: { mode: 'auto' } });
-  try {
-    await client.connect(tap(new SeamStdioTransport(opts), seen));
-  } catch (e) {
-    // The SDK reports this case explicitly. Anything that is not a clean modern
-    // answer means legacy (D20), so pin and reconnect rather than give up.
-    if (!/negotiation failed/i.test(e?.message ?? '')) throw e;
-    era = 'legacy (probe killed the process; pinned and reconnected)';
-    client = new Client({ name: 'mcp-explorer-phase00', version: '0.0.0' }, {});
-    await client.connect(tap(new SeamStdioTransport(opts), seen));
-  }
-  const tools = await client.listTools();
-  await client.close();
+  const sent = [];
+  const conn = await connectStdio({
+    command: process.execPath,
+    args: [server],
+    env: { ...process.env, SPAWN_LOG: spawnLog, FRAME_LOG: frameLog, ...(hostile ? { HOSTILE_PREINIT: '1' } : {}) },
+    onFrame: (direction, frame) => { if (direction === 'out') sent.push(frame); },
+  });
+  const surface = await captureSurface(conn.source);
+  await conn.close();
 
-  const spawns = readFileSync(spawnLog, 'utf8').trim().split('\n').filter(Boolean).length;
-  const received = readFileSync(frameLog, 'utf8').trim().split('\n').filter(Boolean).length;
-  return { hostile, era, tools: tools.tools.length, framesTapped: seen.out.length, framesServerReceived: received, spawns, seamComplete: seen.out.length === received };
+  const lines = (f) => readFileSync(f, 'utf8').trim().split(String.fromCharCode(10)).filter(Boolean).length;
+  return {
+    hostile,
+    era: conn.era,
+    tools: surface.tools.length,
+    framesTapped: sent.length,
+    framesServerReceived: lines(frameLog),
+    seamComplete: sent.length === lines(frameLog),
+    spawns: lines(spawnLog),
+  };
 }
 
-console.log(JSON.stringify([await connectWithSeam(false), await connectWithSeam(true)], null, 1));
+console.log(JSON.stringify([await measure(false), await measure(true)], null, 1));

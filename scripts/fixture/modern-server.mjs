@@ -10,6 +10,14 @@ const { send } = writer(process.stdout);
 
 readFrames(process.stdin, (msg, line) => {
   if (process.env.FRAME_LOG) appendFileSync(process.env.FRAME_LOG, `IN  ${line}\n`);
+  // MALFORMED: emit a line that is not JSON before the real answer. A client
+  // that cannot survive junk on the wire cannot explore a broken server, which
+  // is the case this app exists for.
+  // MALFORMED: emit a line that is not JSON before the real answer. A client
+  // that cannot survive junk on the wire cannot explore a broken server, which
+  // is the case this app exists for. console.log, not stdout.write, so there is
+  // no escape sequence to get wrong.
+  if (process.env.MALFORMED) console.log('this is not json');
   const response = handleModern(msg);
   if (response !== undefined) send(response);
 });

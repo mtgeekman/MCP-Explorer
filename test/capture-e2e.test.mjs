@@ -136,3 +136,30 @@ test('a server that never answers the probe is read as legacy, promptly', async 
   assert.equal(surface.tools.length, 1, 'the legacy handshake still completed');
   assert.ok(elapsed < 20000, `fell back in ${elapsed}ms; the SDK default would be ~60000ms`);
 });
+
+test('junk on the wire does not stop the session', async () => {
+  // A server that interleaves non-JSON output with its frames is common --
+  // a stray console.log in a stdio server does exactly this.
+  const { surface } = await capture('modern-server.mjs', { MALFORMED: '1' });
+  assert.ok(surface.tools.length > 0, 'the session survived unparseable output');
+});
+
+test('a mid-session surface change moves the hash and shows in the diff', async () => {
+  // The version-history mechanism end to end: same server process, changed
+  // surface, exactly one changed item.
+  const conn = await connectStdio({
+    command: process.execPath,
+    args: [join(fixtures, 'modern-server.mjs')],
+    env: { ...process.env, MUTATE_AFTER: '1' },
+  });
+  try {
+    const before = await captureSurface(conn.source);
+    const after = await captureSurface(conn.source);
+    assert.notEqual(hashSurface(before), hashSurface(after), 'the surface really changed');
+    const d = diffSurfaces(before, after);
+    assert.deepEqual(d.tools, [{ key: 'echo', kind: 'changed' }]);
+    assert.equal(d.revisionChanged, undefined, 'the revision did not change, only the surface');
+  } finally {
+    await conn.close();
+  }
+});

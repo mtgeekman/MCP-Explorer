@@ -140,12 +140,57 @@ async function collectOrRecord<T>(
   }
 }
 
+/**
+ * Report repeated identity keys.
+ *
+ * Hashing and diffing are name-keyed, which is deliberate -- it makes a diff a
+ * join rather than a tree walk -- but it means a repeated name keeps only the
+ * survivor in the per-item hashes and in every diff. A server exposing two
+ * tools with one name is broken, because an agent cannot address the second,
+ * and revealing that is this app's job.
+ *
+ * Covers every list that is identity-keyed: tools and prompts by `name`,
+ * resources by `uri`, resource templates by `uriTemplate`. It deliberately does
+ * NOT look for duplicates across different lists -- a prompt and a tool sharing
+ * a name is legal and unremarkable.
+ */
+function reportDuplicates<T>(
+  items: T[],
+  key: (item: T) => string,
+  endpoint: string,
+  problems: CaptureProblem[],
+): void {
+  const seen = new Set<string>();
+  const duplicated = new Set<string>();
+  for (const item of items) {
+    const k = key(item);
+    if (seen.has(k)) duplicated.add(k);
+    seen.add(k);
+  }
+  if (duplicated.size > 0) {
+    problems.push({
+      endpoint,
+      message: `duplicate identity key(s): ${[...duplicated].sort().join(', ')} -- only one of each survives hashing and diffing`,
+    });
+  }
+}
+
 export async function captureSurface(source: SurfaceSource): Promise<NormalizedSurface> {
   const problems: CaptureProblem[] = [];
   const tools = await collectOrRecord(source.listTools?.bind(source), 'tools/list', problems);
   const prompts = await collectOrRecord(source.listPrompts?.bind(source), 'prompts/list', problems);
   const resources = await collectOrRecord(source.listResources?.bind(source), 'resources/list', problems);
   const templates = await collectOrRecord(source.listResourceTemplates?.bind(source), 'resources/templates/list', problems);
+
+  const normalizedTools = tools.map(normalizeTool);
+  const normalizedPrompts = prompts.map(normalizePrompt);
+  const normalizedResources = resources.map(normalizeResource);
+  const normalizedTemplates = templates.map(normalizeResourceTemplate);
+
+  reportDuplicates(normalizedTools, (t) => t.name, 'tools/list', problems);
+  reportDuplicates(normalizedPrompts, (p) => p.name, 'prompts/list', problems);
+  reportDuplicates(normalizedResources, (r) => r.uri, 'resources/list', problems);
+  reportDuplicates(normalizedTemplates, (t) => t.uriTemplate, 'resources/templates/list', problems);
 
   return {
     revision: source.revision,
@@ -154,10 +199,10 @@ export async function captureSurface(source: SurfaceSource): Promise<NormalizedS
     serverVersion: source.serverInfo?.version,
     instructions: source.instructions,
     capabilities: source.capabilities ?? {},
-    tools: tools.map(normalizeTool),
-    prompts: prompts.map(normalizePrompt),
-    resources: resources.map(normalizeResource),
-    resourceTemplates: templates.map(normalizeResourceTemplate),
+    tools: normalizedTools,
+    prompts: normalizedPrompts,
+    resources: normalizedResources,
+    resourceTemplates: normalizedTemplates,
     unavailable: unavailableFields(source.revision),
     problems,
   };

@@ -71,6 +71,16 @@
       "detail": "Client=function, StdioClientTransport=function"
     },
     {
+      "check": "MCP connect from packaged app",
+      "ok": true,
+      "detail": "listed 1 tool(s)"
+    },
+    {
+      "check": "P1 seam complete (tapped == received)",
+      "ok": true,
+      "detail": "tapped 4, server received 4"
+    },
+    {
       "check": "window loaded",
       "ok": true,
       "detail": "BrowserWindow rendered a file"

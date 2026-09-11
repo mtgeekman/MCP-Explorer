@@ -5,7 +5,7 @@
   "description": "Phase 00 build-and-package spike",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "build": "npm run build:protocol && tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "start": "npm run build && electron .",
     "probe:seam": "node scripts/probe-seam.mjs",
     "pack:dir": "npm run build && electron-builder --dir",
@@ -13,7 +13,8 @@
     "dist:linux": "npm run build && electron-builder --linux AppImage deb",
     "check:macos-prebuilds": "node scripts/check-macos-prebuilds.mjs",
     "probe:fallback": "node scripts/probe-fallback.mjs",
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test \"test/*.test.mjs\"",
+    "build:protocol": "tsc -p packages/protocol/tsconfig.json"
   },
   "devDependencies": {
     "@types/node": "^24.13.4",

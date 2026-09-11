@@ -21,14 +21,26 @@ function sources(dir, acc = []) {
 
 // The one module allowed to speak JSON-RPC: it owns the transport and the tap.
 const TRANSPORT_LAYER = ['packages/protocol/src/client.ts'];
+
+/**
+ * Every directory holding first-party source. scripts/ was missing from this
+ * list, so a helper added there -- and scripts/capture-real.mjs already uses
+ * the protocol package -- could construct its own Client or write a raw frame
+ * and pass the gate untouched. A guard that covers two of the three source
+ * directories teaches the next violation where to live.
+ *
+ * Deliberately excluded: test/, which builds fixtures and asserts on frames by
+ * design, and scripts/fixture/, which is servers (see FIXTURES below).
+ */
+const SOURCE_DIRS = ['packages', 'src', 'scripts'];
 // Fixtures are SERVERS. They exist to put frames on the wire for the client to
 // read, so the client-side rule does not apply to them.
 const FIXTURES = 'scripts/fixture/';
 
 test('P1: no module outside the transport layer constructs a JSON-RPC frame', () => {
   const offenders = [];
-  for (const file of [...sources('packages'), ...sources('src')]) {
-    if (TRANSPORT_LAYER.includes(file)) continue;
+  for (const file of SOURCE_DIRS.flatMap((d) => sources(d))) {
+    if (TRANSPORT_LAYER.includes(file) || file.startsWith(FIXTURES)) continue;
     const text = readFileSync(join(root, file), 'utf8');
     // A frame is identified by its envelope; nothing else in this codebase has
     // a reason to write one.
@@ -42,8 +54,8 @@ test('P1: the transport tap is not bypassed by a second client construction', ()
   // Every Client must be built where the tap is applied. A Client constructed
   // elsewhere would talk to a server with nothing logging it.
   const offenders = [];
-  for (const file of [...sources('packages'), ...sources('src')]) {
-    if (TRANSPORT_LAYER.includes(file)) continue;
+  for (const file of SOURCE_DIRS.flatMap((d) => sources(d))) {
+    if (TRANSPORT_LAYER.includes(file) || file.startsWith(FIXTURES)) continue;
     const text = readFileSync(join(root, file), 'utf8');
     if (/new\s+(mod\.)?Client\s*\(/.test(text)) offenders.push(file);
   }

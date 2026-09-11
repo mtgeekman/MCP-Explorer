@@ -54,3 +54,6 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Spike run output (see src/main.ts) -- never belongs in the repo
+phase00-findings.json

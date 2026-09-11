@@ -1,0 +1,83 @@
+# Read technology/gitlab-runners/_index in the wiki before editing this file.
+#
+# llama [fedora, podman] is a SHELL executor: `image:` is ignored and node is
+# NOT on the host, so every node step runs in a pinned container we start
+# ourselves. miniserver [miniserver, windows] is new and largely unproven;
+# the Windows job is written to fail loudly about what it is missing.
+#
+# Phase 00 established that NO native compilation is required: the encrypted
+# SQLite module ships N-API prebuilds and electron-builder runs with
+# npmRebuild=false. Windows is built on Windows by choice, not by necessity.
+#
+# The check job runs `npm test`, which is what guards pillar P1. Electron-level
+# checks are NOT in CI: they need a display server the node image does not have.
+# That split is deliberate and is recorded in the spec's verifier section.
+#
+# `npm ci --ignore-scripts` is load-bearing, not hygiene. The SQLite package
+# declares `install: node-gyp rebuild`. Newer npm gates install scripts and
+# warns instead of running them, which is why the local machine and the
+# node:24 container silently took the prebuild path -- while miniserver's npm
+# (bundled with node 26) ran the rebuild and failed for want of a Python
+# node-gyp would accept. The flag makes all three environments behave the same
+# and keeps the no-compile property from depending on an npm default.
+
+stages: [check, package]
+
+variables:
+  NODE_IMAGE: docker.io/library/node:24-bookworm
+  ELECTRON_CACHE: "$CI_PROJECT_DIR/.cache/electron"
+  ELECTRON_BUILDER_CACHE: "$CI_PROJECT_DIR/.cache/electron-builder"
+
+.node_container: &node_container
+  tags: [fedora, podman]
+  before_script:
+    - podman pull "$NODE_IMAGE"
+
+check:
+  <<: *node_container
+  stage: check
+  script:
+    - |
+      podman run --rm -v "$CI_PROJECT_DIR:/w:Z" -w /w "$NODE_IMAGE" bash -euo pipefail -c '
+        npm ci --ignore-scripts
+        npm run build
+        # The P1 pillar gate. These assert that every frame the client sends
+        # reaches the server through our own transport, and that a tolerated
+        # probe costs one process spawn -- the properties an SDK upgrade can
+        # silently take away. Without this job the pillar is unguarded.
+        npm test
+        # D11 gate: macOS stays buildable even though it is never built.
+        node scripts/check-macos-prebuilds.mjs
+      '
+
+package:linux:
+  <<: *node_container
+  stage: package
+  script:
+    - |
+      podman run --rm -v "$CI_PROJECT_DIR:/w:Z" -w /w \
+        -e ELECTRON_CACHE -e ELECTRON_BUILDER_CACHE "$NODE_IMAGE" bash -euo pipefail -c '
+          npm ci --ignore-scripts
+          npm run build
+          npx electron-builder --linux AppImage deb --publish never
+        '
+    - test -n "$(ls release/*.AppImage 2>/dev/null)"
+    - test -n "$(ls release/*.deb 2>/dev/null)"
+  artifacts:
+    paths: [release/*.AppImage, release/*.deb]
+    expire_in: 1 week
+
+package:windows:
+  stage: package
+  tags: [miniserver, windows]
+  script:
+    # The runner is new. Fail with the missing tool named, not with a stack trace.
+    - node --version
+    - npm --version
+    - npm ci --ignore-scripts
+    - npm run build
+    - npx electron-builder --win nsis --publish never
+    - if (-not (Test-Path release/*.exe)) { throw "no installer produced" }
+  artifacts:
+    paths: [release/*.exe]
+    expire_in: 1 week

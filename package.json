@@ -1,0 +1,82 @@
+{
+  "name": "mcp-explorer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Phase 00 build-and-package spike",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "start": "npm run build && electron .",
+    "probe:seam": "node scripts/probe-seam.mjs",
+    "pack:dir": "npm run build && electron-builder --dir",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:linux": "npm run build && electron-builder --linux AppImage deb",
+    "check:macos-prebuilds": "node scripts/check-macos-prebuilds.mjs",
+    "probe:fallback": "node scripts/probe-fallback.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.4",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "better-sqlite3-multiple-ciphers": "^13.0.3"
+  },
+  "build": {
+    "appId": "com.mtgeekman.mcpexplorer",
+    "productName": "MCP Explorer",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3-multiple-ciphers/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "maintainer": "Michael Knudson <mtgeekman@gmail.com>"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "npmRebuild": false
+  },
+  "author": {
+    "name": "Michael Knudson",
+    "email": "mtgeekman@gmail.com"
+  },
+  "homepage": "https://gitlab.mtgeekman.com/mcp-servers/mcpexplorer",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.mtgeekman.com/mcp-servers/mcpexplorer.git"
+  }
+}

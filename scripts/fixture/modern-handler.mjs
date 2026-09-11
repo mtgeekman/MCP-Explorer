@@ -13,6 +13,7 @@
 //   - a first probe that can answer -32022 (UNSUPPORTED_FIRST)
 
 let probed = false;
+let toolsListCalls = 0;
 
 const shuffle = (a) => a.map((v) => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map(([, v]) => v);
 const shuffleKeys = (o) =>
@@ -73,6 +74,18 @@ export function handleModern(msg) {
   if (method === 'resources/list' && lies.includes('resources')) return err(id, -32601, 'Method not found: resources/list');
 
   if (method === 'tools/list') {
+    // MUTATE_AFTER: change the surface from the Nth tools/list onward, so a
+    // second capture genuinely differs and the diff has something real to find.
+    const mutateAfter = Number(process.env.MUTATE_AFTER ?? 0);
+    toolsListCalls += 1;
+    if (mutateAfter > 0 && toolsListCalls > mutateAfter) {
+      return ok(id, shuffleKeys({
+        resultType: 'complete',
+        tools: shuffle([{ ...TOOLS[0], description: 'Echoes its input. (revised)' }, TOOLS[1]].map(shuffleKeys)),
+        ...serverMeta(), ...volatile(),
+      }));
+    }
+
     const total = Number(process.env.TOOL_COUNT ?? 0);
     if (total > 0) {
       const size = Number(process.env.PAGE_SIZE ?? 10);

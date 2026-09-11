@@ -88,7 +88,24 @@ function tap(inner: any, onFrame?: FrameListener): any {
   });
 }
 
-/** A list endpoint the server does not advertise is absent, not an error. */
+/**
+ * A list endpoint the server does not advertise is absent, not an error.
+ *
+ * Two SDK behaviours this has to account for, both measured rather than assumed:
+ *
+ * 1. `listTools()` and friends ALREADY walk every page internally and return
+ *    the aggregate with no `nextCursor` -- 250 tools came back from one call
+ *    across 36 observed `tools/list` frames. Every page still passes through
+ *    the transport tap, so P1 holds. captureSurface's own page walk therefore
+ *    sees a single complete page here; it remains the guarantee for any
+ *    SurfaceSource that is not this SDK.
+ * 2. The SDK caches cacheable results and honours the server's `ttlMs`
+ *    (SEP-2549), so a second list within the TTL is served WITHOUT a round
+ *    trip. That silently breaks version history: a re-capture after a
+ *    `list_changed` notification would return the stale surface and the change
+ *    would never be recorded. A capture must reflect the server now, so every
+ *    list is issued with `cacheMode: 'bypass'`.
+ */
 function lister(
   client: any,
   method: 'listTools' | 'listPrompts' | 'listResources' | 'listResourceTemplates',
@@ -97,7 +114,8 @@ function lister(
 ): ((cursor?: string) => Promise<Page<Record<string, unknown>>>) | undefined {
   if (!supported) return undefined;
   return async (cursor?: string) => {
-    const result = await client[method](cursor === undefined ? {} : { cursor });
+    // bypass: fetch without consulting or writing the response cache. See above.
+    const result = await client[method](cursor === undefined ? {} : { cursor }, { cacheMode: 'bypass' });
     return { items: (result?.[field] ?? []) as Record<string, unknown>[], nextCursor: result?.nextCursor };
   };
 }

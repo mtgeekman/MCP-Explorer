@@ -7,11 +7,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "start": "npm run build && electron .",
-    "probe:seam": "node --experimental-strip-types scripts/probe-seam.ts",
+    "probe:seam": "node scripts/probe-seam.mjs",
     "pack:dir": "npm run build && electron-builder --dir",
     "dist:win": "npm run build && electron-builder --win nsis",
     "dist:linux": "npm run build && electron-builder --linux AppImage deb",
-    "check:macos-prebuilds": "node scripts/check-macos-prebuilds.mjs"
+    "check:macos-prebuilds": "node scripts/check-macos-prebuilds.mjs",
+    "probe:fallback": "node scripts/probe-fallback.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.13.4",

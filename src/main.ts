@@ -112,7 +112,11 @@ app.whenReady().then(async () => {
       env: { ...process.env, FRAME_LOG: frameLog, ELECTRON_RUN_AS_NODE: '1' },
       stderr: 'pipe',
     });
-    inner.stderr?.on('data', (d: Buffer) => { childErrRef.v += d.toString(); });
+    // Same decoding hazard as the fixture's stdin: decode the stream, not each
+    // chunk, or a split multi-byte character corrupts the diagnostic we keep
+    // this stderr for in the first place.
+    inner.stderr?.setEncoding('utf8');
+    inner.stderr?.on('data', (d: string) => { childErrRef.v += d; });
     const transport = new Proxy(inner, {
       get(t: any, p: any, r: any) {
         if (p === 'send') return async (m: any, o: any) => { for (const f of Array.isArray(m) ? m : [m]) sent.push(f); return t.send(m, o); };

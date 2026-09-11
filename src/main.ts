@@ -122,6 +122,9 @@ app.whenReady().then(async () => {
       args: [server],
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       onFrame: (direction: string) => frames.push({ direction }),
+      // Without this the catch below reported "(empty)" unconditionally,
+      // asserting the child printed nothing when nothing had ever looked.
+      onStderr: (text: string) => { childErrRef.v += text; },
     });
     const surface = await protocol.captureSurface(conn.source);
     const hash = protocol.hashSurface(surface);

@@ -32,7 +32,19 @@ export interface ConnectOptions {
   onFrame?: FrameListener;
   /** Era-probe timeout. See PROBE_TIMEOUT_MS for why the default is not the SDK's. */
   probeTimeoutMs?: number;
+  /** Receives the child's stderr as it arrives. The stream is drained either way. */
+  onStderr?: (text: string) => void;
 }
+
+/**
+ * How much of the child's stderr to keep for diagnostics.
+ *
+ * Kept at all because a nonexistent command and a server that dies during
+ * negotiation produce the SAME protocol-level error, and stderr is the only
+ * thing that tells them apart. Bounded because a chatty server would otherwise
+ * grow this without limit.
+ */
+export const STDERR_TAIL_BYTES = 8 * 1024;
 
 /**
  * How long to wait for an era probe before concluding legacy.
@@ -199,21 +211,44 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
     env: opts.env ?? (process.env as Record<string, string>),
     stderr: 'pipe' as const,
   };
+
+  // Piping stderr obliges us to READ it. An unread pipe fills at roughly 64KB
+  // and the child then blocks in write() forever -- the capture hangs with no
+  // error, which is worse than any diagnostic this buffer provides.
+  const stderrTail = { text: '' };
+  const makeTransport = () => {
+    const inner = new SeamStdioTransport(transportOptions);
+    inner.stderr?.setEncoding('utf8');
+    inner.stderr?.on('data', (chunk: string) => {
+      opts.onStderr?.(chunk);
+      stderrTail.text = (stderrTail.text + chunk).slice(-STDERR_TAIL_BYTES);
+    });
+    return tap(inner, opts.onFrame);
+  };
+  const withStderr = (message: string) =>
+    stderrTail.text ? `${message} | server stderr: ${stderrTail.text.trim()}` : message;
   const info = { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' };
 
   let client = makeClient(Client, info, { negotiate: true, probeTimeoutMs: opts.probeTimeoutMs });
 
   try {
-    await client.connect(tap(new SeamStdioTransport(transportOptions), opts.onFrame));
+    await client.connect(makeTransport());
   } catch (e: unknown) {
     // D20: probing in place costs the server's one process life when it is one
     // of the servers that exits on a pre-initialize request. Anything that is
     // not a clean modern answer means legacy, which is what the spec's probe
     // order already mandates -- so pin and reconnect rather than fail.
     const message = e instanceof Error ? e.message : String(e);
-    if (!/negotiation failed/i.test(message)) throw e;
+    if (!/negotiation failed/i.test(message)) throw new Error(withStderr(message), { cause: e });
     client = makeClient(Client, info, { negotiate: false });
-    await client.connect(tap(new SeamStdioTransport(transportOptions), opts.onFrame));
+    try {
+      await client.connect(makeTransport());
+    } catch (retry: unknown) {
+      // Both attempts failed. The protocol message is identical for a command
+      // that does not exist and a server that died mid-negotiation, so the
+      // child's own output is what distinguishes them.
+      throw new Error(withStderr(retry instanceof Error ? retry.message : String(retry)), { cause: retry });
+    }
   }
 
   return describe(client);

@@ -39,20 +39,35 @@ function tap(inner) {
 }
 
 const mode = process.argv[2] ?? 'auto';
-const transport = tap(new StdioClientTransport({
+
+// readStdioServerParams() requires an OWN `_dispose` on the instance's immediate
+// prototype. A subclass shifts that prototype, so the SDK stops recognising this
+// as a spawnable stdio transport and negotiates over the already-open process
+// instead of a disposable sibling. That is the documented escape hatch, and it
+// is what closes the P1 hole.
+class SeamStdioTransport extends StdioClientTransport {}
+const Ctor = mode === 'subclass' ? SeamStdioTransport : StdioClientTransport;
+
+const transport = tap(new Ctor({
   command: process.execPath,
   args: [server],
-  env: { ...process.env, SPAWN_LOG: spawnLog, FRAME_LOG: frameLog },
+  env: { ...process.env, SPAWN_LOG: spawnLog, FRAME_LOG: frameLog, ...(process.env.HOSTILE_PREINIT ? { HOSTILE_PREINIT: '1' } : {}) },
 }));
 
 const client = new Client(
   { name: 'mcp-explorer-phase00', version: '0.0.0' },
-  mode === 'auto' ? { versionNegotiation: { mode: 'auto' } } : {}
+  mode === 'legacy' ? {} : { versionNegotiation: { mode: 'auto' } }
 );
 
-await client.connect(transport);
-const tools = await client.listTools();
-await client.close();
+let connectError = null;
+let tools = { tools: [] };
+try {
+  await client.connect(transport);
+  tools = await client.listTools();
+  await client.close();
+} catch (e) {
+  connectError = e?.message ?? String(e);
+}
 
 const spawns = readFileSync(spawnLog, 'utf8').trim().split('\n').filter(Boolean).length;
 const serverSaw = existsSync(frameLog)
@@ -64,6 +79,7 @@ console.log(JSON.stringify({
   mode,
   negotiatedVersion: client.getServerVersion?.() ?? null,
   serverInfo: client.getServerVersion?.(),
+  connectError,
   toolCount: tools.tools.length,
   framesOut: seen.out.length,
   framesIn: seen.in.length,

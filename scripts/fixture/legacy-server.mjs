@@ -22,6 +22,12 @@ process.stdin.on('data', (chunk) => {
     try { msg = JSON.parse(line); } catch { continue; }
     if (process.env.FRAME_LOG) appendFileSync(process.env.FRAME_LOG, `IN  ${line}\n`);
 
+    // Some real stdio servers die on any pre-initialize request. That is the
+    // hazard the SDK's disposable sibling exists to absorb; reproduce it.
+    if (process.env.HOSTILE_PREINIT && msg.method === 'server/discover') {
+      process.exit(1);
+    }
+
     if (msg.method === 'initialize') {
       reply(msg.id, {
         protocolVersion: '2025-06-18',

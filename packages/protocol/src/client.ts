@@ -30,7 +30,28 @@ export interface ConnectOptions {
   clientVersion?: string;
   /** P1: receives every JSON-RPC frame, negotiation included. */
   onFrame?: FrameListener;
+  /** Era-probe timeout. See PROBE_TIMEOUT_MS for why the default is not the SDK's. */
+  probeTimeoutMs?: number;
 }
+
+/**
+ * How long to wait for an era probe before concluding legacy.
+ *
+ * The SDK inherits its standard request timeout here, which is 60 seconds. On
+ * stdio a silent server is a legacy verdict, so that is 60 seconds of nothing
+ * on the FIRST connect to any server that ignores `server/discover` -- measured,
+ * not guessed: the silent-probe test took 60,015 ms before this was set.
+ *
+ * A local process that intends to answer a single frame answers it in
+ * milliseconds, so 5 seconds is generous. D20 persists the era, so even when
+ * this is paid it is paid once per server rather than once per connect.
+ *
+ * A default, not a pillar. The cost of being wrong is asymmetric by transport:
+ * on stdio a too-short timeout mislabels a slow server as legacy, and the user
+ * can re-detect; on HTTP the SDK rejects the connect instead of falling back,
+ * which is louder and self-correcting.
+ */
+export const PROBE_TIMEOUT_MS = 5000;
 
 export interface Connection {
   era: Era;
@@ -81,6 +102,54 @@ function lister(
   };
 }
 
+/** Everything after the transport is connected is identical across transports. */
+async function describe(client: any): Promise<Connection> {
+  const revision: string = client.getNegotiatedProtocolVersion?.() ?? '2025-06-18';
+  const capabilities = client.getServerCapabilities?.() ?? {};
+  const caps = capabilities as Record<string, unknown>;
+
+  const source: SurfaceSource = {
+    revision,
+    era: eraOf(revision),
+    serverInfo: client.getServerVersion?.(),
+    instructions: client.getInstructions?.(),
+    capabilities,
+    listTools: lister(client, 'listTools', 'tools', caps.tools !== undefined),
+    listPrompts: lister(client, 'listPrompts', 'prompts', caps.prompts !== undefined),
+    listResources: lister(client, 'listResources', 'resources', caps.resources !== undefined),
+    listResourceTemplates: lister(client, 'listResourceTemplates', 'resourceTemplates', caps.resources !== undefined),
+  };
+  return { era: source.era, revision, source, close: () => client.close() };
+}
+
+export type HttpTransportKind = 'streamable-http' | 'sse';
+
+export interface HttpConnectOptions {
+  url: string;
+  /** SSE is the transport deprecated in 2025-03-26 and still deployed. */
+  kind?: HttpTransportKind;
+  clientName?: string;
+  clientVersion?: string;
+  onFrame?: FrameListener;
+  probeTimeoutMs?: number;
+}
+
+export async function connectHttp(opts: HttpConnectOptions): Promise<Connection> {
+  const mod: any = await import('@modelcontextprotocol/client');
+  const Transport = opts.kind === 'sse' ? mod.SSEClientTransport : mod.StreamableHTTPClientTransport;
+  const client = new mod.Client(
+    { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' },
+    {
+      versionNegotiation: { mode: 'auto', probe: { timeoutMs: opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS } },
+      capabilities: CLIENT_CAPABILITIES,
+    },
+  );
+  // No sibling-probe problem here: only the stdio transport spawns anything.
+  // The tap is still required, or negotiation traffic bypasses P1's logger.
+  await client.connect(tap(new Transport(new URL(opts.url)), opts.onFrame));
+  return describe(client);
+}
+
 export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   const { Client } = await import('@modelcontextprotocol/client');
   const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
@@ -96,7 +165,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   const info = { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' };
 
   let client = new (Client as any)(info, {
-    versionNegotiation: { mode: 'auto' },
+    versionNegotiation: { mode: 'auto', probe: { timeoutMs: opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS } },
     capabilities: CLIENT_CAPABILITIES,
   });
 
@@ -113,21 +182,5 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
     await client.connect(tap(new SeamStdioTransport(transportOptions), opts.onFrame));
   }
 
-  const revision: string = client.getNegotiatedProtocolVersion?.() ?? '2025-06-18';
-  const capabilities = client.getServerCapabilities?.() ?? {};
-  const caps = capabilities as Record<string, unknown>;
-
-  const source: SurfaceSource = {
-    revision,
-    era: eraOf(revision),
-    serverInfo: client.getServerVersion?.(),
-    instructions: client.getInstructions?.(),
-    capabilities,
-    listTools: lister(client, 'listTools', 'tools', caps.tools !== undefined),
-    listPrompts: lister(client, 'listPrompts', 'prompts', caps.prompts !== undefined),
-    listResources: lister(client, 'listResources', 'resources', caps.resources !== undefined),
-    listResourceTemplates: lister(client, 'listResourceTemplates', 'resourceTemplates', caps.resources !== undefined),
-  };
-
-  return { era: source.era, revision, source, close: () => client.close() };
+  return describe(client);
 }

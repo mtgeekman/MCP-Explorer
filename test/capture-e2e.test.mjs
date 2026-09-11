@@ -111,3 +111,28 @@ test('a refused endpoint removes its surface, and the hash follows', async () =>
   assert.ok(healthy.prompts.length > 0 && broken.prompts.length === 0, 'prompts vanished');
   assert.notEqual(hashSurface(healthy), hashSurface(broken));
 });
+
+test('a -32022 answer means MODERN, and is retried rather than fallen back from', async () => {
+  // The spec is explicit: a recognised modern error identifies a modern server.
+  // Reading it as "not modern" would downgrade every server that pins a version.
+  const { era, revision, surface } = await capture('modern-server.mjs', { UNSUPPORTED_FIRST: '1' });
+  assert.equal(era, 'modern', 'a -32022 must not be read as legacy');
+  assert.equal(revision, '2026-07-28');
+  assert.ok(surface.tools.length > 0, 'the retry completed the session');
+});
+
+test('a server that never answers the probe is read as legacy, promptly', async () => {
+  // "Anything else, including a timeout, means legacy" -- the fallback must not
+  // be keyed to one error code.
+  //
+  // Also a timing assertion, and it is the point: the SDK's default probe
+  // timeout is its 60s request timeout, so before PROBE_TIMEOUT_MS this took
+  // 60,015 ms. A first connect to any server that ignores server/discover would
+  // have hung for a minute.
+  const started = Date.now();
+  const { era, surface } = await capture('legacy-server.mjs', { SILENT_PREINIT: '1' });
+  const elapsed = Date.now() - started;
+  assert.equal(era, 'legacy');
+  assert.equal(surface.tools.length, 1, 'the legacy handshake still completed');
+  assert.ok(elapsed < 20000, `fell back in ${elapsed}ms; the SDK default would be ~60000ms`);
+});

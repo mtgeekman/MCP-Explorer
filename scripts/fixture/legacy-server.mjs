@@ -21,6 +21,13 @@ readFrames(process.stdin, (msg, line) => {
     process.exit(1);
   }
 
+  // SILENT_PREINIT: never answer the probe at all. The spec is explicit that
+  // the fallback MUST NOT be keyed to one error code -- a timeout is a legacy
+  // signal just as much as -32601 is.
+  if (process.env.SILENT_PREINIT && msg.method === 'server/discover') {
+    return;
+  }
+
   if (msg.method === 'initialize') {
     return reply(msg.id, {
       protocolVersion: '2025-06-18',

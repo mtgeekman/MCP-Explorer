@@ -174,7 +174,11 @@ app.whenReady().then(async () => {
   }
   record('window loaded', loaded, loadDetail || 'no URL after load');
 
-  const out = path.join(process.cwd(), 'phase00-findings.json');
+  // Not process.cwd(): that is the repository when run from a checkout, so
+  // every run dirtied the working tree with machine-specific data and the file
+  // ended up committed. Override with MCPX_FINDINGS_OUT when a caller wants it
+  // somewhere specific, such as a CI artifact path.
+  const out = process.env.MCPX_FINDINGS_OUT ?? path.join(os.tmpdir(), 'phase00-findings.json');
   fs.writeFileSync(out, JSON.stringify({ platform: process.platform, arch: process.arch, versions: process.versions, findings }, null, 2));
   console.log(`\nwrote ${out}`);
   const failed = findings.filter((f) => !f.ok);

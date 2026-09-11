@@ -65,9 +65,63 @@ readFrames(process.stdin, (msg, line) => {
   }
 
   if (method === 'tools/list') {
+    // TOOL_COUNT/PAGE_SIZE turn this into a paginated list of synthetic tools,
+    // so a capture can be proved to walk every page rather than the first.
+    const total = Number(process.env.TOOL_COUNT ?? 0);
+    if (total > 0) {
+      const size = Number(process.env.PAGE_SIZE ?? 10);
+      const start = params.cursor ? Number(params.cursor) : 0;
+      const page = Array.from({ length: Math.min(size, total - start) }, (_, i) => ({
+        name: `tool-${start + i}`,
+        description: `Synthetic tool ${start + i}.`,
+        inputSchema: { type: 'object', properties: {} },
+      }));
+      const next = start + size;
+      return reply(id, shuffleKeys({
+        resultType: 'complete',
+        tools: shuffle(page.map(shuffleKeys)),
+        ...(next < total ? { nextCursor: String(next) } : {}),
+        ...serverMeta(),
+        ...volatile(),
+      }));
+    }
     return reply(id, shuffleKeys({
       resultType: 'complete',
       tools: shuffle(TOOLS.map(shuffleKeys)),
+      ...serverMeta(),
+      ...volatile(),
+    }));
+  }
+
+  // LIE_ABOUT names a capability this server advertises and then refuses --
+  // a real and common server defect, and one an explorer must reveal rather
+  // than choke on.
+  const lies = (process.env.LIE_ABOUT ?? '').split(',').filter(Boolean);
+  if (method === 'prompts/list' && lies.includes('prompts')) return fail(id, -32601, 'Method not found: prompts/list');
+  if (method === 'resources/list' && lies.includes('resources')) return fail(id, -32601, 'Method not found: resources/list');
+
+  if (method === 'prompts/list') {
+    return reply(id, shuffleKeys({
+      resultType: 'complete',
+      prompts: [{ name: 'greet', title: 'Greet', description: 'A greeting.', arguments: [{ name: 'who', required: true }] }].map(shuffleKeys),
+      ...serverMeta(),
+      ...volatile(),
+    }));
+  }
+
+  if (method === 'resources/list') {
+    return reply(id, shuffleKeys({
+      resultType: 'complete',
+      resources: [{ uri: 'file:///fixture/readme.md', name: 'readme', title: 'Readme', mimeType: 'text/markdown' }].map(shuffleKeys),
+      ...serverMeta(),
+      ...volatile(),
+    }));
+  }
+
+  if (method === 'resources/templates/list') {
+    return reply(id, shuffleKeys({
+      resultType: 'complete',
+      resourceTemplates: [{ uriTemplate: 'file:///fixture/{name}.md', name: 'doc', mimeType: 'text/markdown' }].map(shuffleKeys),
       ...serverMeta(),
       ...volatile(),
     }));

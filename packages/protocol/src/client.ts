@@ -65,6 +65,27 @@ export interface Connection {
 // declare, so this list decides what the app can be asked to do.
 const CLIENT_CAPABILITIES = { sampling: {}, elicitation: {}, roots: {} };
 
+/**
+ * The ONLY place a Client is constructed, so the P3 gate has a single site to
+ * check and no second construction can quietly default to `mode: 'legacy'`.
+ *
+ * `negotiate: false` is the deliberate exception: after a probe has already
+ * failed, the era is known to be legacy and asking for auto again would repeat
+ * the probe that just cost the server its process (D20).
+ */
+function makeClient(
+  Client: any,
+  info: { name: string; version: string },
+  opts: { negotiate: boolean; probeTimeoutMs?: number },
+): any {
+  return new Client(info, {
+    capabilities: CLIENT_CAPABILITIES,
+    ...(opts.negotiate
+      ? { versionNegotiation: { mode: 'auto', probe: { timeoutMs: opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS } } }
+      : {}),
+  });
+}
+
 function tap(inner: any, onFrame?: FrameListener): any {
   if (!onFrame) return inner;
   return new Proxy(inner, {
@@ -155,12 +176,10 @@ export interface HttpConnectOptions {
 export async function connectHttp(opts: HttpConnectOptions): Promise<Connection> {
   const mod: any = await import('@modelcontextprotocol/client');
   const Transport = opts.kind === 'sse' ? mod.SSEClientTransport : mod.StreamableHTTPClientTransport;
-  const client = new mod.Client(
+  const client = makeClient(
+    mod.Client,
     { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' },
-    {
-      versionNegotiation: { mode: 'auto', probe: { timeoutMs: opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS } },
-      capabilities: CLIENT_CAPABILITIES,
-    },
+    { negotiate: true, probeTimeoutMs: opts.probeTimeoutMs },
   );
   // No sibling-probe problem here: only the stdio transport spawns anything.
   // The tap is still required, or negotiation traffic bypasses P1's logger.
@@ -182,10 +201,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   };
   const info = { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' };
 
-  let client = new (Client as any)(info, {
-    versionNegotiation: { mode: 'auto', probe: { timeoutMs: opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS } },
-    capabilities: CLIENT_CAPABILITIES,
-  });
+  let client = makeClient(Client, info, { negotiate: true, probeTimeoutMs: opts.probeTimeoutMs });
 
   try {
     await client.connect(tap(new SeamStdioTransport(transportOptions), opts.onFrame));
@@ -196,7 +212,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
     // order already mandates -- so pin and reconnect rather than fail.
     const message = e instanceof Error ? e.message : String(e);
     if (!/negotiation failed/i.test(message)) throw e;
-    client = new (Client as any)(info, { capabilities: CLIENT_CAPABILITIES });
+    client = makeClient(Client, info, { negotiate: false });
     await client.connect(tap(new SeamStdioTransport(transportOptions), opts.onFrame));
   }
 

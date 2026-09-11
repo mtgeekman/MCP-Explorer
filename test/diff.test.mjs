@@ -3,7 +3,7 @@
 // it as fifty changed tools buries the signal it exists to surface.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { diffSurfaces, surfaceChangeCount, captureSurface } from '../packages/protocol/dist/index.js';
+import { diffSurfaces, surfaceChangeCount, captureSurface, hashSurface } from '../packages/protocol/dist/index.js';
 
 const surface = async (over = {}, tools = [{ name: 'echo', description: 'Echoes.', inputSchema: { type: 'object' } }]) =>
   captureSurface({
@@ -61,4 +61,25 @@ test('the diff is not keyed on which server a surface came from', async () => {
   const d = diffSurfaces(await surface({ serverInfo: { name: 'alpha', version: '1' } }), await surface({ serverInfo: { name: 'beta', version: '1' } }));
   assert.equal(d.tools.length, 0, 'same tools, different servers');
   assert.deepEqual(d.identityChanged, [{ field: 'serverName', from: 'alpha', to: 'beta' }]);
+});
+
+test('capabilities differing only in key order are not a change', async () => {
+  // JSON object key order is not guaranteed by the protocol -- this project's
+  // own modern fixture shuffles it deliberately. The hash canonicalizes keys,
+  // so if the diff does not, the two contradict each other: same hash, yet the
+  // diff claims capabilities changed.
+  const a = await surface({ capabilities: { tools: {}, prompts: {}, resources: {} } });
+  const b = await surface({ capabilities: { resources: {}, tools: {}, prompts: {} } });
+  assert.equal(hashSurface(a), hashSurface(b), 'precondition: the hash already ignores key order');
+  const d = diffSurfaces(a, b);
+  assert.equal(d.capabilitiesChanged, false, 'key order is not a capability change');
+  assert.equal(d.identical, true, 'the diff must agree with the hash');
+});
+
+test('a real capability difference is still a change', async () => {
+  const d = diffSurfaces(
+    await surface({ capabilities: { tools: {} } }),
+    await surface({ capabilities: { tools: {}, prompts: {} } }),
+  );
+  assert.equal(d.capabilitiesChanged, true);
 });

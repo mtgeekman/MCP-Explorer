@@ -10,6 +10,7 @@
 // receives, but reporting that as fifty changed tools buries the signal.
 import type { NormalizedSurface } from './model.js';
 import {
+  canonicalJson,
   hashPrompt,
   hashResource,
   hashResourceTemplate,
@@ -58,7 +59,18 @@ function joinByKey<T>(
   return changes.sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0));
 }
 
-const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+/**
+ * Compare by VALUE, not by serialization order.
+ *
+ * `JSON.stringify` is key-order sensitive and the hash is not, so a raw
+ * comparison here made the diff contradict the version history: identical
+ * surfaces hashed the same while the diff reported a capability change. Object
+ * key order is not guaranteed by the protocol -- the project's own modern
+ * fixture shuffles it on purpose -- so this must canonicalize first, exactly as
+ * hashSurface does.
+ */
+const sameJson = (a: unknown, b: unknown): boolean =>
+  JSON.stringify(canonicalJson(a ?? null)) === JSON.stringify(canonicalJson(b ?? null));
 
 export function diffSurfaces(before: NormalizedSurface, after: NormalizedSurface): SurfaceDiff {
   const identity: NonNullable<SurfaceDiff['identityChanged']> = [];

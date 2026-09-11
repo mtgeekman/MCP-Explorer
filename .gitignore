@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+dist/
+dist-electron/
+out/
+build/
+release/
+*.tsbuildinfo
+
+# Native module build artifacts
+prebuilds/
+*.node
+binding.gyp.bak
+
+# Packaging
+*.exe
+*.msi
+*.AppImage
+*.deb
+*.rpm
+*.dmg
+*.zip
+
+# Test and coverage
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+
+# Local runtime data — workspace databases, keychain shims, scratch servers
+.local/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Editor and OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*

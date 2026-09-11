@@ -4,7 +4,10 @@ A desktop workbench for MCP servers. Connect to local `stdio` servers and
 remote HTTP servers, see everything an agent would see, call the tools by
 hand, and find out what a release actually changed.
 
-**Status: specced, not built.** Phase 00 is a build-and-package spike.
+**Status: Phase 00 complete (2026-09-11).** The toolchain is proven end to end
+-- an Electron app builds and packages on Windows and Linux from CI, opens an
+encrypted database and runs a live MCP session -- but no product code exists
+yet. Phase 01 builds the protocol core.
 
 ## What it does
 

@@ -53,3 +53,39 @@ test('a capture paginates every list independently', async () => {
   // A capability the server does not advertise is absent, not an error.
   assert.deepEqual(s.resources, []);
 });
+
+test('duplicate identity keys are reported, not silently collapsed', async () => {
+  // Name-keyed hashing and diffing are deliberate, but they mean a repeated
+  // name keeps only the survivor. A server exposing two tools called `echo` is
+  // broken -- an agent cannot address the second -- and this app exists to
+  // reveal that rather than quietly show one of them.
+  const s = await captureSurface({
+    revision: '2026-07-28', era: 'modern', capabilities: {},
+    async listTools() {
+      return { items: [
+        { name: 'echo', description: 'first', inputSchema: {} },
+        { name: 'echo', description: 'second', inputSchema: {} },
+        { name: 'unique', inputSchema: {} },
+      ] };
+    },
+    async listResources() {
+      return { items: [{ uri: 'file:///a' }, { uri: 'file:///a' }] };
+    },
+  });
+
+  assert.equal(s.tools.length, 3, 'every item is still captured');
+  const reported = s.problems.map((p) => `${p.endpoint}: ${p.message}`).sort();
+  assert.equal(reported.length, 2, `expected one problem per affected list, got ${JSON.stringify(reported)}`);
+  assert.match(reported[0], /duplicate/i);
+  assert.match(reported.join(' '), /echo/);
+  assert.match(reported.join(' '), /file:\/\/\/a/);
+});
+
+test('unique names produce no duplicate report (old valid input)', async () => {
+  const s = await captureSurface({
+    revision: '2026-07-28', era: 'modern', capabilities: {},
+    async listTools() { return { items: [{ name: 'a', inputSchema: {} }, { name: 'b', inputSchema: {} }] }; },
+  });
+  assert.deepEqual(s.problems, []);
+  assert.equal(s.tools.length, 2);
+});

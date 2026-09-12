@@ -4,10 +4,11 @@ A desktop workbench for MCP servers. Connect to local `stdio` servers and
 remote HTTP servers, see everything an agent would see, call the tools by
 hand, and find out what a release actually changed.
 
-**Status: Phase 00 complete (2026-09-11).** The toolchain is proven end to end
--- an Electron app builds and packages on Windows and Linux from CI, opens an
-encrypted database and runs a live MCP session -- but no product code exists
-yet. Phase 01 builds the protocol core.
+**Status: Phase 01 complete (2026-09-11).** The toolchain is proven end to end
+-- an Electron app builds and packages on Windows and Linux from CI -- and the
+protocol core exists: it connects to a server over any of the three transports,
+detects the protocol era, captures the whole surface, and diffs it across
+versions. There is no user interface yet. Phase 02 builds storage.
 
 ## What it does
 

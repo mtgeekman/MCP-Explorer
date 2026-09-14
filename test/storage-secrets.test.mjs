@@ -2,9 +2,11 @@
 // classified, and (from the confirm-and-retry fix) how writes are confirmed.
 //
 // A scripted backend stands in for the OS store because the failures under
-// test -- Credential Manager's transient errors and delayed or lost writes --
-// happen only under concurrent load and cannot be produced on demand. The
-// real-store evidence for the same failures is scripts/stress-keychain.mjs.
+// test -- refused writes, and entries that read back as absent -- happen only
+// when Credential Manager's per-user storage is full. Producing that on demand
+// means filling the real store, which breaks every other application's
+// credential writes on the machine while it lasts, so no test does it. The
+// measurements are recorded in spec D28 and in secrets.ts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { storeOver } from '../packages/storage/dist/secrets.js';
@@ -41,8 +43,8 @@ for (const [label, message] of [
 }
 
 test('classification: a Windows error code is not "no keychain on this machine"', () => {
-  // Error 8 (ERROR_NOT_ENOUGH_MEMORY) is what Credential Manager throws under
-  // concurrent writers, on a store that is present and working. Reporting it
+  // Error 8 (ERROR_NOT_ENOUGH_MEMORY) is what Credential Manager throws when
+  // its per-user storage is full, on a store that is present and working. Reporting it
   // as unavailable tells the user their platform cannot store secrets.
   const store = storeOver(throwing(WINDOWS_ERROR_8));
   for (const op of [() => store.get('a'), () => store.set('a', 'v'), () => store.delete('a')]) {
@@ -58,8 +60,10 @@ test('classification: an over-long value propagates as the binding error', () =>
 // --- confirm-and-retry ------------------------------------------------------
 
 /**
- * A backend that misbehaves the ways Credential Manager was measured to:
- * refuse writes with error 8, accept a write and drop it, show a write late.
+ * A backend that misbehaves the ways a full Credential Manager was measured
+ * to: refuse writes with error 8, and read entries back as absent. "Dropped"
+ * and "late" writes model an entry that is written but hidden until space
+ * frees; the policy cannot tell those apart from the outside, and need not.
  * Every option counts calls from the start, and every call is recorded.
  */
 function scripted({ dropSets = 0, refuseSets = 0, refuseGets = 0, lateReads = 0, dropDeletes = 0 } = {}) {

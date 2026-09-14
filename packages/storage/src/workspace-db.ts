@@ -154,7 +154,7 @@ export function createWorkspaceDb(req: WorkspaceDbRequest): Workspace {
     }
     keychainHex = randomBytes(32).toString('hex');
     // set() returns only once the key reads back (confirm-and-retry, see
-    // secrets.ts), so nothing below encrypts with a key the store may lose.
+    // secrets.ts), so nothing below encrypts with a key the store did not keep.
     // An unconfirmed write may still land later, so it is removed too.
     try {
       req.secrets.set(account, keychainHex);

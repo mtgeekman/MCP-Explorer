@@ -16,8 +16,7 @@
     "test": "node --test \"test/*.test.mjs\"",
     "build:protocol": "tsc -p packages/protocol/tsconfig.json",
     "build:storage": "tsc -p packages/storage/tsconfig.json",
-    "capture:real": "node scripts/capture-real.mjs",
-    "stress:keychain": "node scripts/stress-keychain.mjs"
+    "capture:real": "node scripts/capture-real.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.13.4",

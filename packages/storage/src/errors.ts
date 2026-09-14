@@ -24,8 +24,9 @@ export class SecretStoreUnavailableError extends StorageError {}
 
 /**
  * The store accepted a write or delete but never showed its effect, after every
- * retry. Windows Credential Manager loses writes under concurrent writers; a
- * key that is not confirmed readable must not be used to encrypt anything.
+ * retry. A full Windows Credential Manager refuses writes and hides existing
+ * entries; a key that is not confirmed readable must not be used to encrypt
+ * anything.
  */
 export class SecretWriteUnconfirmedError extends StorageError {}
 

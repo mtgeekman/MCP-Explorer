@@ -39,16 +39,38 @@ check:
   script:
     - |
       podman run --rm -v "$CI_PROJECT_DIR:/w:Z" -w /w "$NODE_IMAGE" bash -euo pipefail -c '
+        # test/keychain.test.mjs round-trips through the real Secret Service
+        # (D25) and never skips, so the container needs one: a D-Bus session
+        # bus and a gnome-keyring unlocked with a throwaway password. Without
+        # them the keychain tests fail, which is the intended behaviour.
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends dbus gnome-keyring
         npm ci --ignore-scripts
         npm run build
         # The P1 pillar gate. These assert that every frame the client sends
         # reaches the server through our own transport, and that a tolerated
         # probe costs one process spawn -- the properties an SDK upgrade can
         # silently take away. Without this job the pillar is unguarded.
-        npm test
+        dbus-run-session -- bash -euo pipefail -c "
+          printf ci-throwaway | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+          npm test
+        "
         # D11 gate: macOS stays buildable even though it is never built.
         node scripts/check-macos-prebuilds.mjs
       '
+
+# The suite on Windows. Its reason to exist is the keychain round trip against
+# Credential Manager (phase 02 acceptance); it also runs everything else, which
+# had never run on miniserver before phase 02. The runner is a service, so this
+# job is also the evidence for whether its account has a credential store.
+check:windows:
+  stage: check
+  tags: [miniserver, windows]
+  script:
+    - node --version
+    - npm ci --ignore-scripts
+    - npm run build
+    - npm test
 
 package:linux:
   <<: *node_container

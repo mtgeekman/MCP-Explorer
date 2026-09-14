@@ -39,7 +39,9 @@ if (process.argv[2] === '--worker') {
       r.created++;
       r.ids.push(workspaceId);
     } catch (err) {
-      const kind = err instanceof SecretStoreUnavailableError ? `MISCLASSIFIED ${err.name}: ${err.message}` : `${err.name}: ${err.message}`;
+      // Account names differ per workspace; drop them so identical failures group.
+      const message = err.message.replace(/workspace-key\/[0-9a-f-]+/g, 'workspace-key/<id>');
+      const kind = err instanceof SecretStoreUnavailableError ? `MISCLASSIFIED ${err.name}: ${message}` : `${err.name}: ${message}`;
       r.createFailed[kind] = (r.createFailed[kind] ?? 0) + 1;
       continue;
     }

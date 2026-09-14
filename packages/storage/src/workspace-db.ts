@@ -110,7 +110,14 @@ export function createWorkspaceDb(req: WorkspaceDbRequest): Database {
       throw new InvalidWorkspaceRequestError(`the keychain already holds a key for workspace ${req.workspaceId}`);
     }
     keychainHex = randomBytes(32).toString('hex');
-    req.secrets.set(account, keychainHex);
+    // set() returns only once the key reads back (confirm-and-retry, see
+    // secrets.ts), so nothing below encrypts with a key the store may lose.
+    // An unconfirmed write may still land later, so it is removed too.
+    try {
+      req.secrets.set(account, keychainHex);
+    } catch (err) {
+      throw withKeyRemoved(req.secrets, account, err);
+    }
   }
 
   let db: Database | null = null;
@@ -124,8 +131,23 @@ export function createWorkspaceDb(req: WorkspaceDbRequest): Database {
   } catch (err) {
     db?.close();
     rmSync(req.path, { force: true });
-    if (keychainHex !== null) req.secrets.delete(account);
-    throw err;
+    throw keychainHex !== null ? withKeyRemoved(req.secrets, account, err) : err;
+  }
+}
+
+/**
+ * Removes a key after a failed create and returns the error to throw. If the
+ * removal fails too, both failures are reported: a key left in the keychain
+ * with no database is invisible to the user otherwise.
+ */
+function withKeyRemoved(secrets: SecretStore, account: string, original: unknown): unknown {
+  try {
+    secrets.delete(account);
+    return original;
+  } catch (cleanup) {
+    return new StorageError(`creating the workspace failed, and its key could not be removed from the keychain (${account})`, {
+      cause: new AggregateError([original, cleanup]),
+    });
   }
 }
 
@@ -138,7 +160,9 @@ export function openWorkspaceDb(req: WorkspaceDbRequest): Database {
 
   let keychainHex: string | null = null;
   if (req.custody.kind === 'keychain') {
-    keychainHex = req.secrets.get(workspaceKeyAccount(req.workspaceId));
+    // Patient: a key written moments ago can read back as absent for seconds
+    // on Windows, and KeyMissingError tells the user their data is gone.
+    keychainHex = req.secrets.get(workspaceKeyAccount(req.workspaceId), { patient: true });
     if (keychainHex === null) {
       throw new KeyMissingError(`the keychain holds no key for workspace ${req.workspaceId}`);
     }

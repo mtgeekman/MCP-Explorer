@@ -15,6 +15,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import {
   createWorkspaceDb, openWorkspaceDb, keychainStore, workspaceKeyAccount,
   WrongKeyError, KeyMissingError, SecretStoreUnavailableError, InvalidWorkspaceRequestError,
+  SecretWriteUnconfirmedError, StorageError,
 } from '../packages/storage/dist/index.js';
 
 const Sqlite = createRequire(import.meta.url)('better-sqlite3-multiple-ciphers');
@@ -236,4 +237,52 @@ test('opening an unencrypted workspace with a key is WrongKeyError', () => {
 
 test('opening a path with no database is refused', () => {
   assert.throws(() => openWorkspaceDb(workspace({ kind: 'none' })), InvalidWorkspaceRequestError);
+});
+
+// --- confirm-and-retry at the workspace boundary (D28 A) ---------------------
+
+/** An in-memory store whose get only answers when asked patiently. */
+function lateStore() {
+  const data = new Map();
+  return {
+    data,
+    get: (account, options) => (options?.patient ? data.get(account) ?? null : null),
+    set: (account, value) => { data.set(account, value); },
+    delete: (account) => data.delete(account),
+  };
+}
+
+test('open reads the keychain key patiently: a late key is not KeyMissingError', () => {
+  const store = lateStore();
+  const req = workspace(KEYCHAIN, { secrets: store });
+  writeSentinel(createWorkspaceDb(req));
+  assert.equal(readSentinel(openWorkspaceDb(req)), SENTINEL);
+});
+
+test('an unconfirmed key write fails create, leaves no file, and removes the key', () => {
+  let deleted = 0;
+  const store = {
+    get: () => null,
+    set: () => { throw new SecretWriteUnconfirmedError('writing was not confirmed'); },
+    delete: () => { deleted++; return false; },
+  };
+  const req = workspace(KEYCHAIN, { secrets: store });
+  assert.throws(() => createWorkspaceDb(req), SecretWriteUnconfirmedError);
+  assert.equal(existsSync(req.path), false);
+  assert.equal(deleted, 1, 'an unconfirmed write may land later, so it must be removed');
+});
+
+test('a failed create whose key cannot be removed reports both failures', () => {
+  const store = {
+    get: () => null,
+    set: () => {},
+    delete: () => { throw new SecretWriteUnconfirmedError('deleting was not confirmed'); },
+  };
+  const req = workspace(KEYCHAIN, { secrets: store, path: join(dir, 'no-such-directory', 'y.db') });
+  assert.throws(() => createWorkspaceDb(req), (err) =>
+    err instanceof StorageError
+    && err.cause instanceof AggregateError
+    && err.cause.errors.length === 2
+    && err.cause.errors[1] instanceof SecretWriteUnconfirmedError
+    && /could not be removed/.test(err.message));
 });

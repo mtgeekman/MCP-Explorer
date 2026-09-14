@@ -22,5 +22,12 @@ export class KeyMissingError extends StorageError {}
 /** No OS credential store is reachable: on Linux, no Secret Service (D22). */
 export class SecretStoreUnavailableError extends StorageError {}
 
+/**
+ * The store accepted a write or delete but never showed its effect, after every
+ * retry. Windows Credential Manager loses writes under concurrent writers; a
+ * key that is not confirmed readable must not be used to encrypt anything.
+ */
+export class SecretWriteUnconfirmedError extends StorageError {}
+
 /** The request itself is invalid: an empty passphrase, a file that already exists. */
 export class InvalidWorkspaceRequestError extends StorageError {}

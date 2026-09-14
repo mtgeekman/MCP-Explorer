@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
 import { InvalidWorkspaceRequestError, KeyMissingError, StorageError, WrongKeyError } from './errors.js';
+import { migrate } from './migrate.js';
 import { decodeRecoveryKey, encodeRecoveryKey } from './recovery.js';
 import type { SecretStore } from './secrets.js';
 import { constructDatabase, type Database } from './sqlite.js';
@@ -131,13 +132,21 @@ function verifyReadable(db: Database, custody: Custody): void {
   }
 }
 
+export interface CreateWorkspaceRequest extends WorkspaceDbRequest {
+  /** Stored in the workspace database for every custody (D29). */
+  name: string;
+  /** Injectable for tests; defaults to Date.now. */
+  now?: () => number;
+}
+
 /**
  * Creates a new workspace database file. Refuses to touch an existing file,
  * and refuses to reuse a keychain key left behind under the same workspace id:
  * overwriting it could lock another database out, and adopting it would open
  * a database the caller did not mean to.
  */
-export function createWorkspaceDb(req: WorkspaceDbRequest): Workspace {
+export function createWorkspaceDb(req: CreateWorkspaceRequest): Workspace {
+  if (!req.name) throw new InvalidWorkspaceRequestError('workspace name is empty');
   if (req.custody.kind === 'recovery') {
     throw new InvalidWorkspaceRequestError('a recovery key opens an existing workspace; it cannot create one');
   }
@@ -170,6 +179,11 @@ export function createWorkspaceDb(req: WorkspaceDbRequest): Workspace {
     // SQLite writes nothing until the first write. Force page 1 out now, so
     // the file on disk is already encrypted before anyone else can see it.
     db.pragma('user_version = 0');
+    // Foreign keys: better-sqlite3-multiple-ciphers is compiled with
+    // SQLITE_DEFAULT_FOREIGN_KEYS=1, so every connection enforces them without
+    // a pragma. test/storage-migrations.test.mjs pins that default.
+    migrate(db, req.path);
+    db.prepare('INSERT INTO workspace_meta (id, name, created_at) VALUES (1, ?, ?)').run(req.name, (req.now ?? Date.now)());
     return workspace(db, req.secrets, req.workspaceId, keychainHex);
   } catch (err) {
     db?.close();
@@ -207,8 +221,8 @@ export function openWorkspaceDb(req: WorkspaceDbRequest): Workspace {
 
   let keychainHex: string | null = null;
   if (req.custody.kind === 'keychain') {
-    // Patient: a key written moments ago can read back as absent for seconds
-    // on Windows, and KeyMissingError tells the user their data is gone.
+    // Patient: a full Windows Credential Manager reads existing entries as
+    // absent, and KeyMissingError tells the user their data may be gone.
     keychainHex = req.secrets.get(workspaceKeyAccount(req.workspaceId), { patient: true });
     if (keychainHex === null) {
       // Not necessarily gone: a full Windows Credential Manager reads some
@@ -223,6 +237,9 @@ export function openWorkspaceDb(req: WorkspaceDbRequest): Workspace {
   try {
     applyKey(db, keyMaterial(req.custody, keychainHex));
     verifyReadable(db, req.custody);
+    // Opening is the user's action, so pending migrations run here, with the
+    // pre-upgrade backup (D27). A newer schema is refused untouched.
+    migrate(db, req.path);
     return workspace(db, req.secrets, req.workspaceId, keychainHex);
   } catch (err) {
     db.close();

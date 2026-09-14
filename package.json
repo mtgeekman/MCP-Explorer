@@ -16,7 +16,8 @@
     "test": "node --test \"test/*.test.mjs\"",
     "build:protocol": "tsc -p packages/protocol/tsconfig.json",
     "build:storage": "tsc -p packages/storage/tsconfig.json",
-    "capture:real": "node scripts/capture-real.mjs"
+    "capture:real": "node scripts/capture-real.mjs",
+    "golden:db": "node scripts/golden-db.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.13.4",

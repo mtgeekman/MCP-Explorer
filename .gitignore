@@ -57,3 +57,6 @@ npm-debug.log*
 
 # Spike run output (see src/main.ts) -- never belongs in the repo
 phase00-findings.json
+
+# Golden databases for the migration tests (D27) are committed on purpose.
+!test/golden/*.db

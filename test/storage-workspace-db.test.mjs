@@ -38,13 +38,13 @@ const KEYCHAIN = { kind: 'keychain' };
 const pass = (passphrase) => ({ kind: 'passphrase', passphrase });
 const SENTINEL = 'sentinel-7f3a-plaintext-must-not-appear';
 
-function writeSentinel(db) {
-  db.exec('CREATE TABLE t (v TEXT)');
-  db.prepare('INSERT INTO t VALUES (?)').run(SENTINEL);
-  db.close();
+function writeSentinel(ws) {
+  ws.db.exec('CREATE TABLE t (v TEXT)');
+  ws.db.prepare('INSERT INTO t VALUES (?)').run(SENTINEL);
+  ws.close();
 }
-const readSentinel = (db) => {
-  try { return db.prepare('SELECT v FROM t').get().v; } finally { db.close(); }
+const readSentinel = (ws) => {
+  try { return ws.db.prepare('SELECT v FROM t').get().v; } finally { ws.close(); }
 };
 const header = (path) => readFileSync(path).subarray(0, 15).toString('latin1');
 

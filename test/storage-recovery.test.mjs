@@ -126,7 +126,7 @@ after(() => {
 function req(custody, overrides = {}) {
   const workspaceId = randomUUID();
   usedIds.push(workspaceId);
-  return { path: join(dir, `${workspaceId}.db`), workspaceId, custody, secrets, ...overrides };
+  return { path: join(dir, `${workspaceId}.db`), workspaceId, name: `test ${workspaceId}`, custody, secrets, ...overrides };
 }
 const KEYCHAIN = { kind: 'keychain' };
 const recovery = (recoveryKey) => ({ kind: 'recovery', recoveryKey });

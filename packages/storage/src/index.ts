@@ -3,6 +3,7 @@ export { type SecretStore, APP_SERVICE, KEYRING_PIN, keychainStore } from './sec
 export type { Database, Statement } from './sqlite.js';
 export {
   type Custody,
+  type CreateWorkspaceRequest,
   type Workspace,
   type WorkspaceDbRequest,
   createWorkspaceDb,
@@ -10,3 +11,5 @@ export {
   workspaceKeyAccount,
 } from './workspace-db.js';
 export { InvalidRecoveryKeyError, encodeRecoveryKey, decodeRecoveryKey } from './recovery.js';
+export { migrate, NewerSchemaError, MigrationFailedError, type MigrationResult } from './migrate.js';
+export { MIGRATIONS, SCHEMA_VERSION, type Migration } from './migrations/index.js';

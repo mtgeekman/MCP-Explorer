@@ -45,12 +45,33 @@ function guard<T>(fn: () => T): T {
   }
 }
 
+/**
+ * The raw OS store, one call per operation, errors exactly as the binding
+ * throws them. Separate from the policy in `storeOver` so that policy can be
+ * tested against a backend that fails on command; the real store fails only
+ * under load, and not on demand.
+ */
+export type KeychainBackend = SecretStore;
+
+export function entryBackend(service: string): KeychainBackend {
+  const entry = (account: string) => new Entry(service, account, KEYRING_PIN);
+  return {
+    get: (account) => entry(account).getPassword() ?? null,
+    set: (account, value) => entry(account).setPassword(value),
+    delete: (account) => entry(account).deletePassword(),
+  };
+}
+
+/** Error classification over a backend. Not exported from the package. */
+export function storeOver(backend: KeychainBackend): SecretStore {
+  return {
+    get: (account) => guard(() => backend.get(account)),
+    set: (account, value) => guard(() => backend.set(account, value)),
+    delete: (account) => guard(() => backend.delete(account)),
+  };
+}
+
 /** Windows Credential Manager, Linux Secret Service, or macOS Keychain. */
 export function keychainStore(service: string = APP_SERVICE): SecretStore {
-  const entry = (account: string) => guard(() => new Entry(service, account, KEYRING_PIN));
-  return {
-    get: (account) => guard(() => entry(account).getPassword() ?? null),
-    set: (account, value) => guard(() => entry(account).setPassword(value)),
-    delete: (account) => guard(() => entry(account).deletePassword()),
-  };
+  return storeOver(entryBackend(service));
 }

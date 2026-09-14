@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
+    "@napi-rs/keyring": "2.1.0",
     "better-sqlite3-multiple-ciphers": "^13.0.3"
   },
   "build": {
@@ -41,7 +42,8 @@
       "packages/protocol/dist/**/*"
     ],
     "asarUnpack": [
-      "**/node_modules/better-sqlite3-multiple-ciphers/**"
+      "**/node_modules/better-sqlite3-multiple-ciphers/**",
+      "**/node_modules/@napi-rs/keyring-*/**"
     ],
     "win": {
       "target": [

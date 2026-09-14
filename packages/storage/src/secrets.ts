@@ -28,11 +28,18 @@ export const APP_SERVICE = 'mcp-explorer';
  */
 export const KEYRING_PIN = { linux: { store: 'secret-service' } } as const;
 
-// keyring-rs's NoStorageAccess and PlatformFailure, as the binding words them.
-// Both mean the store itself is unreachable, which is D22's case. Anything
-// else -- a value over Credential Manager's size limit, say -- is a real error
-// and propagates untouched.
-const UNAVAILABLE = /^(Platform failure|Couldn't access platform storage)/;
+// The store itself is unreachable -- D22's case -- when keyring-rs reports
+// NoStorageAccess, or a PlatformFailure that came from D-Bus (no session bus,
+// or no Secret Service on it). A PlatformFailure carrying a Windows error code
+// is NOT that: Credential Manager throws "Windows error code 8" under
+// concurrent writers on a store that is present and working (measured
+// 2026-09-14), and calling it unavailable tells the user their platform
+// cannot hold secrets. Anything else -- a Windows error, a value over
+// Credential Manager's size limit -- is a real error and propagates untouched.
+//
+// macOS Keychain's wording has never been observed (D11): its errors
+// propagate unclassified until someone sees them.
+const UNAVAILABLE = /^(Platform failure: DBus error|Couldn't access platform storage)/;
 
 function guard<T>(fn: () => T): T {
   try {

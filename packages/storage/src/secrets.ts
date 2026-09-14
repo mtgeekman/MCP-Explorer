@@ -39,8 +39,8 @@ export const KEYRING_PIN = { linux: { store: 'secret-service' } } as const;
 // The store itself is unreachable -- D22's case -- when keyring-rs reports
 // NoStorageAccess, or a PlatformFailure that came from D-Bus (no session bus,
 // or no Secret Service on it). A PlatformFailure carrying a Windows error code
-// is NOT that: Credential Manager throws "Windows error code 8" under
-// concurrent writers on a store that is present and working (measured
+// is NOT that: Credential Manager throws "Windows error code 8" when its
+// per-user storage is full, on a store that is present and working (measured
 // 2026-09-14), and calling it unavailable tells the user their platform
 // cannot hold secrets. Anything else -- a Windows error, a value over
 // Credential Manager's size limit -- is a real error and propagates untouched.
@@ -81,13 +81,17 @@ export function entryBackend(service: string): KeychainBackend {
   };
 }
 
-// Windows Credential Manager under concurrent writers, measured 2026-09-14
-// with six processes: writes throw "Windows error code 8"; writes succeed and
-// read back seconds later (up to 4075 ms seen); and roughly one write in sixty
-// never reads back at all within 10 s. The policy below is confirm-and-retry:
-// no write is reported done until it reads back, a transient error or an
-// unconfirmed write is retried, and a missing value is re-read before a caller
-// that would lose data because of it is told null.
+// Windows Credential Manager has a small per-user storage limit, measured
+// 2026-09-14 by bytes, not entries: on a machine already holding 551
+// credentials, 143 more 8-character values fit, 129 of 64 characters (a
+// workspace key), 41 of 1280. At or near that limit writes throw "Windows
+// error code 8", some EXISTING entries read back as absent, and enumeration
+// is partial; freeing space brings every entry back. Nothing was found
+// deleted. Other applications share the limit, so the app cannot prevent it.
+// The policy below is confirm-and-retry: no write is reported done until it
+// reads back, a transient error or an unconfirmed write is retried, and a
+// missing value is re-read before a caller that would report data loss is
+// told null.
 const TRANSIENT = /^Platform failure: Windows error code \d+$/;
 
 export interface RetryPolicy {
@@ -110,8 +114,9 @@ export interface RetryPolicy {
 
 const blockingSleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-// A write can be lost outright, so each attempt waits a little over half the
-// worst delay observed before rewriting; three attempts outlast it.
+// Tuned against a store at its limit, where space frees up only when another
+// writer deletes something: a few seconds per attempt, three attempts, then a
+// typed failure rather than an unbounded block.
 export const DEFAULT_RETRY: RetryPolicy = {
   attempts: 3,
   confirmMs: 2_500,

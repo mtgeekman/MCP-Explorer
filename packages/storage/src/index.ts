@@ -13,3 +13,15 @@ export {
 export { InvalidRecoveryKeyError, encodeRecoveryKey, decodeRecoveryKey } from './recovery.js';
 export { migrate, NewerSchemaError, MigrationFailedError, type MigrationResult } from './migrate.js';
 export { MIGRATIONS, SCHEMA_VERSION, type Migration } from './migrations/index.js';
+export {
+  type RegistryCustody,
+  type RegistryEntry,
+  RegistryError,
+  REGISTRY_FORMAT,
+  readRegistry,
+  writeRegistry,
+  addToRegistry,
+  removeFromRegistry,
+  renameInRegistry,
+  registryLabel,
+} from './registry.js';

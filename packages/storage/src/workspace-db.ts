@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
 import { InvalidWorkspaceRequestError, KeyMissingError, StorageError, WrongKeyError } from './errors.js';
+import { decodeRecoveryKey, encodeRecoveryKey } from './recovery.js';
 import type { SecretStore } from './secrets.js';
 import { constructDatabase, type Database } from './sqlite.js';
 
@@ -13,11 +14,34 @@ import { constructDatabase, type Database } from './sqlite.js';
  *   credential store and nowhere else.
  * - `passphrase`: SQLCipher derives the key from a passphrase typed at open.
  *   Nothing is stored, so the keychain alone cannot open it.
+ * - `recovery`: open only. A keychain-custody workspace opened with its
+ *   recovery key instead of the keychain (D28 B), for when the keychain entry
+ *   is gone.
  */
 export type Custody =
   | { kind: 'none' }
   | { kind: 'keychain' }
-  | { kind: 'passphrase'; passphrase: string };
+  | { kind: 'passphrase'; passphrase: string }
+  | { kind: 'recovery'; recoveryKey: string };
+
+/** An open workspace database, and the key it was opened with. */
+export interface Workspace {
+  readonly db: Database;
+  /**
+   * The recovery key for a keychain-custody workspace (also when opened with
+   * its recovery key), null for other custodies. Encoded from the key held in
+   * memory, so it is available whenever the workspace is open.
+   */
+  readonly recoveryKey: string | null;
+  /**
+   * Writes this workspace's key to the keychain, replacing whatever entry is
+   * there. For a workspace opened with its recovery key, this is the step that
+   * makes the keychain open it again; it runs only when called. Confirmed like
+   * every write (secrets.ts). Throws for a workspace with no keychain-held key.
+   */
+  storeKeyInKeychain(): void;
+  close(): void;
+}
 
 export interface WorkspaceDbRequest {
   path: string;
@@ -55,9 +79,25 @@ function keyMaterial(custody: Custody, keychainHex: string | null): Buffer | nul
       return null;
     case 'keychain':
       return Buffer.from(`x'${keychainHex}'`, 'utf8');
+    case 'recovery':
+      return Buffer.from(`x'${keychainHex}'`, 'utf8');
     case 'passphrase':
       return Buffer.from(custody.passphrase, 'utf8');
   }
+}
+
+function workspace(db: Database, secrets: SecretStore, workspaceId: string, keyHex: string | null): Workspace {
+  return {
+    db,
+    recoveryKey: keyHex === null ? null : encodeRecoveryKey(Buffer.from(keyHex, 'hex')),
+    storeKeyInKeychain() {
+      if (keyHex === null) throw new InvalidWorkspaceRequestError(`workspace ${workspaceId} has no keychain-held key`);
+      secrets.set(workspaceKeyAccount(workspaceId), keyHex);
+    },
+    close() {
+      db.close();
+    },
+  };
 }
 
 /**
@@ -97,7 +137,10 @@ function verifyReadable(db: Database, custody: Custody): void {
  * overwriting it could lock another database out, and adopting it would open
  * a database the caller did not mean to.
  */
-export function createWorkspaceDb(req: WorkspaceDbRequest): Database {
+export function createWorkspaceDb(req: WorkspaceDbRequest): Workspace {
+  if (req.custody.kind === 'recovery') {
+    throw new InvalidWorkspaceRequestError('a recovery key opens an existing workspace; it cannot create one');
+  }
   validate(req);
   if (existsSync(req.path)) {
     throw new InvalidWorkspaceRequestError(`a file already exists at ${req.path}`);
@@ -127,7 +170,7 @@ export function createWorkspaceDb(req: WorkspaceDbRequest): Database {
     // SQLite writes nothing until the first write. Force page 1 out now, so
     // the file on disk is already encrypted before anyone else can see it.
     db.pragma('user_version = 0');
-    return db;
+    return workspace(db, req.secrets, req.workspaceId, keychainHex);
   } catch (err) {
     db?.close();
     rmSync(req.path, { force: true });
@@ -151,8 +194,12 @@ function withKeyRemoved(secrets: SecretStore, account: string, original: unknown
   }
 }
 
-/** Opens an existing workspace database, failing with a typed error. */
-export function openWorkspaceDb(req: WorkspaceDbRequest): Database {
+/**
+ * Opens an existing workspace database, failing with a typed error. Opening
+ * with a recovery key does not touch the keychain; call storeKeyInKeychain()
+ * to put the key back.
+ */
+export function openWorkspaceDb(req: WorkspaceDbRequest): Workspace {
   validate(req);
   if (!existsSync(req.path)) {
     throw new InvalidWorkspaceRequestError(`no workspace database at ${req.path}`);
@@ -164,15 +211,19 @@ export function openWorkspaceDb(req: WorkspaceDbRequest): Database {
     // on Windows, and KeyMissingError tells the user their data is gone.
     keychainHex = req.secrets.get(workspaceKeyAccount(req.workspaceId), { patient: true });
     if (keychainHex === null) {
-      throw new KeyMissingError(`the keychain holds no key for workspace ${req.workspaceId}`);
+      // Not necessarily gone: a full Windows Credential Manager reads some
+      // existing entries as absent until space is freed (measured 2026-09-14).
+      throw new KeyMissingError(`the keychain returned no key for workspace ${req.workspaceId}; if the credential store is full, freeing space may bring it back, otherwise open it with its recovery key`);
     }
+  } else if (req.custody.kind === 'recovery') {
+    keychainHex = decodeRecoveryKey(req.custody.recoveryKey).toString('hex');
   }
 
   const db = constructDatabase(req.path, { fileMustExist: true });
   try {
     applyKey(db, keyMaterial(req.custody, keychainHex));
     verifyReadable(db, req.custody);
-    return db;
+    return workspace(db, req.secrets, req.workspaceId, keychainHex);
   } catch (err) {
     db.close();
     throw err;

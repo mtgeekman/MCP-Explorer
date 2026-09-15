@@ -285,3 +285,34 @@ test('size: a purge under the cap never scans the whole database', () => {
     ws.close();
   }
 });
+
+test('age: a connection goes once it is past the threshold and nothing refers to it', () => {
+  // Review finding: calls and frames were purged, connection rows never were,
+  // one per connect, forever.
+  const { ws, serverId } = setup();
+  try {
+    const emptied = HistoryRecorder.open(ws, serverId, () => NOW - 100 * DAY);
+    emptied.frame('out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    const stillUsed = HistoryRecorder.open(ws, serverId, () => NOW - 100 * DAY);
+    const recentFrameClock = () => NOW - DAY;
+    HistoryRecorder.open(ws, serverId, recentFrameClock);
+    ws.db.prepare("INSERT INTO frame (connection_id, direction, at, method, message_json) VALUES (?, 'out', ?, 'ping', '{}')").run(stillUsed.connectionId, NOW - DAY);
+    const withCall = HistoryRecorder.open(ws, serverId, () => NOW - 100 * DAY);
+    ws.db.prepare("INSERT INTO call (server_id, connection_id, kind, target, status, started_at, finished_at) VALUES (?, ?, 'tool', 'echo', 'completed', ?, ?)")
+      .run(serverId, withCall.connectionId, NOW - DAY, NOW - DAY);
+    seedSnapshot(ws, serverId, NOW - 100 * DAY);
+    ws.db.prepare('UPDATE surface_observation SET connection_id = ?').run(emptied.connectionId);
+    const recent = HistoryRecorder.open(ws, serverId, () => NOW - DAY);
+
+    purgeHistory(ws, () => NOW);
+    const left = ws.db.prepare('SELECT id FROM connection ORDER BY id').all().map((r) => r.id);
+    assert.ok(!left.includes(emptied.connectionId), 'an old connection with nothing left was kept');
+    assert.ok(left.includes(stillUsed.connectionId), 'an old connection with a recent frame was purged');
+    assert.ok(left.includes(recent.connectionId), 'a recent connection was purged');
+    assert.ok(left.includes(withCall.connectionId), 'an old connection with a recent call was purged');
+    assert.equal(count(ws, 'surface_observation'), 1, 'the observation must survive its connection');
+    assert.equal(ws.db.prepare('SELECT connection_id FROM surface_observation').get().connection_id, null);
+  } finally {
+    ws.close();
+  }
+});

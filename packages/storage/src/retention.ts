@@ -17,6 +17,8 @@ import type { Workspace } from './workspace-db.js';
  *   dbstat scans the whole database (98 ms for 230 MB encrypted, measured
  *   2026-09-14), so it runs only when the constant-time upper bound -- pages in
  *   use times page size -- is already over the cap.
+ * - A connection row goes once it is past the age threshold and nothing
+ *   refers to it.
  * - Nothing here runs on a timer (P2). The triggers are opening a workspace
  *   and finishing a call.
  */
@@ -24,6 +26,7 @@ import type { Workspace } from './workspace-db.js';
 export interface PurgeResult {
   callsDeleted: number;
   framesDeleted: number;
+  connectionsDeleted: number;
   /** Pages in use times page size: an upper bound on live bytes, cheap to read. */
   usedBytesBefore: number;
   usedBytesAfter: number;
@@ -82,10 +85,20 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
   const overCap = () => usedBytes(db) > retentionMaxBytes && liveBytes(db) > retentionMaxBytes;
   let callsDeleted = 0;
   let framesDeleted = 0;
+  let connectionsDeleted = 0;
 
   db.transaction(() => {
     callsDeleted += db.prepare("DELETE FROM call WHERE status <> 'in_progress' AND started_at < ?").run(cutoff).changes;
     framesDeleted += db.prepare('DELETE FROM frame WHERE call_id IS NULL AND at < ?').run(cutoff).changes;
+    // A connection row outlives its history otherwise: one per connect,
+    // forever. It goes once it is past the threshold and no frame or call
+    // refers to it; an observation that did loses the link (ON DELETE SET
+    // NULL) and is kept.
+    connectionsDeleted += db.prepare(`
+      DELETE FROM connection WHERE opened_at < ?
+        AND NOT EXISTS (SELECT 1 FROM frame WHERE frame.connection_id = connection.id)
+        AND NOT EXISTS (SELECT 1 FROM call WHERE call.connection_id = connection.id)
+    `).run(cutoff).changes;
   })();
 
   let overCapWithNothingToPurge = false;
@@ -107,7 +120,7 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
     })();
   }
 
-  return { callsDeleted, framesDeleted, usedBytesBefore, usedBytesAfter: usedBytes(db), overCapWithNothingToPurge };
+  return { callsDeleted, framesDeleted, connectionsDeleted, usedBytesBefore, usedBytesAfter: usedBytes(db), overCapWithNothingToPurge };
 }
 
 /**

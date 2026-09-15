@@ -4,11 +4,14 @@ A desktop workbench for MCP servers. Connect to local `stdio` servers and
 remote HTTP servers, see everything an agent would see, call the tools by
 hand, and find out what a release actually changed.
 
-**Status: Phase 01 complete (2026-09-11).** The toolchain is proven end to end
--- an Electron app builds and packages on Windows and Linux from CI -- and the
-protocol core exists: it connects to a server over any of the three transports,
-detects the protocol era, captures the whole surface, and diffs it across
-versions. There is no user interface yet. Phase 02 builds storage.
+**Status: Phase 02 complete (2026-09-14).** The toolchain is proven end to end
+-- an Electron app builds and packages on Windows and Linux from CI. The
+protocol core connects to a server over any of the three transports, detects
+the protocol era, captures the whole surface, and diffs it across versions.
+Storage now keeps it: per-workspace encrypted databases with keychain-held or
+passphrase-derived keys and recovery keys, server definitions whose secrets
+never sit readable on disk, every call and frame, surface version history, and
+retention. There is no user interface yet. Phase 03 is the design pass.
 
 ## What it does
 
@@ -45,7 +48,7 @@ written not to foreclose it.
 
 Everything lives in the wiki under `claude/projects/mcp-explorer`:
 
-- **spec** — goal, pillars, constraints, non-goals, 17 decision blocks,
+- **spec** — goal, pillars, constraints, non-goals, decision blocks D1–D31,
   verifiers
 - **plans/v1-development-plan** — twelve phases, sequencing rationale, risks
 - **reference/** — runbooks and design records

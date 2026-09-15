@@ -32,6 +32,8 @@ function plain(overrides = {}) {
   return { path: join(dir, `${workspaceId}.db`), workspaceId, name: 'migration test', custody: { kind: 'none' }, secrets: noSecrets, ...overrides };
 }
 const userVersion = (db) => db.pragma('user_version', { simple: true });
+// The timestamp golden-support.mjs seeds every row with.
+const GOLDEN_TIME = 1_757_808_000_000;
 
 // --- the migration list itself ----------------------------------------------
 
@@ -88,8 +90,11 @@ for (const file of readdirSync(golden).filter((f) => /^v\d+\.db$/.test(f))) {
     const r = plain();
     copyFileSync(join(golden, file), r.path);
     const expected = JSON.parse(readFileSync(join(golden, `v${version}.json`), 'utf8'));
-    const ws = openWorkspaceDb(r);
+    // Opened at the golden database's own date: open applies retention (D24),
+    // and this test is about migration keeping rows, not about their age.
+    const ws = openWorkspaceDb({ ...r, now: () => GOLDEN_TIME });
     try {
+      assert.equal(ws.purgedOnOpen.callsDeleted + ws.purgedOnOpen.framesDeleted, 0);
       assert.equal(userVersion(ws.db), SCHEMA_VERSION);
       const fresh = createWorkspaceDb(plain());
       try {

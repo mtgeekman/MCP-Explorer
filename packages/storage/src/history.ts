@@ -1,4 +1,5 @@
 import { StorageError } from './errors.js';
+import { purgeHistory, type PurgeResult } from './retention.js';
 import type { Workspace } from './workspace-db.js';
 
 /**
@@ -180,7 +181,8 @@ export class HistoryRecorder {
     if (changed === 0) throw new HistoryStateError(`call ${callId} has no finished round ${seq} to answer`);
   }
 
-  finishCall(callId: number, status: CallStatus): void {
+  /** Finishes the call, then applies retention, finishing a call being its other trigger (D24). */
+  finishCall(callId: number, status: CallStatus): PurgeResult {
     this.requireOpen(callId);
     const unfinished = this.ws.db.prepare('SELECT seq FROM call_round WHERE call_id = ? AND finished_at IS NULL').get(callId);
     if (unfinished && status === 'completed') throw new HistoryStateError(`call ${callId} cannot complete with a round still waiting`);
@@ -193,6 +195,7 @@ export class HistoryRecorder {
       const kept = queue.filter((b) => b.callId !== callId);
       if (kept.length) this.pending.set(key, kept); else this.pending.delete(key);
     }
+    return purgeHistory(this.ws, this.now);
   }
 
   private requireOpen(callId: number): { kind: CallKind; target: string } {

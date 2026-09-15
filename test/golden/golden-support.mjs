@@ -22,7 +22,7 @@ export function rowCounts(db) {
 }
 
 /**
- * One row in every schema-1 table, exercising the columns a later migration
+ * One row in every table, exercising the columns a later migration
  * is most likely to touch: nullable JSON, the BLOB, composite keys, the
  * withheld-frame shape. A new migration's golden seed extends this; it never
  * edits what an earlier version seeded.
@@ -49,4 +49,12 @@ export function seedEveryTable(db) {
   db.prepare(`INSERT INTO frame (connection_id, call_id, round_seq, direction, at, jsonrpc_id, method, message_json, result_withheld)
               VALUES (1, 1, 1, 'in', ?, '7', 'tools/call', NULL, 1)`).run(t + 5);
   db.prepare(`INSERT INTO frame (connection_id, direction, at, method, message_json) VALUES (1, 'out', ?, 'server/discover', '{"jsonrpc":"2.0","id":1,"method":"server/discover"}')`).run(t);
+
+  // Schema 2 (server secrets, D31). Golden databases are unencrypted, so this
+  // row exists only to exercise the table's shape; the app never writes a
+  // secret to an unencrypted workspace.
+  if (tableNames(db).includes('server_secret')) {
+    db.prepare(`UPDATE server SET headers_json = '{"Accept":"application/json"}' WHERE id = 'srv-2'`).run();
+    db.prepare(`INSERT INTO server_secret (server_id, kind, name, value, updated_at) VALUES ('srv-2', 'header', 'Authorization', 'golden-not-a-secret', ?)`).run(t);
+  }
 }

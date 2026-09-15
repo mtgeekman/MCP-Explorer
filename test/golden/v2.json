@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "rowCounts": {
+    "call": 1,
+    "call_round": 2,
+    "connection": 1,
+    "frame": 3,
+    "server": 2,
+    "server_secret": 1,
+    "snapshot_prompt": 1,
+    "snapshot_resource": 1,
+    "snapshot_resource_template": 1,
+    "snapshot_tool": 1,
+    "surface_observation": 1,
+    "surface_snapshot": 1,
+    "workspace_meta": 1
+  }
+}

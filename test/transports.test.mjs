@@ -77,3 +77,29 @@ test('an HTTP transport still routes every frame through the P1 seam', async () 
   assert.ok(out.includes('server/discover'), 'the negotiation probe reached the logger');
   assert.ok(out.includes('tools/list'), 'ordinary traffic reached the logger');
 });
+
+// P1 cuts both ways: every frame reaches the log, and each frame reaches it
+// once. The SDK chains transport.onmessage -- ProbeWindow saves and restores
+// it, Protocol.connect() reads it and installs a handler that calls it -- so a
+// tap that hands its own wrapper back on read gets wrapped twice, and every
+// inbound frame is logged twice.
+for (const [name, connect] of [
+  ['stdio', (onFrame) => connectStdio({ command: process.execPath, args: [join(fixtures, 'modern-server.mjs')], onFrame })],
+  ['streamable-http', (onFrame) => connectHttp({ url: urls.http, onFrame })],
+  ['sse', (onFrame) => connectHttp({ url: urls.sse, kind: 'sse', onFrame })],
+]) {
+  test(`P1: over ${name}, every inbound frame is logged exactly once`, async () => {
+    const inbound = [];
+    const conn = await connect((d, f) => { if (d === 'in') inbound.push(f); });
+    try {
+      await captureSurface(conn.source);
+    } finally {
+      await conn.close();
+    }
+    assert.ok(inbound.length >= 5, `only ${inbound.length} inbound frames in a whole capture`);
+    const twice = inbound.filter((f, i) => inbound.indexOf(f) !== i);
+    assert.equal(twice.length, 0, `${twice.length} of ${inbound.length} inbound frames were logged more than once`);
+    const ids = inbound.filter((f) => f.id !== undefined).map((f) => JSON.stringify(f.id));
+    assert.equal(new Set(ids).size, ids.length, `a response id was logged more than once: ${ids.join(' ')}`);
+  });
+}

@@ -100,6 +100,13 @@ function makeClient(
 
 function tap(inner: any, onFrame?: FrameListener): any {
   if (!onFrame) return inner;
+  // What the SDK last assigned to onmessage, unwrapped. The SDK chains this
+  // property: ProbeWindow saves and later restores it, and Protocol.connect()
+  // reads it and installs a handler that calls what it read. Handing the SDK
+  // our wrapper on read made it call the wrapper from inside the next wrapper,
+  // and every inbound frame reached the log twice. The SDK reads back exactly
+  // what it wrote; only the handler actually installed on the transport logs.
+  let assigned: unknown;
   return new Proxy(inner, {
     get(t: any, p: string | symbol, r: unknown) {
       if (p === 'send') {
@@ -108,11 +115,15 @@ function tap(inner: any, onFrame?: FrameListener): any {
           return t.send(m, o);
         };
       }
+      if (p === 'onmessage') return assigned;
       const v = Reflect.get(t, p, r);
       return typeof v === 'function' ? v.bind(t) : v;
     },
     set(t: any, p: string | symbol, v: unknown) {
       if (p === 'onmessage') {
+        assigned = v;
+        // Installed even when v is empty: a frame arriving between handlers
+        // still reaches the log, though nothing else receives it.
         t.onmessage = (m: unknown, x: unknown) => { onFrame('in', m); (v as any)?.(m, x); };
         return true;
       }

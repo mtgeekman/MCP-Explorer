@@ -275,3 +275,20 @@ test('P1: every frame the transport tap emits in a real session is stored', asyn
     ws.close();
   }
 });
+
+test('calls: a round finished without its request being sent does not capture the next round\'s request', () => {
+  // Review finding: finishRound left the round's pending binding queued, so a
+  // retry after a send that never happened bound to the dead round.
+  const { ws, rec } = setup();
+  try {
+    const call = rec.beginCall('tool', 'echo');
+    const r1 = rec.beginRound(call, {});
+    rec.finishRound(call, r1, { error: { message: 'connection closed before send' } });
+    const r2 = rec.beginRound(call, {});
+    rec.frame('out', toolCall(5, 'echo', {}));
+    rec.frame('in', reply(5, COMPLETE));
+    assert.deepEqual(frames(ws).map((f) => f.round_seq), [r2, r2]);
+  } finally {
+    ws.close();
+  }
+});

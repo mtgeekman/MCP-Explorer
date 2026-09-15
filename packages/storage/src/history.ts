@@ -171,6 +171,10 @@ export class HistoryRecorder {
       json(outcome.error), this.now(), callId, seq,
     ).changes;
     if (changed === 0) throw new HistoryStateError(`call ${callId} has no unfinished round ${seq}`);
+    // A round can finish without its request ever reaching the wire (the send
+    // failed first). Its binding must go, or the next round's request binds to
+    // this dead round instead.
+    this.dropPending((b) => b.callId === callId && b.seq === seq);
   }
 
   /** The human's answers to a round's input requests, recorded before the retry that carries them. */
@@ -191,11 +195,15 @@ export class HistoryRecorder {
       this.ws.db.prepare('UPDATE call SET status = ?, finished_at = ? WHERE id = ?').run(status, this.now(), callId);
     })();
     this.openCalls.delete(callId);
+    this.dropPending((b) => b.callId === callId);
+    return purgeHistory(this.ws, this.now);
+  }
+
+  private dropPending(matches: (b: Binding) => boolean): void {
     for (const [key, queue] of this.pending) {
-      const kept = queue.filter((b) => b.callId !== callId);
+      const kept = queue.filter((b) => !matches(b));
       if (kept.length) this.pending.set(key, kept); else this.pending.delete(key);
     }
-    return purgeHistory(this.ws, this.now);
   }
 
   private requireOpen(callId: number): { kind: CallKind; target: string } {

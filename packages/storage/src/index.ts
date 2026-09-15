@@ -36,3 +36,11 @@ export {
   listServers,
   deleteServer,
 } from './servers.js';
+export {
+  HistoryRecorder,
+  HistoryStateError,
+  RESULT_METHODS,
+  type CallKind,
+  type CallStatus,
+  type RoundOutcome,
+} from './history.js';

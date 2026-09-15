@@ -145,7 +145,8 @@ test('size: over the cap, the oldest whole calls go first until live bytes fit',
     const cap = Math.floor(before / 2);
     updateSettings(ws, { retentionMaxBytes: cap });
     const result = purgeHistory(ws, () => NOW);
-    assert.ok(result.liveBytesAfter <= cap, `still ${result.liveBytesAfter} bytes over a ${cap} cap`);
+    assert.ok(liveBytes(ws.db) <= cap, `still ${liveBytes(ws.db)} live bytes over a ${cap} cap`);
+    assert.ok(result.usedBytesAfter >= liveBytes(ws.db), 'used bytes must bound live bytes from above');
     assert.ok(result.callsDeleted > 0 && result.callsDeleted < 120);
     const kept = ws.db.prepare('SELECT id FROM call ORDER BY id').all().map((r) => r.id);
     assert.deepEqual(kept, calls.slice(calls.length - kept.length), 'kept calls must be the newest ones');
@@ -258,6 +259,28 @@ test('compact: the file shrinks only when asked, after a purge freed pages', () 
     assert.equal(pages(), full, 'a purge must not shrink the file by itself');
     const { before, after } = compact(ws);
     assert.ok(after < before, `compact did not shrink the file: ${before} -> ${after}`);
+  } finally {
+    ws.close();
+  }
+});
+
+test('size: a purge under the cap never scans the whole database', () => {
+  // Review finding: purgeHistory ran a full dbstat scan before, at every loop
+  // check and after -- on every finished call. A scan of a 230 MB encrypted
+  // workspace was measured at 98 ms. Pages in use times page size bounds live
+  // bytes from above in constant time, so an under-cap purge needs no scan.
+  const { ws, serverId } = setup();
+  try {
+    for (let i = 0; i < 5; i++) seedCall(ws, { serverId }, NOW - i * 1000);
+    const prepare = ws.db.prepare.bind(ws.db);
+    let scans = 0;
+    ws.db.prepare = (sql) => { if (/dbstat/i.test(sql)) scans++; return prepare(sql); };
+    try {
+      purgeHistory(ws, () => NOW);
+    } finally {
+      ws.db.prepare = prepare;
+    }
+    assert.equal(scans, 0);
   } finally {
     ws.close();
   }

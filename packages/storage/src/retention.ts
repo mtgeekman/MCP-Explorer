@@ -14,6 +14,9 @@ import type { Workspace } from './workspace-db.js';
  * - The cap is measured in live bytes (dbstat: page size minus unused space in
  *   every page in use), not file size: SQLite keeps freed pages in the file,
  *   so a file-size cap would purge everything eligible and still read as over.
+ *   dbstat scans the whole database (98 ms for 230 MB encrypted, measured
+ *   2026-09-14), so it runs only when the constant-time upper bound -- pages in
+ *   use times page size -- is already over the cap.
  * - Nothing here runs on a timer (P2). The triggers are opening a workspace
  *   and finishing a call.
  */
@@ -21,8 +24,9 @@ import type { Workspace } from './workspace-db.js';
 export interface PurgeResult {
   callsDeleted: number;
   framesDeleted: number;
-  liveBytesBefore: number;
-  liveBytesAfter: number;
+  /** Pages in use times page size: an upper bound on live bytes, cheap to read. */
+  usedBytesBefore: number;
+  usedBytesAfter: number;
   /** True when still over the cap with nothing left that retention may delete. */
   overCapWithNothingToPurge: boolean;
 }
@@ -40,6 +44,12 @@ const DAY_MS = 86_400_000;
 // one row at a time is slow, and a large batch overshoots the cap.
 const SIZE_BATCH = 25;
 
+/** Pages in use (not on the freelist) times page size. Live bytes never exceed it. */
+export function usedBytes(db: Database): number {
+  return (db.prepare('SELECT (p.page_count - f.freelist_count) * s.page_size AS bytes FROM pragma_page_count() p, pragma_freelist_count() f, pragma_page_size() s').get() as { bytes: number }).bytes;
+}
+
+/** Bytes actually holding data. A full scan of the database: use usedBytes first. */
 export function liveBytes(db: Database): number {
   return (db.prepare('SELECT coalesce(sum(pgsize - unused), 0) AS bytes FROM dbstat').get() as { bytes: number }).bytes;
 }
@@ -68,7 +78,8 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
   const db = ws.db;
   const { retentionMaxBytes, retentionMaxAgeDays } = readSettings(ws);
   const cutoff = now() - retentionMaxAgeDays * DAY_MS;
-  const liveBytesBefore = liveBytes(db);
+  const usedBytesBefore = usedBytes(db);
+  const overCap = () => usedBytes(db) > retentionMaxBytes && liveBytes(db) > retentionMaxBytes;
   let callsDeleted = 0;
   let framesDeleted = 0;
 
@@ -78,7 +89,7 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
   })();
 
   let overCapWithNothingToPurge = false;
-  while (liveBytes(db) > retentionMaxBytes) {
+  while (overCap()) {
     // Oldest first across both kinds of history: whole calls by start time,
     // connection-level frames by their own time.
     const oldestCall = db.prepare("SELECT started_at AS at FROM call WHERE status <> 'in_progress' ORDER BY started_at, id LIMIT 1").get() as { at: number } | undefined;
@@ -96,7 +107,7 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
     })();
   }
 
-  return { callsDeleted, framesDeleted, liveBytesBefore, liveBytesAfter: liveBytes(db), overCapWithNothingToPurge };
+  return { callsDeleted, framesDeleted, usedBytesBefore, usedBytesAfter: usedBytes(db), overCapWithNothingToPurge };
 }
 
 /**

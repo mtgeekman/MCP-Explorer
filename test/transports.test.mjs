@@ -77,3 +77,56 @@ test('an HTTP transport still routes every frame through the P1 seam', async () 
   assert.ok(out.includes('server/discover'), 'the negotiation probe reached the logger');
   assert.ok(out.includes('tools/list'), 'ordinary traffic reached the logger');
 });
+
+// P1 cuts both ways: every frame reaches the log, and each frame reaches it
+// once. The SDK chains transport.onmessage -- ProbeWindow saves and restores
+// it, Protocol.connect() reads it and installs a handler that calls it -- so a
+// tap that hands its own wrapper back on read gets wrapped twice, and every
+// inbound frame is logged twice.
+for (const [name, connect] of [
+  ['stdio', (onFrame) => connectStdio({ command: process.execPath, args: [join(fixtures, 'modern-server.mjs')], onFrame })],
+  ['streamable-http', (onFrame) => connectHttp({ url: urls.http, onFrame })],
+  ['sse', (onFrame) => connectHttp({ url: urls.sse, kind: 'sse', onFrame })],
+]) {
+  test(`P1: over ${name}, every inbound frame is logged exactly once`, async () => {
+    const inbound = [];
+    const conn = await connect((d, f) => { if (d === 'in') inbound.push(f); });
+    try {
+      await captureSurface(conn.source);
+    } finally {
+      await conn.close();
+    }
+    assert.ok(inbound.length >= 5, `only ${inbound.length} inbound frames in a whole capture`);
+    const twice = inbound.filter((f, i) => inbound.indexOf(f) !== i);
+    assert.equal(twice.length, 0, `${twice.length} of ${inbound.length} inbound frames were logged more than once`);
+    const ids = inbound.filter((f) => f.id !== undefined).map((f) => JSON.stringify(f.id));
+    assert.equal(new Set(ids).size, ids.length, `a response id was logged more than once: ${ids.join(' ')}`);
+  });
+}
+
+// Review finding: the tap called the listener before the SDK's handler, so a
+// listener that threw -- a closed workspace database, a foreign-key failure --
+// made the transport drop the message and the request hang. Logging must never
+// cost the protocol a message, in either direction, and its failures must be
+// reported, not swallowed.
+for (const [name, connect] of [
+  ['stdio', (o) => connectStdio({ command: process.execPath, args: [join(fixtures, 'modern-server.mjs')], ...o })],
+  ['streamable-http', (o) => connectHttp({ url: urls.http, ...o })],
+]) {
+  test(`P1: over ${name}, a frame listener that throws costs the protocol nothing, and is reported`, async () => {
+    const failures = [];
+    const conn = await connect({
+      onFrame: (direction) => { if (direction === 'in' || direction === 'out') throw new Error(`log write failed (${direction})`); },
+      onFrameError: (err, direction, frame) => failures.push([direction, err.message, frame !== undefined]),
+    });
+    try {
+      const timeout = new Promise((_, reject) => { setTimeout(() => reject(new Error('capture never completed: a frame was lost to the listener')), 10_000).unref(); });
+      const surface = await Promise.race([captureSurface(conn.source), timeout]);
+      assert.equal(surface.tools.length, 2);
+    } finally {
+      await conn.close();
+    }
+    assert.ok(failures.some(([d]) => d === 'in') && failures.some(([d]) => d === 'out'), `failures not reported in both directions: ${JSON.stringify(failures)}`);
+    assert.ok(failures.every(([, message, hasFrame]) => /log write failed/.test(message) && hasFrame));
+  });
+}

@@ -25,3 +25,14 @@ export {
   renameInRegistry,
   registryLabel,
 } from './registry.js';
+export {
+  type Transport,
+  type ServerDefinition,
+  type ServerSummary,
+  InvalidServerDefinitionError,
+  SecretsRequireEncryptionError,
+  saveServer,
+  loadServer,
+  listServers,
+  deleteServer,
+} from './servers.js';

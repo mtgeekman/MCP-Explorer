@@ -28,6 +28,8 @@ export type Custody =
 /** An open workspace database, and the key it was opened with. */
 export interface Workspace {
   readonly db: Database;
+  /** False only for custody `none`. An unencrypted workspace never stores a secret (D31). */
+  readonly encrypted: boolean;
   /**
    * The recovery key for a keychain-custody workspace (also when opened with
    * its recovery key), null for other custodies. Encoded from the key held in
@@ -87,9 +89,10 @@ function keyMaterial(custody: Custody, keychainHex: string | null): Buffer | nul
   }
 }
 
-function workspace(db: Database, secrets: SecretStore, workspaceId: string, keyHex: string | null): Workspace {
+function workspace(db: Database, secrets: SecretStore, workspaceId: string, custody: Custody, keyHex: string | null): Workspace {
   return {
     db,
+    encrypted: custody.kind !== 'none',
     recoveryKey: keyHex === null ? null : encodeRecoveryKey(Buffer.from(keyHex, 'hex')),
     storeKeyInKeychain() {
       if (keyHex === null) throw new InvalidWorkspaceRequestError(`workspace ${workspaceId} has no keychain-held key`);
@@ -184,7 +187,7 @@ export function createWorkspaceDb(req: CreateWorkspaceRequest): Workspace {
     // a pragma. test/storage-migrations.test.mjs pins that default.
     migrate(db, req.path);
     db.prepare('INSERT INTO workspace_meta (id, name, created_at) VALUES (1, ?, ?)').run(req.name, (req.now ?? Date.now)());
-    return workspace(db, req.secrets, req.workspaceId, keychainHex);
+    return workspace(db, req.secrets, req.workspaceId, req.custody, keychainHex);
   } catch (err) {
     db?.close();
     rmSync(req.path, { force: true });
@@ -240,7 +243,7 @@ export function openWorkspaceDb(req: WorkspaceDbRequest): Workspace {
     // Opening is the user's action, so pending migrations run here, with the
     // pre-upgrade backup (D27). A newer schema is refused untouched.
     migrate(db, req.path);
-    return workspace(db, req.secrets, req.workspaceId, keychainHex);
+    return workspace(db, req.secrets, req.workspaceId, req.custody, keychainHex);
   } catch (err) {
     db.close();
     throw err;

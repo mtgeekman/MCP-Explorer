@@ -1,9 +1,12 @@
 // Phase 02 step 2: opening workspace databases (D4, D5, D22, D26).
 //
-// Against the REAL keychain, under a service name unique to this run, because
-// "a passphrase workspace is unreadable from the keychain alone" is a claim
-// about the keychain, not about a stand-in for it. A fake store appears only
-// where the point is to make the store fail on command.
+// Against an in-memory secret store (test/support/memory-store.mjs). What
+// these tests check -- which key opens which file, what is stored where -- does
+// not depend on which store holds the key, and the real store cannot be shared
+// by test files running in parallel (spec D28). "A passphrase workspace is
+// unreadable from the keychain alone" holds for any store: nothing is written
+// to it, and a key planted in it does not open the file. A keychain-custody
+// workspace against the real OS store is tested in test/keychain.test.mjs.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
@@ -13,14 +16,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
-  createWorkspaceDb, openWorkspaceDb, keychainStore, workspaceKeyAccount,
+  createWorkspaceDb, openWorkspaceDb, workspaceKeyAccount,
   WrongKeyError, KeyMissingError, SecretStoreUnavailableError, InvalidWorkspaceRequestError,
   SecretWriteUnconfirmedError, StorageError,
 } from '../packages/storage/dist/index.js';
+import { memoryStore } from './support/memory-store.mjs';
 
 const Sqlite = createRequire(import.meta.url)('better-sqlite3-multiple-ciphers');
 
-const secrets = keychainStore(`mcp-explorer-test-${randomUUID()}`);
+const secrets = memoryStore();
 const usedIds = [];
 const dir = mkdtempSync(join(tmpdir(), 'mcpx-ws-'));
 after(() => {

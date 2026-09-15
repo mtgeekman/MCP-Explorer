@@ -12,9 +12,10 @@ import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
   encodeRecoveryKey, decodeRecoveryKey, InvalidRecoveryKeyError, StorageError,
-  createWorkspaceDb, openWorkspaceDb, keychainStore, workspaceKeyAccount,
+  createWorkspaceDb, openWorkspaceDb, workspaceKeyAccount,
   WrongKeyError, KeyMissingError, InvalidWorkspaceRequestError,
 } from '../packages/storage/dist/index.js';
+import { memoryStore } from './support/memory-store.mjs';
 
 // --- encoding ---------------------------------------------------------------
 
@@ -113,7 +114,7 @@ test('recovery key: only a 32-byte key can be encoded', () => {
 
 // --- workspaces -------------------------------------------------------------
 
-const secrets = keychainStore(`mcp-explorer-test-${randomUUID()}`);
+const secrets = memoryStore();
 const usedIds = [];
 const dir = mkdtempSync(join(tmpdir(), 'mcpx-rec-'));
 after(() => {

@@ -88,7 +88,8 @@ test('keychain: Windows refuses a value longer than 1280 UTF-16 code units', {
 });
 
 test('keychain: accounts under one service are independent', () => {
-  // Workspace keys and server secrets will share the service name.
+  // Every workspace key shares the one app service name (spec D31 keeps server
+  // secrets out of the keychain), so accounts must not collide.
   const a = new Entry(service, 'account-a', PIN);
   const b = new Entry(service, 'account-b', PIN);
   try {
@@ -126,4 +127,43 @@ test('keychain: with no Secret Service, the pinned store refuses (D22)', {
   });
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /^REFUSED /, `expected a refusal, got: ${run.stdout}${run.stderr}`);
+});
+
+// --- workspaces against the real store ----------------------------------------
+//
+// The storage tests use an in-memory store (test/support/memory-store.mjs):
+// test files run in parallel, and Credential Manager loses updates under
+// concurrent writers. The one end-to-end check that a keychain-custody
+// workspace works against the real OS store lives here, in the only file that
+// writes the real store, so it never races another file.
+
+test('keychain: a keychain-custody workspace is created, reopened and restored through the real store', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { createWorkspaceDb, openWorkspaceDb, keychainStore, workspaceKeyAccount, KeyMissingError } = await import('../packages/storage/dist/index.js');
+  const store = keychainStore(service);
+  const dir = mkdtempSync(join(tmpdir(), 'mcpx-kcws-'));
+  const workspaceId = randomUUID();
+  const req = { path: join(dir, 'w.db'), workspaceId, name: 'real store', custody: { kind: 'keychain' }, secrets: store };
+  try {
+    const created = createWorkspaceDb(req);
+    created.db.exec("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('kept')");
+    const recoveryKey = created.recoveryKey;
+    created.close();
+
+    const reopened = openWorkspaceDb(req);
+    assert.equal(reopened.db.prepare('SELECT v FROM t').get().v, 'kept');
+    reopened.close();
+
+    store.delete(workspaceKeyAccount(workspaceId));
+    assert.throws(() => openWorkspaceDb(req), KeyMissingError);
+    const rescued = openWorkspaceDb({ ...req, custody: { kind: 'recovery', recoveryKey } });
+    rescued.storeKeyInKeychain();
+    rescued.close();
+    openWorkspaceDb(req).close();
+  } finally {
+    try { store.delete(workspaceKeyAccount(workspaceId)); } catch { /* the entry names this run's test service */ }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -10,15 +10,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  createWorkspaceDb, openWorkspaceDb, keychainStore, workspaceKeyAccount, migrate,
+  createWorkspaceDb, openWorkspaceDb, workspaceKeyAccount, migrate,
   MIGRATIONS, SCHEMA_VERSION, NewerSchemaError, MigrationFailedError,
 } from '../packages/storage/dist/index.js';
+import { memoryStore } from './support/memory-store.mjs';
 import { dumpSchema, rowCounts, seedEveryTable, tableNames } from './golden/golden-support.mjs';
 
 const Sqlite = createRequire(import.meta.url)('better-sqlite3-multiple-ciphers');
 const golden = fileURLToPath(new URL('./golden/', import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), 'mcpx-mig-'));
-const secrets = keychainStore(`mcp-explorer-test-${randomUUID()}`);
+const secrets = memoryStore();
 const keyed = [];
 after(() => {
   for (const id of keyed) { try { secrets.delete(workspaceKeyAccount(id)); } catch { /* the test run is over; a leftover entry names its test service */ } }

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
 import { InvalidWorkspaceRequestError, KeyMissingError, StorageError, WrongKeyError } from './errors.js';
 import { migrate } from './migrate.js';
+import { purgeHistory, type PurgeResult } from './retention.js';
 import { decodeRecoveryKey, encodeRecoveryKey } from './recovery.js';
 import type { SecretStore } from './secrets.js';
 import { constructDatabase, type Database } from './sqlite.js';
@@ -43,6 +44,8 @@ export interface Workspace {
    * every write (secrets.ts). Throws for a workspace with no keychain-held key.
    */
   storeKeyInKeychain(): void;
+  /** What retention removed when this workspace was opened (D24); null for a workspace just created. */
+  readonly purgedOnOpen: PurgeResult | null;
   close(): void;
 }
 
@@ -51,6 +54,8 @@ export interface WorkspaceDbRequest {
   workspaceId: string;
   custody: Custody;
   secrets: SecretStore;
+  /** Injectable for tests; defaults to Date.now. Dates the workspace at create, and is the clock retention measures age against at open. */
+  now?: () => number;
 }
 
 export function workspaceKeyAccount(workspaceId: string): string {
@@ -89,9 +94,10 @@ function keyMaterial(custody: Custody, keychainHex: string | null): Buffer | nul
   }
 }
 
-function workspace(db: Database, secrets: SecretStore, workspaceId: string, custody: Custody, keyHex: string | null): Workspace {
+function workspace(db: Database, secrets: SecretStore, workspaceId: string, custody: Custody, keyHex: string | null, purgedOnOpen: PurgeResult | null = null): Workspace {
   return {
     db,
+    purgedOnOpen,
     encrypted: custody.kind !== 'none',
     recoveryKey: keyHex === null ? null : encodeRecoveryKey(Buffer.from(keyHex, 'hex')),
     storeKeyInKeychain() {
@@ -138,8 +144,6 @@ function verifyReadable(db: Database, custody: Custody): void {
 export interface CreateWorkspaceRequest extends WorkspaceDbRequest {
   /** Stored in the workspace database for every custody (D29). */
   name: string;
-  /** Injectable for tests; defaults to Date.now. */
-  now?: () => number;
 }
 
 /**
@@ -243,7 +247,9 @@ export function openWorkspaceDb(req: WorkspaceDbRequest): Workspace {
     // Opening is the user's action, so pending migrations run here, with the
     // pre-upgrade backup (D27). A newer schema is refused untouched.
     migrate(db, req.path);
-    return workspace(db, req.secrets, req.workspaceId, req.custody, keychainHex);
+    const opened = workspace(db, req.secrets, req.workspaceId, req.custody, keychainHex);
+    // D24: opening is one of retention's two triggers.
+    return workspace(db, req.secrets, req.workspaceId, req.custody, keychainHex, purgeHistory(opened, req.now));
   } catch (err) {
     db.close();
     throw err;

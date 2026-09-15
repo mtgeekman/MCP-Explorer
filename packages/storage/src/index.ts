@@ -55,3 +55,13 @@ export {
   type SnapshotSummary,
   type Observation,
 } from './snapshots.js';
+export {
+  purgeHistory,
+  compact,
+  liveBytes,
+  readSettings,
+  updateSettings,
+  InvalidSettingsError,
+  type PurgeResult,
+  type WorkspaceSettings,
+} from './retention.js';

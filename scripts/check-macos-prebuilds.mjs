@@ -15,7 +15,9 @@ import { readdirSync, existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PLATFORM_PACKAGE = /-(darwin|linux|win32|freebsd|android|openbsd|sunos)-/;
+// The platform name follows a hyphen ('@napi-rs/keyring-darwin-arm64') or a
+// scope slash ('@esbuild/darwin-arm64'); both shapes are published.
+const PLATFORM_PACKAGE = /[-/](darwin|linux|win32|freebsd|android|openbsd|sunos)-/;
 // Apple Silicon and Intel both ship; a darwin-x64-only dependency is a closed
 // seam on every Mac sold since 2020.
 const DARWIN_ARCHES = ['darwin-x64', 'darwin-arm64'];
@@ -73,7 +75,7 @@ function checkPlatformPackages(dep, version, platformPackages, lock, checked, fa
   }
   const found = [];
   for (const arch of DARWIN_ARCHES) {
-    const name = platformPackages.find((n) => n.endsWith(`-${arch}`));
+    const name = platformPackages.find((n) => n.endsWith(`-${arch}`) || n.endsWith(`/${arch}`));
     if (!name) {
       failures.push(`${dep}@${version}: declares no ${arch} package — macOS seam is closed`);
       continue;

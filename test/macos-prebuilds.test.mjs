@@ -117,3 +117,23 @@ test('the real project passes, and checks both native dependencies', () => {
   assert.ok(names.includes('better-sqlite3-multiple-ciphers'), r.checked.join('\n'));
   assert.ok(names.includes('@napi-rs/keyring'), r.checked.join('\n'));
 });
+
+// Review finding: platform packages published as '@scope/darwin-arm64'
+// (esbuild's shape) were not recognised -- the pattern required a hyphen
+// before the platform -- so such a dependency was skipped and passed unchecked.
+const scoped = (version, arches) => ({ version, optional: Object.fromEntries(arches.map((a) => [`@esb/${a}`, version])) });
+
+test('a scoped per-platform module with no darwin package fails', () => {
+  const r = run({ deps: ['esb'], packages: { esb: scoped('0.25.0', ['linux-x64', 'win32-x64']) }, lock: {} });
+  assert.match(r.failures.join('\n'), /esb@0\.25\.0: declares no darwin-x64 package/);
+});
+
+test('a scoped per-platform module with both darwin packages resolved passes', () => {
+  const r = run({
+    deps: ['esb'],
+    packages: { esb: scoped('0.25.0', ['darwin-x64', 'darwin-arm64', 'linux-x64']) },
+    lock: { 'node_modules/@esb/darwin-x64': lockEntry('0.25.0'), 'node_modules/@esb/darwin-arm64': lockEntry('0.25.0') },
+  });
+  assert.deepEqual(r.failures, []);
+  assert.match(r.checked.join('\n'), /esb@0\.25\.0: darwin-x64, darwin-arm64/);
+});

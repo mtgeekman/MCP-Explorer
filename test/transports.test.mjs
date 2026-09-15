@@ -103,3 +103,30 @@ for (const [name, connect] of [
     assert.equal(new Set(ids).size, ids.length, `a response id was logged more than once: ${ids.join(' ')}`);
   });
 }
+
+// Review finding: the tap called the listener before the SDK's handler, so a
+// listener that threw -- a closed workspace database, a foreign-key failure --
+// made the transport drop the message and the request hang. Logging must never
+// cost the protocol a message, in either direction, and its failures must be
+// reported, not swallowed.
+for (const [name, connect] of [
+  ['stdio', (o) => connectStdio({ command: process.execPath, args: [join(fixtures, 'modern-server.mjs')], ...o })],
+  ['streamable-http', (o) => connectHttp({ url: urls.http, ...o })],
+]) {
+  test(`P1: over ${name}, a frame listener that throws costs the protocol nothing, and is reported`, async () => {
+    const failures = [];
+    const conn = await connect({
+      onFrame: (direction) => { if (direction === 'in' || direction === 'out') throw new Error(`log write failed (${direction})`); },
+      onFrameError: (err, direction, frame) => failures.push([direction, err.message, frame !== undefined]),
+    });
+    try {
+      const timeout = new Promise((_, reject) => { setTimeout(() => reject(new Error('capture never completed: a frame was lost to the listener')), 10_000).unref(); });
+      const surface = await Promise.race([captureSurface(conn.source), timeout]);
+      assert.equal(surface.tools.length, 2);
+    } finally {
+      await conn.close();
+    }
+    assert.ok(failures.some(([d]) => d === 'in') && failures.some(([d]) => d === 'out'), `failures not reported in both directions: ${JSON.stringify(failures)}`);
+    assert.ok(failures.every(([, message, hasFrame]) => /log write failed/.test(message) && hasFrame));
+  });
+}

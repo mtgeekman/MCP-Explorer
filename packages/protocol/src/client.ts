@@ -21,6 +21,16 @@ import type { Page, SurfaceSource } from './capture.js';
  */
 export type FrameDirection = 'out' | 'in';
 export type FrameListener = (direction: FrameDirection, frame: unknown) => void;
+/** Receives a FrameListener's own failure. The frame has already gone on to the SDK. */
+export type FrameErrorListener = (error: unknown, direction: FrameDirection, frame: unknown) => void;
+
+/**
+ * The default for an unhandled listener failure: a process warning, so a
+ * broken frame log is visible without taking the connection down with it.
+ */
+const warnFrameError: FrameErrorListener = (error, direction) => {
+  process.emitWarning(`the frame log failed to record an ${direction} frame: ${error instanceof Error ? error.message : String(error)}`, 'MCPExplorerFrameLogWarning');
+};
 
 export interface ConnectOptions {
   command: string;
@@ -30,6 +40,8 @@ export interface ConnectOptions {
   clientVersion?: string;
   /** P1: receives every JSON-RPC frame, negotiation included. */
   onFrame?: FrameListener;
+  /** Receives onFrame's failures. Defaults to a process warning. */
+  onFrameError?: FrameErrorListener;
   /** Era-probe timeout. See PROBE_TIMEOUT_MS for why the default is not the SDK's. */
   probeTimeoutMs?: number;
   /** Receives the child's stderr as it arrives. The stream is drained either way. */
@@ -98,8 +110,18 @@ function makeClient(
   });
 }
 
-function tap(inner: any, onFrame?: FrameListener): any {
-  if (!onFrame) return inner;
+function tap(inner: any, listener?: FrameListener, onFrameError: FrameErrorListener = warnFrameError): any {
+  if (!listener) return inner;
+  // A listener that throws must not cost the protocol the frame. Called before
+  // the SDK's handler, an exception here made the transport drop the message
+  // (the request then hung) or reject the send; it is reported instead.
+  const onFrame: FrameListener = (direction, frame) => {
+    try {
+      listener(direction, frame);
+    } catch (error) {
+      onFrameError(error, direction, frame);
+    }
+  };
   // What the SDK last assigned to onmessage, unwrapped. The SDK chains this
   // property: ProbeWindow saves and later restores it, and Protocol.connect()
   // reads it and installs a handler that calls what it read. Handing the SDK
@@ -193,6 +215,7 @@ export interface HttpConnectOptions {
   clientName?: string;
   clientVersion?: string;
   onFrame?: FrameListener;
+  onFrameError?: FrameErrorListener;
   probeTimeoutMs?: number;
 }
 
@@ -206,7 +229,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   );
   // No sibling-probe problem here: only the stdio transport spawns anything.
   // The tap is still required, or negotiation traffic bypasses P1's logger.
-  await client.connect(tap(new Transport(new URL(opts.url)), opts.onFrame));
+  await client.connect(tap(new Transport(new URL(opts.url)), opts.onFrame, opts.onFrameError));
   return describe(client);
 }
 
@@ -234,7 +257,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
       opts.onStderr?.(chunk);
       stderrTail.text = (stderrTail.text + chunk).slice(-STDERR_TAIL_BYTES);
     });
-    return tap(inner, opts.onFrame);
+    return tap(inner, opts.onFrame, opts.onFrameError);
   };
   const withStderr = (message: string) =>
     stderrTail.text ? `${message} | server stderr: ${stderrTail.text.trim()}` : message;

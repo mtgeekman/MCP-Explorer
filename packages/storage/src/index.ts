@@ -44,3 +44,14 @@ export {
   type CallStatus,
   type RoundOutcome,
 } from './history.js';
+export {
+  recordCapture,
+  loadSnapshot,
+  surfaceHistory,
+  listObservations,
+  diffSnapshots,
+  SnapshotNotFoundError,
+  type RecordedCapture,
+  type SnapshotSummary,
+  type Observation,
+} from './snapshots.js';

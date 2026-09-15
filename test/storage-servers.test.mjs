@@ -7,13 +7,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
-  createWorkspaceDb, openWorkspaceDb, keychainStore, workspaceKeyAccount, migrate, MIGRATIONS, SCHEMA_VERSION,
+  createWorkspaceDb, openWorkspaceDb, workspaceKeyAccount, migrate, MIGRATIONS, SCHEMA_VERSION,
   addToRegistry, saveServer, loadServer, listServers, deleteServer,
   InvalidServerDefinitionError, SecretsRequireEncryptionError,
 } from '../packages/storage/dist/index.js';
+import { memoryStore } from './support/memory-store.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'mcpx-srv-'));
-const secrets = keychainStore(`mcp-explorer-test-${randomUUID()}`);
+const secrets = memoryStore();
 const keyed = [];
 after(() => {
   for (const id of keyed) { try { secrets.delete(workspaceKeyAccount(id)); } catch { /* a leftover entry names its test service */ } }

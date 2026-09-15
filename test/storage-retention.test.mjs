@@ -293,6 +293,7 @@ test('age: a connection goes once it is past the threshold and nothing refers to
   try {
     const emptied = HistoryRecorder.open(ws, serverId, () => NOW - 100 * DAY);
     emptied.frame('out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    emptied.close();
     const stillUsed = HistoryRecorder.open(ws, serverId, () => NOW - 100 * DAY);
     const recentFrameClock = () => NOW - DAY;
     HistoryRecorder.open(ws, serverId, recentFrameClock);
@@ -312,6 +313,26 @@ test('age: a connection goes once it is past the threshold and nothing refers to
     assert.ok(left.includes(withCall.connectionId), 'an old connection with a recent call was purged');
     assert.equal(count(ws, 'surface_observation'), 1, 'the observation must survive its connection');
     assert.equal(ws.db.prepare('SELECT connection_id FROM surface_observation').get().connection_id, null);
+  } finally {
+    ws.close();
+  }
+});
+
+test('age: a connection still open is kept, even once its frames have aged out', () => {
+  // Re-review of the connection purge: an idle open connection whose frames
+  // all aged out had no references left and was deleted under its recorder,
+  // so its next frame failed to insert.
+  const { ws, serverId } = setup();
+  try {
+    let t = NOW - 2 * DAY;
+    const live = HistoryRecorder.open(ws, serverId, () => t);
+    live.frame('out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    updateSettings(ws, { retentionMaxAgeDays: 1 });
+    purgeHistory(ws, () => NOW);
+    assert.equal(ws.db.prepare('SELECT count(*) AS n FROM connection WHERE id = ?').get(live.connectionId).n, 1);
+    t = NOW;
+    live.frame('out', { jsonrpc: '2.0', id: 2, method: 'ping' });
+    assert.equal(ws.db.prepare('SELECT count(*) AS n FROM frame WHERE connection_id = ?').get(live.connectionId).n, 1);
   } finally {
     ws.close();
   }

@@ -59,6 +59,7 @@ export {
   purgeHistory,
   compact,
   liveBytes,
+  usedBytes,
   readSettings,
   updateSettings,
   InvalidSettingsError,

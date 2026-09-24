@@ -31,6 +31,9 @@ readFrames(process.stdin, (msg, line) => {
   // is the case this app exists for. console.log, not stdout.write, so there is
   // no escape sequence to get wrong.
   if (process.env.MALFORMED) console.log('this is not json');
+  // EXIT_ON=<method>: crash with exit code 3 on receiving that method, as a
+  // server with a bug in one handler would, after the session is up.
+  if (process.env.EXIT_ON && msg.method === process.env.EXIT_ON) process.exit(3);
   const response = handleModern(msg);
   if (response !== undefined) send(response);
 });

@@ -70,6 +70,15 @@ export function handleModern(msg) {
     }));
   }
 
+  // INITIALIZE_UNSUPPORTED: answer a legacy initialize with -32022 and the
+  // versions this server speaks, as a modern-only server can. The fixture's
+  // default stays the plain -32601 below; this mode exists so a client that
+  // pinned this server as legacy can be shown the server has moved on (D20,
+  // clarified 2026-09-24).
+  if (method === 'initialize' && process.env.INITIALIZE_UNSUPPORTED) {
+    return err(id, -32022, 'Unsupported protocol version', { supported: ['2026-07-28'], requested: params?.protocolVersion });
+  }
+
   if (method === 'prompts/list' && lies.includes('prompts')) return err(id, -32601, 'Method not found: prompts/list');
   if (method === 'resources/list' && lies.includes('resources')) return err(id, -32601, 'Method not found: resources/list');
 

@@ -18,7 +18,7 @@ import { LineSplitter, SseEventSplitter, type HttpDetails, type UnitListener, ty
  * and is invisible to P1's logger, and every stdio server is spawned twice.
  *
  * This depends on an SDK internal. It is a deliberate escape hatch, not an
- * accident, but it is unversioned -- test/seam.test.mjs is what detects an
+ * accident, but it is unversioned -- test/seam.test.mjs and test/wire-tap.test.mjs detect an
  * upgrade closing it. Never relax that assertion to make an upgrade pass.
  */
 export type FrameDirection = 'out' | 'in';
@@ -62,6 +62,11 @@ export interface ConnectOptions {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  cwd?: string;
+  /** `legacy` for a server pinned as legacy (D20): no probe. Default `auto`. */
+  era?: EraPreference;
+  /** Called once when a connected session ends, for any reason, with how the process exited. */
+  onClose?: (info: CloseInfo) => void;
   clientName?: string;
   clientVersion?: string;
   /**
@@ -165,6 +170,8 @@ export interface Connection {
   era: Era;
   revision: string;
   source: SurfaceSource;
+  /** stdio only: the process the app spawned, the root of its tree (D36). */
+  pid?: number;
   close(): Promise<void>;
 }
 
@@ -177,9 +184,9 @@ const CLIENT_CAPABILITIES = { sampling: {}, elicitation: {}, roots: {} };
  * The ONLY place a Client is constructed, so the P3 gate has a single site to
  * check and no second construction can quietly default to `mode: 'legacy'`.
  *
- * `negotiate: false` is the deliberate exception: after a probe has already
- * failed, the era is known to be legacy and asking for auto again would repeat
- * the probe that just cost the server its process (D20).
+ * `negotiate: false` is the deliberate exception: a server whose era is pinned
+ * as legacy gets `initialize` with no probe, since the probe may be what cost
+ * it its process before (D20).
  */
 function makeClient(
   Client: any,
@@ -298,6 +305,8 @@ export interface HttpConnectOptions {
   kind?: HttpTransportKind;
   clientName?: string;
   clientVersion?: string;
+  /** `legacy` for a server pinned as legacy (D20): no probe. Default `auto`. */
+  era?: EraPreference;
   /** Headers sent on every request. */
   headers?: Record<string, string>;
   /**
@@ -394,24 +403,154 @@ function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>, base:
   };
 }
 
+/**
+ * Which handshake to use. `auto` probes with `server/discover` and falls back
+ * to `initialize` per the spec's probe order; `legacy` sends `initialize`
+ * straight away, for a server whose era is pinned as legacy (D20).
+ */
+export type EraPreference = 'auto' | 'legacy';
+
+/** How a stdio server process ended. */
+export interface ProcessExit {
+  code: number | null;
+  signal: string | null;
+  /** Milliseconds from spawn to exit. */
+  lifetimeMs: number;
+}
+
+/** Why a connection could not be made, leading with what the process or server did (plan, phase 04). */
+export type ConnectFailure =
+  /** The process never ran: the command was not found or could not be executed. */
+  | { kind: 'not-started'; errorCode?: string }
+  /** The process started, then exited before the connection was made. */
+  | { kind: 'exited'; exit: ProcessExit; lastRequest?: string; diedOnProbe: boolean }
+  /** The server answered that it does not speak the revision asked for, and listed what it does. */
+  | { kind: 'unsupported-version'; supported: string[] }
+  /** An HTTP server answered with an error status. */
+  | { kind: 'http-status'; status: number }
+  /** The server answered, and the answer was not a usable handshake. */
+  | { kind: 'protocol'; code?: string | number };
+
+/**
+ * A connection that could not be made. `message` is the protocol-level error;
+ * `failure` says what the process or server did, which is what a user needs
+ * first. `stderr` is the tail of the server's stderr, stdio only.
+ */
+export class ConnectError extends Error {
+  constructor(message: string, readonly failure: ConnectFailure, readonly stderr = '', options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'ConnectError';
+  }
+}
+
+/** What a finished connection reports when it ends for any reason, including close(). */
+export interface CloseInfo {
+  /** stdio only: how the process ended, when it has. */
+  exit?: ProcessExit;
+}
+
+const errorCode = (e: unknown): unknown => (e as { code?: unknown } | null)?.code;
+const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** The versions a -32022 answer lists, or undefined when the error is not one. */
+function unsupportedVersions(e: unknown): string[] | undefined {
+  if (errorCode(e) !== -32022) return undefined;
+  const err = e as { supported?: unknown; data?: { supported?: unknown } };
+  const supported = err.supported ?? err.data?.supported;
+  return Array.isArray(supported) ? supported.filter((v): v is string => typeof v === 'string') : [];
+}
+
+/** An `app` unit: an event the app records beside the wire traffic (D34). */
+function appEvent(emit: UnitListener | undefined, event: Record<string, unknown>): void {
+  emit?.({ direction: 'local', kind: 'app', bytes: Buffer.from(JSON.stringify(event), 'utf8') });
+}
+
 export async function connectHttp(opts: HttpConnectOptions): Promise<Connection> {
   const mod: any = await import('@modelcontextprotocol/client');
   const Transport = opts.kind === 'sse' ? mod.SSEClientTransport : mod.StreamableHTTPClientTransport;
-  const client = makeClient(
-    mod.Client,
-    { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' },
-    { negotiate: true, probeTimeoutMs: opts.probeTimeoutMs },
-  );
+  const info = { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' };
   // No sibling-probe problem here: only the stdio transport spawns anything.
   // The taps are still required, or negotiation traffic bypasses P1's logger.
   const emit = unitSink(opts.onUnit, opts.onUnitError);
   const secretHeaders = opts.secretHeaders ?? {};
-  const transport = new Transport(new URL(opts.url), {
-    requestInit: { headers: { ...opts.headers, ...secretHeaders } },
-    ...(emit ? { fetch: loggingFetch(emit, Object.keys(secretHeaders)) } : {}),
-  });
-  await client.connect(tap(transport, opts.onFrame, opts.onFrameError));
+  // One logging fetch for every attempt, so exchange numbers keep counting.
+  const fetchOption = emit ? { fetch: loggingFetch(emit, Object.keys(secretHeaders)) } : {};
+
+  const attempt = async (negotiate: boolean) => {
+    const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs });
+    const transport = new Transport(new URL(opts.url), { requestInit: { headers: { ...opts.headers, ...secretHeaders } }, ...fetchOption });
+    try {
+      await client.connect(tap(transport, opts.onFrame, opts.onFrameError));
+      return client;
+    } catch (e) {
+      // An SSE transport holds its event stream open; a failed attempt must not leak it.
+      await client.close().catch(() => undefined);
+      throw e;
+    }
+  };
+
+  let client: any;
+  try {
+    if (opts.era === 'legacy') {
+      try {
+        client = await attempt(false);
+      } catch (e) {
+        // D20: re-probe on -32022. Nothing is spawned over HTTP, so this is
+        // automatic, unlike stdio (clarified 2026-09-24).
+        const supported = unsupportedVersions(e);
+        if (supported === undefined) throw e;
+        appEvent(emit, { event: 're-probe', reason: 'unsupported-version', supported });
+        client = await attempt(true);
+      }
+    } else {
+      try {
+        client = await attempt(true);
+      } catch (e) {
+        // The spec's probe order reads anything but a clean modern answer as
+        // legacy. The SDK does that itself for a JSON-RPC error; over HTTP it
+        // rejects instead on a timeout or a failed probe (a dropped
+        // connection, a 5xx), so the fallback is done here. Automatic: nothing
+        // is spawned (D20).
+        const code = errorCode(e);
+        if (code !== 'REQUEST_TIMEOUT' && code !== 'ERA_NEGOTIATION_FAILED') throw e;
+        appEvent(emit, { event: 'legacy-fallback', reason: messageOf(e) });
+        client = await attempt(false);
+      }
+    }
+  } catch (e) {
+    throw classifyHttp(e);
+  }
   return describe(client);
+}
+
+function classifyHttp(e: unknown): ConnectError {
+  if (e instanceof ConnectError) return e;
+  const supported = unsupportedVersions(e);
+  if (supported !== undefined) return new ConnectError(messageOf(e), { kind: 'unsupported-version', supported }, '', { cause: e });
+  const status = (e as { status?: unknown } | null)?.status;
+  if (typeof status === 'number') return new ConnectError(messageOf(e), { kind: 'http-status', status }, '', { cause: e });
+  const code = errorCode(e);
+  return new ConnectError(messageOf(e), { kind: 'protocol', ...(typeof code === 'string' || typeof code === 'number' ? { code } : {}) }, '', { cause: e });
+}
+
+/** What one spawned process did, watched from the transport that owns it. */
+interface ProcessWatch {
+  pid?: number;
+  spawnedAt?: number;
+  exit?: ProcessExit;
+  spawnError?: { code?: string; message: string };
+  /** The last line written to the server, kept to name the request it died on. */
+  lastLine?: string;
+}
+
+/** The method of the last request sent, read from its line only when a failure needs it. */
+function lastMethod(watch: ProcessWatch): string | undefined {
+  try {
+    const m = JSON.parse(watch.lastLine ?? '');
+    return typeof m?.method === 'string' ? m.method : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
@@ -419,10 +558,11 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
   const Base = StdioClientTransport as unknown as new (o: unknown) => any;
   const emit = unitSink(opts.onUnit, opts.onUnitError);
+  const watch: ProcessWatch = {};
 
   // The stdio half of the P1 seam (D34). Never define `_dispose` here: an own
   // `_dispose` on this prototype is exactly what makes the SDK spawn a sibling
-  // (see the comment at the top of this file); test/seam.test.mjs asserts it.
+  // (see the comment at the top of this file); test/wire-tap.test.mjs catches it.
   class SeamStdioTransport extends Base {
     constructor(o: unknown) {
       super(o);
@@ -433,18 +573,42 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
     }
 
     async start(): Promise<void> {
-      await super.start();
-      // The SDK writes each outgoing message with one stdin.write of its
-      // serialized line; recording at that call records exactly those bytes.
-      if (!emit) return;
+      try {
+        await super.start();
+      } catch (e) {
+        // POSIX: a command that cannot be executed fails the spawn itself.
+        watch.spawnError = { code: errorCode(e) as string | undefined, message: messageOf(e) };
+        appEvent(emit, { event: 'not-started', command: opts.command, code: watch.spawnError.code, message: watch.spawnError.message });
+        throw e;
+      }
+      const child = this._process;
+      watch.pid = child?.pid;
+      watch.spawnedAt = Date.now();
+      appEvent(emit, { event: 'spawned', pid: watch.pid, command: opts.command, args: opts.args ?? [] });
+      child?.on('exit', (code: number | null, signal: string | null) => {
+        watch.exit = { code, signal, lifetimeMs: Date.now() - (watch.spawnedAt ?? Date.now()) };
+        appEvent(emit, { event: 'exited', pid: watch.pid, ...watch.exit });
+      });
+      // Windows: the SDK spawns through cross-spawn, which runs an unresolved
+      // command through cmd.exe, so the spawn succeeds and "not found" arrives
+      // later as an ENOENT error in place of the exit.
+      child?.on('error', (e: NodeJS.ErrnoException) => {
+        if (e.code !== 'ENOENT') return;
+        watch.spawnError = { code: e.code, message: e.message };
+        appEvent(emit, { event: 'not-started', command: opts.command, code: e.code, message: e.message });
+      });
       // A server that exits on its own never makes the SDK clear its buffer,
       // so a last line without a newline is recorded when stdout ends.
-      this._process?.stdout?.on('end', () => (this._readBuffer as LoggingReadBuffer).flushTail());
-      const stdin = this._process?.stdin;
+      if (emit) child?.stdout?.on('end', () => (this._readBuffer as LoggingReadBuffer).flushTail());
+      // The SDK writes each outgoing message with one stdin.write of its
+      // serialized line; recording at that call records exactly those bytes.
+      const stdin = child?.stdin;
       if (!stdin) return;
       const write = stdin.write.bind(stdin);
       stdin.write = (chunk: string | Uint8Array, ...rest: unknown[]) => {
-        emit({ direction: 'out', kind: 'wire', bytes: typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk });
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+        watch.lastLine = asBuffer(bytes).toString('utf8');
+        emit?.({ direction: 'out', kind: 'wire', bytes });
         return (write as (...a: unknown[]) => boolean)(chunk, ...rest);
       };
     }
@@ -454,6 +618,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
     command: opts.command,
     args: opts.args ?? [],
     env: opts.env ?? (process.env as Record<string, string>),
+    ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
     stderr: 'pipe' as const,
   };
 
@@ -464,48 +629,49 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   // and decoding first would replace invalid UTF-8. The text view decodes with
   // a streaming decoder, so a character split across chunks survives.
   const stderrTail = { text: '' };
-  const makeTransport = () => {
-    const inner = new SeamStdioTransport(transportOptions);
-    const lines = new LineSplitter();
-    const text = new StringDecoder('utf8');
-    const stderrLine = (bytes: Uint8Array) => emit?.({ direction: 'in', kind: 'stderr', bytes });
-    inner.stderr?.on('data', (chunk: Buffer) => {
-      for (const line of lines.push(chunk)) stderrLine(line);
-      const decoded = text.write(chunk);
-      opts.onStderr?.(decoded);
-      stderrTail.text = (stderrTail.text + decoded).slice(-STDERR_TAIL_BYTES);
-    });
-    inner.stderr?.on('end', () => {
-      const rest = lines.flush();
-      if (rest) stderrLine(rest);
-    });
-    return tap(inner, opts.onFrame, opts.onFrameError);
-  };
-  const withStderr = (message: string) =>
-    stderrTail.text ? `${message} | server stderr: ${stderrTail.text.trim()}` : message;
-  const info = { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' };
+  const inner = new SeamStdioTransport(transportOptions);
+  const lines = new LineSplitter();
+  const text = new StringDecoder('utf8');
+  const stderrLine = (bytes: Uint8Array) => emit?.({ direction: 'in', kind: 'stderr', bytes });
+  inner.stderr?.on('data', (chunk: Buffer) => {
+    for (const line of lines.push(chunk)) stderrLine(line);
+    const decoded = text.write(chunk);
+    opts.onStderr?.(decoded);
+    stderrTail.text = (stderrTail.text + decoded).slice(-STDERR_TAIL_BYTES);
+  });
+  inner.stderr?.on('end', () => {
+    const rest = lines.flush();
+    if (rest) stderrLine(rest);
+  });
 
-  let client = makeClient(Client, info, { negotiate: true, probeTimeoutMs: opts.probeTimeoutMs });
+  const era = opts.era ?? 'auto';
+  const client = makeClient(Client, { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' }, { negotiate: era === 'auto', probeTimeoutMs: opts.probeTimeoutMs });
 
   try {
-    await client.connect(makeTransport());
-  } catch (e: unknown) {
-    // D20: probing in place costs the server's one process life when it is one
-    // of the servers that exits on a pre-initialize request. Anything that is
-    // not a clean modern answer means legacy, which is what the spec's probe
-    // order already mandates -- so pin and reconnect rather than fail.
-    const message = e instanceof Error ? e.message : String(e);
-    if (!/negotiation failed/i.test(message)) throw new Error(withStderr(message), { cause: e });
-    client = makeClient(Client, info, { negotiate: false });
-    try {
-      await client.connect(makeTransport());
-    } catch (retry: unknown) {
-      // Both attempts failed. The protocol message is identical for a command
-      // that does not exist and a server that died mid-negotiation, so the
-      // child's own output is what distinguishes them.
-      throw new Error(withStderr(retry instanceof Error ? retry.message : String(retry)), { cause: retry });
-    }
+    await client.connect(tap(inner, opts.onFrame, opts.onFrameError));
+  } catch (e) {
+    const failure = classifyStdio(e, watch);
+    // A server that answered is still running. End it here; the caller's
+    // process-tree kill (D36) is the backstop for one that ignores this.
+    if (failure.kind !== 'not-started' && failure.kind !== 'exited') await inner.close().catch(() => undefined);
+    // D20 (revised 2026-09-24): no second spawn here. A server that died on
+    // the probe, or answered -32022 to a pinned legacy initialize, is
+    // reported; starting it again is the user's decision.
+    throw new ConnectError(messageOf(e), failure, stderrTail.text, { cause: e });
   }
 
-  return describe(client);
+  client.onclose = () => opts.onClose?.({ exit: watch.exit });
+  return { ...(await describe(client)), pid: watch.pid };
+}
+
+function classifyStdio(e: unknown, watch: ProcessWatch): ConnectFailure {
+  if (watch.spawnError) return { kind: 'not-started', errorCode: watch.spawnError.code };
+  if (watch.exit) {
+    const lastRequest = lastMethod(watch);
+    return { kind: 'exited', exit: watch.exit, ...(lastRequest ? { lastRequest } : {}), diedOnProbe: lastRequest === 'server/discover' };
+  }
+  const supported = unsupportedVersions(e);
+  if (supported !== undefined) return { kind: 'unsupported-version', supported };
+  const code = errorCode(e);
+  return { kind: 'protocol', ...(typeof code === 'string' || typeof code === 'number' ? { code } : {}) };
 }

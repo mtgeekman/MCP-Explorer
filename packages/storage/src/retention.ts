@@ -3,13 +3,14 @@ import type { Database } from './sqlite.js';
 import type { Workspace } from './workspace-db.js';
 
 /**
- * Retention (D24): a per-workspace age threshold and size cap over calls and
- * frames. Snapshots and observations are never purged.
+ * Retention (D24): a per-workspace age threshold and size cap over calls,
+ * wire units and frames. Snapshots and observations are never purged.
  *
  * - The unit of deletion is the whole call: its rounds and frames go with it
  *   (foreign-key cascade), because a partly purged call reads as a
- *   conversation with holes. Connection-level frames (no call) go by age and
- *   size on their own.
+ *   conversation with holes. Connection-level wire units (no call) go by age
+ *   and size on their own, taking their frames with them; so do frames
+ *   written before schema 3, which have no unit.
  * - A call still in progress is never purged, however old.
  * - The cap is measured in live bytes (dbstat: page size minus unused space in
  *   every page in use), not file size: SQLite keeps freed pages in the file,
@@ -25,7 +26,10 @@ import type { Workspace } from './workspace-db.js';
 
 export interface PurgeResult {
   callsDeleted: number;
+  /** Frames deleted directly: those written before schema 3, which have no unit. Later frames go with their unit or call. */
   framesDeleted: number;
+  /** Connection-level wire units (D34). A call's units go with the call. */
+  unitsDeleted: number;
   connectionsDeleted: number;
   /** Pages in use times page size: an upper bound on live bytes, cheap to read. */
   usedBytesBefore: number;
@@ -85,11 +89,13 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
   const overCap = () => usedBytes(db) > retentionMaxBytes && liveBytes(db) > retentionMaxBytes;
   let callsDeleted = 0;
   let framesDeleted = 0;
+  let unitsDeleted = 0;
   let connectionsDeleted = 0;
 
   db.transaction(() => {
     callsDeleted += db.prepare("DELETE FROM call WHERE status <> 'in_progress' AND started_at < ?").run(cutoff).changes;
-    framesDeleted += db.prepare('DELETE FROM frame WHERE call_id IS NULL AND at < ?').run(cutoff).changes;
+    unitsDeleted += db.prepare('DELETE FROM wire_unit WHERE call_id IS NULL AND at < ?').run(cutoff).changes;
+    framesDeleted += db.prepare('DELETE FROM frame WHERE call_id IS NULL AND unit_id IS NULL AND at < ?').run(cutoff).changes;
     // A connection row outlives its history otherwise: one per connect,
     // forever. It goes once it was closed before the threshold and no frame or
     // call refers to it; an observation that did loses the link (ON DELETE SET
@@ -97,6 +103,7 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
     // frame aged out: its recorder is still writing to it.
     connectionsDeleted += db.prepare(`
       DELETE FROM connection WHERE closed_at IS NOT NULL AND closed_at < ?
+        AND NOT EXISTS (SELECT 1 FROM wire_unit WHERE wire_unit.connection_id = connection.id)
         AND NOT EXISTS (SELECT 1 FROM frame WHERE frame.connection_id = connection.id)
         AND NOT EXISTS (SELECT 1 FROM call WHERE call.connection_id = connection.id)
     `).run(cutoff).changes;
@@ -104,24 +111,29 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
 
   let overCapWithNothingToPurge = false;
   while (overCap()) {
-    // Oldest first across both kinds of history: whole calls by start time,
-    // connection-level frames by their own time.
+    // Oldest first across every kind of history: whole calls by start time,
+    // connection-level units and frames by their own time.
     const oldestCall = db.prepare("SELECT started_at AS at FROM call WHERE status <> 'in_progress' ORDER BY started_at, id LIMIT 1").get() as { at: number } | undefined;
-    const oldestFrame = db.prepare('SELECT at FROM frame WHERE call_id IS NULL ORDER BY at, id LIMIT 1').get() as { at: number } | undefined;
-    if (!oldestCall && !oldestFrame) {
+    const oldestUnit = db.prepare('SELECT at FROM wire_unit WHERE call_id IS NULL ORDER BY at, id LIMIT 1').get() as { at: number } | undefined;
+    // Frames written before schema 3 have no unit; later ones go with theirs.
+    const oldestFrame = db.prepare('SELECT at FROM frame WHERE call_id IS NULL AND unit_id IS NULL ORDER BY at, id LIMIT 1').get() as { at: number } | undefined;
+    const oldestLoose = [oldestUnit, oldestFrame].filter((r): r is { at: number } => r !== undefined).sort((a, b) => a.at - b.at)[0];
+    if (!oldestCall && !oldestLoose) {
       overCapWithNothingToPurge = true;
       break;
     }
     db.transaction(() => {
-      if (oldestCall && (!oldestFrame || oldestCall.at <= oldestFrame.at)) {
+      if (oldestCall && (!oldestLoose || oldestCall.at <= oldestLoose.at)) {
         callsDeleted += db.prepare(`DELETE FROM call WHERE id IN (SELECT id FROM call WHERE status <> 'in_progress' ORDER BY started_at, id LIMIT ${SIZE_BATCH})`).run().changes;
+      } else if (oldestLoose === oldestUnit) {
+        unitsDeleted += db.prepare(`DELETE FROM wire_unit WHERE id IN (SELECT id FROM wire_unit WHERE call_id IS NULL ORDER BY at, id LIMIT ${SIZE_BATCH})`).run().changes;
       } else {
-        framesDeleted += db.prepare(`DELETE FROM frame WHERE id IN (SELECT id FROM frame WHERE call_id IS NULL ORDER BY at, id LIMIT ${SIZE_BATCH * 20})`).run().changes;
+        framesDeleted += db.prepare(`DELETE FROM frame WHERE id IN (SELECT id FROM frame WHERE call_id IS NULL AND unit_id IS NULL ORDER BY at, id LIMIT ${SIZE_BATCH * 20})`).run().changes;
       }
     })();
   }
 
-  return { callsDeleted, framesDeleted, connectionsDeleted, usedBytesBefore, usedBytesAfter: usedBytes(db), overCapWithNothingToPurge };
+  return { callsDeleted, framesDeleted, unitsDeleted, connectionsDeleted, usedBytesBefore, usedBytesAfter: usedBytes(db), overCapWithNothingToPurge };
 }
 
 /**

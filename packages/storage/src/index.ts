@@ -43,6 +43,7 @@ export {
   type CallKind,
   type CallStatus,
   type RoundOutcome,
+  type RawUnit,
 } from './history.js';
 export {
   recordCapture,

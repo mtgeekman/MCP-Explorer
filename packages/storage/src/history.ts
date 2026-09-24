@@ -35,6 +35,34 @@ export interface RoundOutcome {
 }
 
 interface Binding { callId: number; seq: number; method: string }
+
+/**
+ * One piece of what crossed the wire or the process boundary, as the transport
+ * tap saw it (D34). `wire` is protocol traffic: a stdio line with its line
+ * ending, an HTTP body, an SSE event. `stderr` is a line the server wrote to
+ * stderr; `app` is an event the app itself records, such as a spawn or an exit.
+ */
+export interface RawUnit {
+  direction: 'out' | 'in' | 'local';
+  kind: 'wire' | 'stderr' | 'app';
+  bytes: Uint8Array;
+  /** HTTP method, URL, status, content type. The tap has already replaced secret header values (D35). */
+  http?: Record<string, unknown>;
+}
+
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+
+/** The JSON-RPC messages a wire unit carries: one, a batch's members, or none when it is not JSON-RPC. */
+function messagesIn(bytes: Uint8Array): JsonRpc[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(utf8.decode(bytes));
+  } catch {
+    return [];
+  }
+  const members = Array.isArray(parsed) ? parsed : [parsed];
+  return members.filter((m): m is JsonRpc => typeof m === 'object' && m !== null && !Array.isArray(m) && (m as { jsonrpc?: unknown }).jsonrpc === '2.0');
+}
 interface JsonRpc { id?: string | number | null; method?: string; params?: { name?: unknown; uri?: unknown } }
 
 const targetOf = (method: string, params: JsonRpc['params']): string | undefined =>
@@ -76,14 +104,44 @@ export class HistoryRecorder {
   }
 
   /**
-   * P1: every frame, in both directions. Shaped to be the transport tap's
-   * FrameListener. A batch is recorded as its members.
+   * P1 and D34: every wire unit, in both directions, as its exact bytes. A
+   * `wire` unit is parsed here only to index it: each JSON-RPC message it
+   * carries becomes a frame row with its id, method and call binding, and a
+   * unit that does not parse (an HTML page, a banner line) is kept with no
+   * frames. Nothing here constructs a message.
    */
-  frame = (direction: 'out' | 'in', frame: unknown): void => {
-    for (const message of Array.isArray(frame) ? frame : [frame]) this.recordOne(direction, message as JsonRpc);
+  unit = (u: RawUnit): void => {
+    const messages = u.kind === 'wire' ? messagesIn(u.bytes) : [];
+    const at = this.now();
+    const indexed = messages.map((msg) => ({ msg, ...this.classify(u.direction as 'out' | 'in', msg) }));
+    const withholding = u.kind === 'wire' && u.bytes.length > 0 && this.withholding();
+    // D30: a unit carrying a withheld result is withheld whole; its frames
+    // still say what each message was. Under the opt-out a unit coming in that
+    // is not JSON-RPC at all is withheld too: nothing here can tell it is not
+    // a result.
+    const withheld = withholding && (indexed.some((f) => f.resultWithheld) || (u.direction === 'in' && messages.length === 0));
+    const callIds = new Set(indexed.map((f) => f.binding?.callId ?? null));
+    const unitCall = indexed.length > 0 && callIds.size === 1 && !callIds.has(null) ? [...callIds][0] : null;
+
+    this.ws.db.transaction(() => {
+      const unitId = this.ws.db.prepare(`
+        INSERT INTO wire_unit (connection_id, call_id, direction, kind, at, bytes, byte_length, withheld, http_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(this.connectionId, unitCall, u.direction, u.kind, at, withheld ? null : Buffer.from(u.bytes), u.bytes.length,
+        withheld ? 1 : 0, u.http === undefined ? null : JSON.stringify(u.http)).lastInsertRowid;
+      const insertFrame = this.ws.db.prepare(`
+        INSERT INTO frame (connection_id, unit_id, call_id, round_seq, direction, at, jsonrpc_id, method, result_withheld)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const f of indexed) {
+        insertFrame.run(this.connectionId, unitId, f.binding?.callId ?? null, f.binding?.seq ?? null, u.direction, at, f.id, f.method,
+          withheld && f.resultWithheld ? 1 : 0);
+      }
+    })();
   };
 
-  private recordOne(direction: 'out' | 'in', msg: JsonRpc): void {
+  /** Pairs one message with what it answers or is bound to. Updates the pairing state. */
+  private classify(direction: 'out' | 'in', msg: JsonRpc): { id: string | null; method: string | null; binding?: Binding; resultWithheld: boolean } {
     const id = idText(msg.id);
     const isRequest = typeof msg.method === 'string' && id !== null;
     const isResponse = typeof msg.method !== 'string' && id !== null;
@@ -107,16 +165,11 @@ export class HistoryRecorder {
       this.receivedRequests.delete(id!);
     }
 
-    // D30: a response to a result method is the result. Its body is withheld
-    // under the opt-out; the row still says when it came and what it answered.
-    // A response to a request this recorder never saw is withheld too: its
-    // body may be a result, and nothing here can tell.
-    const withheld = isResponse && direction === 'in' && (method === null || RESULT_METHODS.includes(method)) && this.withholding();
-    this.ws.db.prepare(`
-      INSERT INTO frame (connection_id, call_id, round_seq, direction, at, jsonrpc_id, method, message_json, result_withheld)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(this.connectionId, binding?.callId ?? null, binding?.seq ?? null, direction, this.now(), id, method,
-      withheld ? null : JSON.stringify(msg), withheld ? 1 : 0);
+    // D30: a response to a result method is the result. A response to a
+    // request this recorder never saw counts too: its body may be a result,
+    // and nothing here can tell.
+    const resultWithheld = isResponse && direction === 'in' && (method === null || RESULT_METHODS.includes(method));
+    return { id, method, binding, resultWithheld };
   }
 
   private takePending(method: string, target: string | undefined): Binding | undefined {

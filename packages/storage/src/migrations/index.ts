@@ -1,5 +1,6 @@
 import { sql as initial } from './0001-initial.js';
 import { sql as serverSecrets } from './0002-server-secrets.js';
+import { sql as wireUnits } from './0003-wire-units.js';
 
 export interface Migration {
   /** The `user_version` a database has after this migration. Contiguous from 1. */
@@ -16,6 +17,7 @@ export interface Migration {
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: 'initial', sql: initial },
   { version: 2, name: 'server-secrets', sql: serverSecrets },
+  { version: 3, name: 'wire-units', sql: wireUnits },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

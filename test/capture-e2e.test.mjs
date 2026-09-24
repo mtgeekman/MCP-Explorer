@@ -8,11 +8,12 @@ import { connectStdio, captureSurface, hashSurface, diffSurfaces, surfaceChangeC
 
 const fixtures = fileURLToPath(new URL('../scripts/fixture/', import.meta.url));
 
-async function capture(server, env = {}) {
+async function capture(server, env = {}, era = 'auto') {
   const conn = await connectStdio({
     command: process.execPath,
     args: [join(fixtures, server)],
     env: { ...process.env, ...env },
+    era,
   });
   try {
     return { surface: await captureSurface(conn.source), era: conn.era, revision: conn.revision };
@@ -50,8 +51,18 @@ test('the legacy fixture is reached as the legacy era', async () => {
   assert.equal(revision, '2025-06-18');
 });
 
-test('a server that dies on the probe is still captured, via the fallback', async () => {
-  const { surface, era } = await capture('legacy-server.mjs', { HOSTILE_PREINIT: '1' });
+test('a server that dies on the probe is reported, not restarted, and connects once pinned legacy (D20)', async () => {
+  // D20 revised 2026-09-24: no automatic second spawn. The failure says the
+  // process died on server/discover; starting it again is the user's call.
+  await assert.rejects(capture('legacy-server.mjs', { HOSTILE_PREINIT: '1' }), (e) => {
+    assert.equal(e.name, 'ConnectError');
+    assert.equal(e.failure.kind, 'exited');
+    assert.equal(e.failure.diedOnProbe, true);
+    assert.equal(e.failure.lastRequest, 'server/discover');
+    assert.equal(e.failure.exit.code, 1);
+    return true;
+  });
+  const { surface, era } = await capture('legacy-server.mjs', { HOSTILE_PREINIT: '1' }, 'legacy');
   assert.equal(era, 'legacy');
   assert.equal(surface.tools.length, 1);
   assert.equal(surface.tools[0].name, 'echo');

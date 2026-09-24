@@ -13,6 +13,11 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { handleModern } from './modern-handler.mjs';
+import { handleLegacy, DIE, SILENT } from './legacy-handler.mjs';
+
+// LEGACY: serve the legacy-era handler. HTTP+SSE is itself the transport of
+// the legacy revisions, so this is the pairing real servers deployed.
+const handle = process.env.LEGACY ? handleLegacy : handleModern;
 
 const streams = new Map();
 
@@ -54,8 +59,10 @@ const server = createServer((req, res) => {
       res.writeHead(202);
       res.end();
       for (const frame of Array.isArray(msg) ? msg : [msg]) {
-        const response = handleModern(frame);
-        if (response !== undefined) stream.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+        const response = handle(frame);
+        if (response === DIE) return stream.destroy();
+        if (response === SILENT || response === undefined) continue;
+        stream.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
       }
     });
     return;

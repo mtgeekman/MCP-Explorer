@@ -11,9 +11,14 @@
 //                of a dead server would.
 //   WIRE_LOG     append every response body written, as hex, one per line.
 //   HEADER_LOG   append the Authorization header each request carried.
+//   LEGACY       serve the legacy-era handler instead of the modern one; its
+//                hostile modes die by dropping the connection, or hang.
 import { createServer } from 'node:http';
 import { appendFileSync } from 'node:fs';
 import { handleModern } from './modern-handler.mjs';
+import { handleLegacy, DIE, SILENT } from './legacy-handler.mjs';
+
+const handle = process.env.LEGACY ? handleLegacy : handleModern;
 
 const endpoint = '/mcp';
 
@@ -49,7 +54,10 @@ const server = createServer((req, res) => {
     }
 
     const frames = Array.isArray(msg) ? msg : [msg];
-    const responses = frames.map(handleModern).filter((r) => r !== undefined);
+    const results = frames.map(handle);
+    if (results.includes(DIE)) return req.socket.destroy();
+    if (results.includes(SILENT)) return;
+    const responses = results.filter((r) => r !== undefined);
 
     // A batch of notifications warrants no body at all.
     if (responses.length === 0) {

@@ -64,7 +64,9 @@ export function handleModern(msg) {
       resultType: 'complete',
       supportedVersions: ['2026-07-28'],
       capabilities: { tools: {}, prompts: {}, resources: {} },
-      instructions: 'Phase 01 fixture. Modern era.',
+      // BIG_INSTRUCTIONS=<bytes>: instructions that long, so the handshake
+      // reply is one line of several megabytes (the raw viewer's case, 4.2B).
+      instructions: process.env.BIG_INSTRUCTIONS ? `Phase 01 fixture. ${'x'.repeat(Number(process.env.BIG_INSTRUCTIONS))} end.` : 'Phase 01 fixture. Modern era.',
       ...serverMeta(),
       ...volatile(),
     }));

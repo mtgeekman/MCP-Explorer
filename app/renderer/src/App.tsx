@@ -2,7 +2,7 @@
 // the left, the selected server in the main area. First run is workspace
 // first (board 2C, spec D3 revised 2026-09-24).
 import { useCallback, useEffect, useState } from 'react';
-import type { OpenedWorkspace, ServerRow, WorkspaceListing, WorkspaceNotice } from '../../../packages/backend/dist/index.js';
+import type { LogUnit, OpenedWorkspace, ServerRow, WorkspaceListing, WorkspaceNotice } from '../../../packages/backend/dist/index.js';
 import type { BackendClient } from './lib/client';
 import { CreateWorkspace } from './workspace/CreateWorkspace';
 import { WorkspacePicker } from './workspace/WorkspacePicker';
@@ -11,6 +11,8 @@ import { ServerList } from './servers/ServerList';
 import { ServerDetail } from './servers/ServerDetail';
 import { ServerEditor } from './servers/ServerEditor';
 import { Notices } from './Notices';
+import { WireLog } from './log/WireLog';
+import { ReadablePane } from './log/ReadablePane';
 
 type Main = { kind: 'server'; id: string } | { kind: 'add' } | { kind: 'edit'; id: string } | { kind: 'none' };
 
@@ -22,6 +24,13 @@ export function App({ client }: { client: BackendClient }) {
   const [notices, setNotices] = useState<WorkspaceNotice[]>([]);
   const [backendDown, setBackendDown] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
+  const [selectedUnit, setSelectedUnit] = useState<LogUnit | null>(null);
+  const [poppedOut, setPoppedOut] = useState(false);
+
+  const selectUnit = useCallback((u: LogUnit | null) => {
+    setSelectedUnit(u);
+    window.mcpxShell?.selectReadable(u ? { id: u.id, reserialized: Boolean(u.reserialized) } : null);
+  }, []);
 
   const refreshWorkspaces = useCallback(async () => {
     setWorkspaces(await client.request('workspaces.list', {}));
@@ -43,6 +52,7 @@ export function App({ client }: { client: BackendClient }) {
         setServers((rows) => rows.map((r) => (r.id === serverId ? { ...r, state } : r)));
       }
     });
+    window.mcpxShell?.onReadableClosed(() => setPoppedOut(false));
     window.mcpxShell?.onBackendExit((code) => {
       client.failPending('the backend process stopped');
       setBackendDown(code);
@@ -54,7 +64,8 @@ export function App({ client }: { client: BackendClient }) {
     if (workspace) void refreshServers();
     else setServers([]);
     setMain({ kind: 'none' });
-  }, [workspace, refreshServers]);
+    selectUnit(null);
+  }, [workspace, refreshServers, selectUnit]);
 
   const opened = async (w: OpenedWorkspace) => {
     setCreating(false);
@@ -92,7 +103,8 @@ export function App({ client }: { client: BackendClient }) {
       </header>
       <Notices notices={notices} onDismiss={(i) => setNotices((n) => n.filter((_, j) => j !== i))} />
       <div className="app-body">
-        <ServerList servers={servers} selectedId={selected?.id} onSelect={(id) => setMain({ kind: 'server', id })} onAdd={() => setMain({ kind: 'add' })} />
+        <ServerList servers={servers} selectedId={selected?.id} onSelect={(id) => { if (id !== selected?.id) selectUnit(null); setMain({ kind: 'server', id }); }} onAdd={() => setMain({ kind: 'add' })} />
+        <div className="app-column">
         <main className="app-main">
           {main.kind === 'none' && (
             <div className="empty">{servers.length ? 'Choose a server.' : 'No servers yet. Add one to connect to it.'}</div>
@@ -114,6 +126,11 @@ export function App({ client }: { client: BackendClient }) {
             />
           )}
         </main>
+        {main.kind === 'server' && selected && (
+          <WireLog key={selected.id} client={client} serverId={selected.id} selected={selectedUnit} onSelect={selectUnit} />
+        )}
+        </div>
+        <ReadablePane unit={selectedUnit} poppedOut={poppedOut} onPopOut={() => { setPoppedOut(true); window.mcpxShell?.popOutReadable(); }} />
       </div>
     </div>
   );

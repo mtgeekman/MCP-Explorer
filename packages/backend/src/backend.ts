@@ -6,10 +6,10 @@ import {
   deleteServer, listServers, loadServer, readDetectedEra, saveServer,
   type ServerDefinition, type SecretStore,
 } from '../../storage/dist/index.js';
-import type { HttpDetails, WireUnit } from '../../protocol/dist/index.js';
 import { ConnectionManager } from './connections.js';
 import { WorkspaceManager, type OpenWorkspace } from './workspaces.js';
-import type { ErrorReply, Events, LogCursor, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow } from './api.js';
+import { logPage, logUnit } from './log.js';
+import type { ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow } from './api.js';
 
 export interface BackendOptions {
   dataDir: string;
@@ -72,7 +72,8 @@ export class Backend {
       'connections.startAgain': ({ serverId }) => this.conns().startAgain(serverId),
       'connections.redetect': ({ serverId }) => this.conns().redetect(serverId),
       'connections.disconnect': ({ serverId }) => this.conns().disconnect(serverId),
-      'log.units': ({ serverId, before, limit }) => this.logPage(serverId, before, limit ?? DEFAULT_PAGE),
+      'log.units': ({ serverId, before, limit }) => logPage(this.ws().db, serverId, before, limit ?? DEFAULT_PAGE),
+      'log.get': ({ id, reserialized }) => logUnit(this.ws().db, id, reserialized),
     };
   }
 
@@ -116,7 +117,7 @@ export class Backend {
       closeGraceMs: this.opts.closeGraceMs,
       events: {
         state: (serverId, state) => this.emit('connection.state', { serverId, state }),
-        unit: (serverId, connectionId, unitId, unit) => this.emit('log.unit', this.liveUnit(serverId, connectionId, unitId, unit)),
+        unit: (_serverId, _connectionId, unitId) => this.emit('log.unit', this.liveUnit(unitId)),
         processes: (pids) => this.opts.onProcesses?.(pids),
       },
     });
@@ -148,45 +149,11 @@ export class Backend {
     };
   }
 
-  private liveUnit(serverId: string, connectionId: number, id: number, u: WireUnit): LogUnit {
-    // The row as stored: the opt-out may have withheld the bytes (D30).
-    const row = this.ws().db.prepare('SELECT at, bytes FROM wire_unit WHERE id = ?').get(id) as { at: number; bytes: Uint8Array | null };
-    return {
-      id, serverId, connectionId, direction: u.direction, kind: u.kind, at: row.at,
-      byteLength: u.bytes.length, bytes: row.bytes === null ? null : new Uint8Array(row.bytes),
-      ...(u.http ? { http: u.http } : {}),
-    };
-  }
-
-  /**
-   * A page of the log, oldest first. Frames written before schema 3 have no
-   * unit and are listed from their re-serialized message, marked as such
-   * (D34), in time order with everything else.
-   */
-  private logPage(serverId: string, before: LogCursor | undefined, limit: number): LogUnit[] {
-    const cursor = before ? [before.at, before.reserialized ? 1 : 0, before.id] : [Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER];
-    const rows = this.ws().db.prepare(`
-      SELECT * FROM (
-        SELECT u.id, u.connection_id, u.direction, u.kind, u.at, u.byte_length, u.bytes, u.http_json, 0 AS reserialized
-        FROM wire_unit u JOIN connection c ON c.id = u.connection_id WHERE c.server_id = @server
-        UNION ALL
-        SELECT f.id, f.connection_id, f.direction, 'wire', f.at, coalesce(length(CAST(f.message_json AS BLOB)), 0),
-               CAST(f.message_json AS BLOB), NULL, 1
-        FROM frame f JOIN connection c ON c.id = f.connection_id WHERE c.server_id = @server AND f.unit_id IS NULL
-      )
-      WHERE (at, reserialized, id) < (@at, @reserialized, @id)
-      ORDER BY at DESC, reserialized DESC, id DESC
-      LIMIT @limit
-    `).all({ server: serverId, at: cursor[0], reserialized: cursor[1], id: cursor[2], limit }) as {
-      id: number; connection_id: number; direction: LogUnit['direction']; kind: LogUnit['kind']; at: number;
-      byte_length: number; bytes: Uint8Array | null; http_json: string | null; reserialized: number;
-    }[];
-    return rows.reverse().map((r) => ({
-      id: r.id, serverId, connectionId: r.connection_id, direction: r.direction, kind: r.kind, at: r.at,
-      byteLength: r.byte_length, bytes: r.bytes === null ? null : new Uint8Array(r.bytes),
-      ...(r.http_json ? { http: JSON.parse(r.http_json) as HttpDetails } : {}),
-      ...(r.reserialized ? { reserialized: true } : {}),
-    }));
+  private liveUnit(id: number): LogUnit {
+    // Read back as stored: the opt-out may have withheld the bytes (D30).
+    const unit = logUnit(this.ws().db, id);
+    if (!unit) throw new Error(`unit ${id} was recorded and cannot be read back`);
+    return unit;
   }
 }
 

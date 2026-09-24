@@ -48,13 +48,14 @@ function connect(win: BrowserWindow): void {
   win.webContents.postMessage('backend-port', null, [port2]);
 }
 
-function createWindow(): BrowserWindow {
+let mainWindow: BrowserWindow | undefined;
+let readableWindow: BrowserWindow | undefined;
+let lastSelection: unknown = null;
+
+function createWindow(route = '', size = { width: 1400, height: 900, minWidth: 900, minHeight: 600 }): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 900,
-    minHeight: 600,
-    title: 'MCP Explorer',
+    ...size,
+    title: route === 'readable' ? 'MCP Explorer: readable' : 'MCP Explorer',
     webPreferences: {
       preload: join(here, '..', 'preload', 'preload.cjs'),
       contextIsolation: true,
@@ -68,10 +69,27 @@ function createWindow(): BrowserWindow {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.on('did-finish-load', () => connect(win));
   const dev = process.env.VITE_DEV_SERVER_URL;
-  if (dev) void win.loadURL(dev);
-  else void win.loadFile(join(here, '..', 'renderer', 'index.html'));
+  if (dev) void win.loadURL(route ? `${dev}#${route}` : dev);
+  else void win.loadFile(join(here, '..', 'renderer', 'index.html'), route ? { hash: route } : undefined);
   return win;
 }
+
+// Board 1A: the readable pane pops out into its own window. The main window
+// says what is selected; this process passes it on.
+ipcMain.on('readable-pop-out', () => {
+  if (readableWindow) return void readableWindow.focus();
+  readableWindow = createWindow('readable', { width: 560, height: 800, minWidth: 360, minHeight: 300 });
+  readableWindow.webContents.on('did-finish-load', () => readableWindow?.webContents.send('readable-select', lastSelection));
+  readableWindow.on('closed', () => {
+    readableWindow = undefined;
+    mainWindow?.webContents.send('readable-closed');
+  });
+});
+
+ipcMain.on('readable-select', (_e, selection: unknown) => {
+  lastSelection = selection;
+  readableWindow?.webContents.send('readable-select', selection);
+});
 
 ipcMain.on('backend-restart', (e) => {
   if (!backend) backend = startBackend();
@@ -81,7 +99,11 @@ ipcMain.on('backend-restart', (e) => {
 
 app.whenReady().then(() => {
   backend = startBackend();
-  createWindow();
+  mainWindow = createWindow();
+  mainWindow.on('closed', () => {
+    mainWindow = undefined;
+    readableWindow?.close();
+  });
 });
 
 app.on('window-all-closed', () => app.quit());

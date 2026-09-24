@@ -5,6 +5,7 @@ import '@fontsource/ibm-plex-sans/600.css';
 import '@fontsource/jetbrains-mono/400.css';
 import './styles.css';
 import { App } from './App';
+import { ReadableWindow } from './log/ReadableWindow';
 import { BackendClient } from './lib/client';
 
 /** The shell's preload bridge (app/preload/preload.cts). */
@@ -13,6 +14,10 @@ declare global {
     mcpxShell?: {
       onBackendExit(listener: (code: number) => void): void;
       restartBackend(): void;
+      popOutReadable(): void;
+      selectReadable(selection: { id: number; reserialized: boolean } | null): void;
+      onReadableSelect(listener: (selection: { id: number; reserialized: boolean } | null) => void): void;
+      onReadableClosed(listener: () => void): void;
     };
   }
 }
@@ -24,7 +29,7 @@ const root = createRoot(document.getElementById('root')!);
 window.addEventListener('message', (e) => {
   if (e.source !== window || e.data !== 'mcpx:backend-port' || !e.ports[0]) return;
   const client = new BackendClient(e.ports[0]);
-  root.render(<App key={Date.now()} client={client} />);
+  root.render(location.hash === '#readable' ? <ReadableWindow client={client} /> : <App key={Date.now()} client={client} />);
 });
 
 root.render(<div className="boot">Starting the backend</div>);

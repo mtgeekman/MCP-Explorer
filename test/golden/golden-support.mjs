@@ -76,4 +76,9 @@ export function seedEveryTable(db) {
     frame.run(1, 'out', t + 6, 0);
     frame.run(2, 'in', t + 7, 1);
   }
+
+  // Schema 4 (secret names, D31 amended): a secret the app asks for each session.
+  if (tableNames(db).includes('server_secret_name')) {
+    db.prepare(`INSERT INTO server_secret_name (server_id, kind, name) VALUES ('srv-1', 'env', 'API_KEY')`).run();
+  }
 }

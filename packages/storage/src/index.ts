@@ -29,6 +29,7 @@ export {
   type Transport,
   type ServerDefinition,
   type ServerSummary,
+  type SecretNames,
   InvalidServerDefinitionError,
   SecretsRequireEncryptionError,
   saveServer,

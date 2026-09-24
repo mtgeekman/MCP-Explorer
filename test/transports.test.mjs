@@ -4,30 +4,13 @@
 // fixture's.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { connectStdio, connectHttp, captureSurface, hashSurface } from '../packages/protocol/dist/index.js';
+import { fixtures, listen as listenFixture } from './support/fixture-servers.mjs';
 
-const fixtures = fileURLToPath(new URL('../scripts/fixture/', import.meta.url));
 const children = [];
 after(() => { for (const c of children) c.kill(); });
-
-/** Start an HTTP fixture and wait for it to announce its port. */
-async function listen(file) {
-  const child = spawn(process.execPath, [join(fixtures, file)], { stdio: ['ignore', 'pipe', 'inherit'] });
-  children.push(child);
-  return new Promise((resolve, reject) => {
-    let out = '';
-    const timer = setTimeout(() => reject(new Error(`${file} never announced a port`)), 10000);
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (d) => {
-      out += d;
-      const m = out.match(/LISTENING (\S+)/);
-      if (m) { clearTimeout(timer); resolve(m[1]); }
-    });
-  });
-}
+const listen = (file) => listenFixture(file, children);
 
 async function capture(connect) {
   const conn = await connect();

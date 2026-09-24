@@ -1,3 +1,4 @@
+import { sseEventData, type WireUnit } from '../../protocol/dist/index.js';
 import { StorageError } from './errors.js';
 import { purgeHistory, type PurgeResult } from './retention.js';
 import type { Workspace } from './workspace-db.js';
@@ -38,25 +39,23 @@ interface Binding { callId: number; seq: number; method: string }
 
 /**
  * One piece of what crossed the wire or the process boundary, as the transport
- * tap saw it (D34). `wire` is protocol traffic: a stdio line with its line
- * ending, an HTTP body, an SSE event. `stderr` is a line the server wrote to
- * stderr; `app` is an event the app itself records, such as a spawn or an exit.
+ * tap saw it (D34): the protocol package's WireUnit. Secret header values are
+ * already replaced by the tap (D35).
  */
-export interface RawUnit {
-  direction: 'out' | 'in' | 'local';
-  kind: 'wire' | 'stderr' | 'app';
-  bytes: Uint8Array;
-  /** HTTP method, URL, status, content type. The tap has already replaced secret header values (D35). */
-  http?: Record<string, unknown>;
-}
+export type RawUnit = WireUnit;
 
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
-/** The JSON-RPC messages a wire unit carries: one, a batch's members, or none when it is not JSON-RPC. */
-function messagesIn(bytes: Uint8Array): JsonRpc[] {
+/**
+ * The JSON-RPC messages a wire unit carries: one, a batch's members, or none
+ * when it is not JSON-RPC. An SSE event carries its message in its data.
+ */
+function messagesIn(u: RawUnit): JsonRpc[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(utf8.decode(bytes));
+    const text = u.http?.framing === 'sse-event' ? sseEventData(u.bytes) : utf8.decode(u.bytes);
+    if (text === null) return [];
+    parsed = JSON.parse(text);
   } catch {
     return [];
   }
@@ -111,7 +110,7 @@ export class HistoryRecorder {
    * frames. Nothing here constructs a message.
    */
   unit = (u: RawUnit): void => {
-    const messages = u.kind === 'wire' ? messagesIn(u.bytes) : [];
+    const messages = u.kind === 'wire' ? messagesIn(u) : [];
     const at = this.now();
     const indexed = messages.map((msg) => ({ msg, ...this.classify(u.direction as 'out' | 'in', msg) }));
     const withholding = u.kind === 'wire' && u.bytes.length > 0 && this.withholding();

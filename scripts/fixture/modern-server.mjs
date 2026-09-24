@@ -15,11 +15,17 @@ if (process.env.STDERR_FLOOD) {
   process.stderr.write('x'.repeat(Number(process.env.STDERR_FLOOD)));
 }
 
+// NO_FINAL_NEWLINE: when stdin closes, write a last line with no newline and
+// exit. The SDK never sees such bytes; the wire log must.
+if (process.env.NO_FINAL_NEWLINE) {
+  process.stdin.on('end', () => {
+    if (process.env.WIRE_LOG) appendFileSync(process.env.WIRE_LOG, 'goodbye');
+    process.stdout.write('goodbye', () => process.exit(0));
+  });
+}
+
 readFrames(process.stdin, (msg, line) => {
   if (process.env.FRAME_LOG) appendFileSync(process.env.FRAME_LOG, `IN  ${line}\n`);
-  // MALFORMED: emit a line that is not JSON before the real answer. A client
-  // that cannot survive junk on the wire cannot explore a broken server, which
-  // is the case this app exists for.
   // MALFORMED: emit a line that is not JSON before the real answer. A client
   // that cannot survive junk on the wire cannot explore a broken server, which
   // is the case this app exists for. console.log, not stdout.write, so there is

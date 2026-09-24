@@ -1,0 +1,123 @@
+// Ending a server process and everything it started (spec D36).
+//
+// A stdio server is often not one process. `npx` on Windows is `cmd.exe`
+// running `node`; a Python server may be a launcher over an interpreter.
+// Killing only the process the app spawned leaves the rest running, so the app
+// always kills the tree, from the root it spawned, while that root is alive:
+// once it has exited, its children can no longer be found from it on Windows.
+//
+// Platform-specific by nature, which is why it lives here (CLAUDE.md: no
+// platform-specific API outside the platform abstraction layer).
+import { execFile } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+export interface KillTreeOptions {
+  /** How long the tree gets to exit after SIGTERM before SIGKILL. POSIX only. */
+  graceMs?: number;
+}
+
+/** Whether a process with this PID exists. A PID can be reused; callers hold PIDs only while they own the process. */
+export function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: it exists and belongs to someone else.
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Ends `pid` and every process descended from it. Resolves once the tree is
+ * gone or nothing more can be done; never rejects for a process that has
+ * already exited.
+ */
+export async function killProcessTree(pid: number, opts: KillTreeOptions = {}): Promise<void> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new RangeError(`not a process id: ${pid}`);
+  if (process.platform === 'win32') return killWindowsTree(pid);
+  return killPosixTree(pid, opts.graceMs ?? 2000);
+}
+
+/** taskkill walks the tree from a live root and terminates it; /F because a console server ignores WM_CLOSE. */
+function killWindowsTree(pid: number): Promise<void> {
+  const taskkill = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+  return new Promise((resolve, reject) => {
+    execFile(taskkill, ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, (error, _stdout, stderr) => {
+      // 128: no such process. It exited on its own, which is the outcome wanted.
+      if (!error || (error as { code?: unknown }).code === 128 || !isAlive(pid)) return resolve();
+      reject(new Error(`taskkill could not end process tree ${pid}: ${stderr.trim() || error.message}`));
+    });
+  });
+}
+
+async function killPosixTree(root: number, graceMs: number): Promise<void> {
+  // Snapshot the tree first: once a parent dies its children are re-parented
+  // and can no longer be found from it.
+  const tree = [root, ...(await descendants(root))];
+  signalAll(tree, 'SIGTERM');
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline && tree.some(isAlive)) await new Promise((r) => setTimeout(r, 25));
+  signalAll(tree.filter(isAlive), 'SIGKILL');
+}
+
+function signalAll(pids: number[], signal: NodeJS.Signals): void {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Already gone between the snapshot and the signal.
+    }
+  }
+}
+
+/** Every process below `root`, from a snapshot of parent links. */
+async function descendants(root: number): Promise<number[]> {
+  const parentOf = process.platform === 'linux' ? linuxParents() : await psParents();
+  const children = new Map<number, number[]>();
+  for (const [pid, ppid] of parentOf) children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+  const out: number[] = [];
+  const queue = [root];
+  while (queue.length) {
+    for (const child of children.get(queue.shift()!) ?? []) {
+      out.push(child);
+      queue.push(child);
+    }
+  }
+  return out;
+}
+
+/** Linux: /proc/<pid>/stat, field 4 is the parent. No `ps` needed, so it works in a minimal container. */
+function linuxParents(): Map<number, number> {
+  const parents = new Map<number, number>();
+  for (const name of readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const stat = readFileSync(`/proc/${name}/stat`, 'utf8');
+      // The command name is in parentheses and may itself contain ") ".
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      parents.set(Number(name), Number(fields[1]));
+    } catch {
+      // Exited while we were reading.
+    }
+  }
+  return parents;
+}
+
+/**
+ * Other POSIX systems (macOS): `ps`. Written for the deferred macOS build (D11)
+ * and not run in CI; the Linux path above is the one tested.
+ */
+function psParents(): Promise<Map<number, number>> {
+  return new Promise((resolve, reject) => {
+    execFile('ps', ['-A', '-o', 'pid=,ppid='], (error, stdout) => {
+      if (error) return reject(new Error(`ps failed while finding child processes: ${error.message}`));
+      const parents = new Map<number, number>();
+      for (const line of stdout.split('\n')) {
+        const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+        if (pid > 0) parents.set(pid, ppid);
+      }
+      resolve(parents);
+    });
+  });
+}

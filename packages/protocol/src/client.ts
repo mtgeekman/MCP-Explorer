@@ -161,8 +161,9 @@ class LoggingReadBuffer {
  *
  * A default, not a pillar. The cost of being wrong is asymmetric by transport:
  * on stdio a too-short timeout mislabels a slow server as legacy, and the user
- * can re-detect; on HTTP the SDK rejects the connect instead of falling back,
- * which is louder and self-correcting.
+ * can re-detect; on HTTP connectHttp falls back to legacy itself (the SDK
+ * would reject), and a modern server mislabelled that way answers the
+ * legacy initialize with -32022, which re-probes on its own.
  */
 export const PROBE_TIMEOUT_MS = 5000;
 

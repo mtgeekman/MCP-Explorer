@@ -107,9 +107,9 @@ export class HistoryRecorder {
    * `wire` unit is parsed here only to index it: each JSON-RPC message it
    * carries becomes a frame row with its id, method and call binding, and a
    * unit that does not parse (an HTML page, a banner line) is kept with no
-   * frames. Nothing here constructs a message.
+   * frames. Nothing here constructs a message. Returns the unit's id.
    */
-  unit = (u: RawUnit): void => {
+  unit = (u: RawUnit): number => {
     const messages = u.kind === 'wire' ? messagesIn(u) : [];
     const at = this.now();
     const indexed = messages.map((msg) => ({ msg, ...this.classify(u.direction as 'out' | 'in', msg) }));
@@ -122,12 +122,12 @@ export class HistoryRecorder {
     const callIds = new Set(indexed.map((f) => f.binding?.callId ?? null));
     const unitCall = indexed.length > 0 && callIds.size === 1 && !callIds.has(null) ? [...callIds][0] : null;
 
-    this.ws.db.transaction(() => {
-      const unitId = this.ws.db.prepare(`
+    return this.ws.db.transaction(() => {
+      const unitId = Number(this.ws.db.prepare(`
         INSERT INTO wire_unit (connection_id, call_id, direction, kind, at, bytes, byte_length, withheld, http_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(this.connectionId, unitCall, u.direction, u.kind, at, withheld ? null : Buffer.from(u.bytes), u.bytes.length,
-        withheld ? 1 : 0, u.http === undefined ? null : JSON.stringify(u.http)).lastInsertRowid;
+        withheld ? 1 : 0, u.http === undefined ? null : JSON.stringify(u.http)).lastInsertRowid);
       const insertFrame = this.ws.db.prepare(`
         INSERT INTO frame (connection_id, unit_id, call_id, round_seq, direction, at, jsonrpc_id, method, result_withheld)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -136,6 +136,7 @@ export class HistoryRecorder {
         insertFrame.run(this.connectionId, unitId, f.binding?.callId ?? null, f.binding?.seq ?? null, u.direction, at, f.id, f.method,
           withheld && f.resultWithheld ? 1 : 0);
       }
+      return unitId;
     })();
   };
 

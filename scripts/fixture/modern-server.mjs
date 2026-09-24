@@ -15,6 +15,22 @@ if (process.env.STDERR_FLOOD) {
   process.stderr.write('x'.repeat(Number(process.env.STDERR_FLOOD)));
 }
 
+// REQUIRE_ENV=<name>: exit with code 4 at startup unless that variable is set,
+// as a server needing an API key does. Proves a session secret reached it.
+if (process.env.REQUIRE_ENV && !process.env[process.env.REQUIRE_ENV]) {
+  process.stderr.write(`missing ${process.env.REQUIRE_ENV}\n`);
+  process.exit(4);
+}
+
+// STUBBORN: ignore SIGTERM and a closed stdin, so only a tree kill ends it (D36).
+if (process.env.STUBBORN) {
+  process.on('SIGTERM', () => {});
+  setInterval(() => {}, 1 << 30);
+}
+
+// EXIT_AFTER_MS=<n>: crash with exit code 3 that long after starting.
+if (process.env.EXIT_AFTER_MS) setTimeout(() => process.exit(3), Number(process.env.EXIT_AFTER_MS));
+
 // NO_FINAL_NEWLINE: when stdin closes, write a last line with no newline and
 // exit. The SDK never sees such bytes; the wire log must.
 if (process.env.NO_FINAL_NEWLINE) {

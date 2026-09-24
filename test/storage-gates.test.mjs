@@ -15,7 +15,7 @@ function sources(dir, acc = []) {
     const rel = `${dir}/${entry}`;
     if (entry === 'node_modules' || entry === 'dist' || entry.startsWith('.')) continue;
     if (statSync(join(root, rel)).isDirectory()) sources(rel, acc);
-    else if (/\.(ts|mts|mjs|js)$/.test(entry)) acc.push(rel);
+    else if (/\.(ts|tsx|mts|cts|mjs|js)$/.test(entry)) acc.push(rel);
   }
   return acc;
 }
@@ -23,18 +23,17 @@ function sources(dir, acc = []) {
 // First-party product and tooling source. test/ is excluded: the storage tests
 // open databases and keychain entries directly, by design, to check the files
 // and entries the package produced.
-const FIRST_PARTY = ['packages', 'src', 'scripts'].flatMap((d) => sources(d));
+const FIRST_PARTY = ['packages', 'app', 'scripts'].flatMap((d) => sources(d));
 const read = (rel) => readFileSync(join(root, rel), 'utf8');
 
 // Comments name these modules and constructors in prose; only code counts.
 const code = (rel) => read(rel).replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
 const loads = (specifier) => new RegExp(`(\\bfrom\\s*|\\brequire\\(\\s*|\\bimport\\(\\s*|\\bimport\\s+|require\\.resolve\\(\\s*)['"]${specifier}['"]`);
 
-// The Phase 00 spike harness loads the SQLite module raw, inside Electron, to
-// prove the packaged native module works at all. It is throwaway and holds no
-// user data. When the app shell replaces it this entry must go, and the test
-// below fails until it does.
-const SQLITE_EXCEPTIONS = ['src/main.ts'];
+// Modules allowed to load the SQLite binding outside sqlite.ts. Empty since
+// the app shell replaced the Phase 00 spike harness, which loaded it raw; the
+// test below fails for any entry that no longer needs to be one.
+const SQLITE_EXCEPTIONS = [];
 
 const SQLITE_MODULE = 'packages/storage/src/sqlite.ts';
 const WORKSPACE_DB = 'packages/storage/src/workspace-db.ts';

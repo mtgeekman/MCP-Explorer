@@ -12,7 +12,6 @@ import {
   recordCapture, loadSnapshot, surfaceHistory, listObservations, diffSnapshots, SnapshotNotFoundError,
 } from '../packages/storage/dist/index.js';
 import { memoryStore } from './support/memory-store.mjs';
-import { frame } from './support/units.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'mcpx-snap-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -25,8 +24,8 @@ function setup() {
   return { ws, serverId };
 }
 
-async function capture(env = {}, onFrame) {
-  const conn = await connectStdio({ command: process.execPath, args: [fixture], env: { ...process.env, ...env }, onFrame });
+async function capture(env = {}, onUnit) {
+  const conn = await connectStdio({ command: process.execPath, args: [fixture], env: { ...process.env, ...env }, onUnit });
   try {
     return await captureSurface(conn.source);
   } finally {
@@ -213,7 +212,7 @@ test('end to end: three captures of the shuffling fixture are one snapshot, a mu
   try {
     for (let i = 0; i < 3; i++) {
       const rec = HistoryRecorder.open(ws, serverId, tick);
-      const s = await capture({}, (direction, message) => frame(rec, direction, message));
+      const s = await capture({}, rec.unit);
       rec.close();
       recordCapture(ws, serverId, s, { connectionId: rec.connectionId, now: tick });
     }

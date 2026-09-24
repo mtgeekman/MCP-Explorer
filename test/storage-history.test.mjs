@@ -332,14 +332,17 @@ test('opt-out: turning it on or off applies to the next frame', () => {
 
 // --- P1 end to end --------------------------------------------------------------------
 
-test('P1: every frame the transport tap emits in a real session is stored', async () => {
+test('P1: every unit the transport tap emits in a real session is stored, and every message the SDK handled is a frame', async () => {
   const { ws, rec } = setup();
   const seen = [];
+  const emitted = [];
   try {
   const conn = await connectStdio({
     command: process.execPath,
     args: [fileURLToPath(new URL('../scripts/fixture/modern-server.mjs', import.meta.url))],
-    onFrame: (direction, message) => { seen.push([direction, message]); frame(rec, direction, message); },
+    env: { ...process.env, ODD_BYTES: '1' },
+    onUnit: (u) => { emitted.push(Buffer.from(u.bytes)); rec.unit(u); },
+    onFrame: (direction, message) => { seen.push([direction, message]); },
   });
   try {
     rec.negotiated(conn.revision, conn.era);
@@ -348,6 +351,7 @@ test('P1: every frame the transport tap emits in a real session is stored', asyn
     await conn.close();
     rec.close();
   }
+  assert.deepEqual(units(ws).map((u) => u.bytes), emitted, 'a stored unit differs from the bytes the tap emitted');
   const stored = frames(ws);
   assert.ok(seen.length >= 4, `only ${seen.length} frames in a whole capture`);
   assert.equal(stored.length, seen.length);

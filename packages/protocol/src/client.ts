@@ -6,6 +6,8 @@
 import type { Era } from './model.js';
 import { eraOf } from './model.js';
 import type { Page, SurfaceSource } from './capture.js';
+import { StringDecoder } from 'node:string_decoder';
+import { LineSplitter, SseEventSplitter, type HttpDetails, type UnitListener, type WireUnit } from './wire.js';
 
 /**
  * Subclassing StdioClientTransport is what opts out of the SDK's disposable
@@ -32,19 +34,50 @@ const warnFrameError: FrameErrorListener = (error, direction) => {
   process.emitWarning(`the frame log failed to record an ${direction} frame: ${error instanceof Error ? error.message : String(error)}`, 'MCPExplorerFrameLogWarning');
 };
 
+/** Receives a UnitListener's own failure. The bytes have already gone on. */
+export type UnitErrorListener = (error: unknown, unit: WireUnit) => void;
+
+const warnUnitError: UnitErrorListener = (error, unit) => {
+  process.emitWarning(`the wire log failed to record an ${unit.direction} ${unit.kind} unit: ${error instanceof Error ? error.message : String(error)}`, 'MCPExplorerFrameLogWarning');
+};
+
+/**
+ * A listener that throws must not cost the protocol its bytes, for the same
+ * reason as the frame tap: the failure is reported, and the traffic goes on.
+ */
+function unitSink(listener: UnitListener | undefined, onError: UnitErrorListener = warnUnitError): UnitListener | undefined {
+  if (!listener) return undefined;
+  return (unit) => {
+    try {
+      listener(unit);
+    } catch (error) {
+      onError(error, unit);
+    }
+  };
+}
+
+const asBuffer = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length);
+
 export interface ConnectOptions {
   command: string;
   args?: string[];
   env?: Record<string, string>;
   clientName?: string;
   clientVersion?: string;
-  /** P1: receives every JSON-RPC frame, negotiation included. */
+  /**
+   * P1: receives every JSON-RPC message, negotiation included, as the SDK
+   * parsed it. The wire log is onUnit; this stays as its parity check.
+   */
   onFrame?: FrameListener;
   /** Receives onFrame's failures. Defaults to a process warning. */
   onFrameError?: FrameErrorListener;
+  /** P1 and D34: receives every line in and out of the process and every stderr line, as exact bytes. */
+  onUnit?: UnitListener;
+  /** Receives onUnit's failures. Defaults to a process warning. */
+  onUnitError?: UnitErrorListener;
   /** Era-probe timeout. See PROBE_TIMEOUT_MS for why the default is not the SDK's. */
   probeTimeoutMs?: number;
-  /** Receives the child's stderr as it arrives. The stream is drained either way. */
+  /** Receives the child's stderr as text as it arrives. The stream is drained either way. */
   onStderr?: (text: string) => void;
 }
 
@@ -57,6 +90,57 @@ export interface ConnectOptions {
  * grow this without limit.
  */
 export const STDERR_TAIL_BYTES = 8 * 1024;
+
+/**
+ * The longest stdio line the SDK will hold before giving up on the connection:
+ * its own default (STDIO_DEFAULT_MAX_BUFFER_SIZE), restated because the SDK
+ * does not export it and the logging read buffer enforces the same limit.
+ */
+export const STDIO_MAX_LINE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Stands in for the SDK's stdio read buffer (D34). Cuts the stream into lines
+ * itself, records each line's exact bytes, then hands it to the SDK's own
+ * buffer, which parses it exactly as before: one complete line at a time
+ * instead of a chunk at a time changes nothing it can observe.
+ *
+ * The SDK drops a line that is not JSON without a trace; here the line is
+ * recorded first, so it reaches the log anyway. Bytes after the last newline
+ * are recorded when the transport clears the buffer on close.
+ */
+class LoggingReadBuffer {
+  private readonly lines = new LineSplitter();
+
+  constructor(private readonly inner: any, private readonly emit: UnitListener, private readonly maxLineBytes: number) {}
+
+  append(chunk: Buffer): void {
+    for (const line of this.lines.push(chunk)) {
+      this.emit({ direction: 'in', kind: 'wire', bytes: line });
+      this.inner.append(asBuffer(line));
+    }
+    if (this.lines.pending > this.maxLineBytes) {
+      this.clear();
+      // The SDK's own wording for the same limit; its transport then reports
+      // it and closes the connection, as it would have without this buffer.
+      throw new Error(`ReadBuffer exceeded maximum size of ${this.maxLineBytes} bytes`);
+    }
+  }
+
+  readMessage(): unknown {
+    return this.inner.readMessage();
+  }
+
+  /** Records bytes that arrived after the last newline. Called when stdout ends and on close. */
+  flushTail(): void {
+    const rest = this.lines.flush();
+    if (rest) this.emit({ direction: 'in', kind: 'wire', bytes: rest });
+  }
+
+  clear(): void {
+    this.flushTail();
+    this.inner.clear();
+  }
+}
 
 /**
  * How long to wait for an era probe before concluding legacy.
@@ -214,9 +298,100 @@ export interface HttpConnectOptions {
   kind?: HttpTransportKind;
   clientName?: string;
   clientVersion?: string;
+  /** Headers sent on every request. */
+  headers?: Record<string, string>;
+  /**
+   * Headers sent on every request whose values are secrets. The wire log
+   * records each as `<secret: name>`, never its value (D35).
+   */
+  secretHeaders?: Record<string, string>;
   onFrame?: FrameListener;
   onFrameError?: FrameErrorListener;
+  /** P1 and D34: receives every request body, response body and SSE event, as exact bytes. */
+  onUnit?: UnitListener;
+  onUnitError?: UnitErrorListener;
   probeTimeoutMs?: number;
+}
+
+/**
+ * Headers whose values are credentials whether or not the user marked them
+ * secret. The wire log never records their values (D35).
+ */
+const ALWAYS_SECRET_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'set-cookie'];
+
+/** Headers as the log records them: a secret's value is replaced by its name (D35). */
+function loggedHeaders(headers: HeadersInit | undefined, secretNames: Set<string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  new Headers(headers).forEach((value, name) => {
+    out[name] = secretNames.has(name) || ALWAYS_SECRET_HEADERS.includes(name) ? `<secret: ${name}>` : value;
+  });
+  return out;
+}
+
+async function requestBytes(input: string | URL | Request, init: RequestInit | undefined): Promise<Uint8Array> {
+  const body = init?.body ?? (input instanceof Request ? await input.clone().arrayBuffer() : undefined);
+  if (body === undefined || body === null) return new Uint8Array(0);
+  if (typeof body === 'string') return Buffer.from(body, 'utf8');
+  if (body instanceof ArrayBuffer) return new Uint8Array(body);
+  if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+  if (body instanceof URLSearchParams) return Buffer.from(body.toString(), 'utf8');
+  // A stream or a Blob would have to be read to be logged, and reading it here
+  // would consume what the request is about to send.
+  throw new Error(`the wire log cannot record a request body of type ${Object.prototype.toString.call(body)}`);
+}
+
+/**
+ * The HTTP half of the P1 seam (D34): a `fetch` that records exact bytes in
+ * both directions, handed to the SDK's HTTP transports so every request they
+ * make goes through it, era probe included.
+ *
+ * A body that is not an event stream is read whole, logged, and handed to the
+ * SDK as a new Response over the same bytes, so the log holds it even when the
+ * SDK refuses to read it (an HTML page, an error body, a notification's
+ * acknowledgement). An event stream is passed through as it arrives, and each
+ * event is logged the moment its blank line arrives, before the chunk that
+ * finishes it reaches the SDK: nothing the SDK acts on is ever missing from the
+ * log, and cancelling the stream still cancels the connection underneath.
+ */
+function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>, base: typeof fetch = fetch): typeof fetch {
+  const secretNames = new Set([...secretHeaders].map((n) => n.toLowerCase()));
+  let exchanges = 0;
+  return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const exchange = ++exchanges;
+    const url = input instanceof Request ? input.url : String(input);
+    const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+    emit({
+      direction: 'out', kind: 'wire', bytes: await requestBytes(input, init),
+      http: { exchange, method, url, headers: loggedHeaders(init?.headers ?? (input instanceof Request ? input.headers : undefined), secretNames) },
+    });
+
+    const response = await base(input, init);
+    const http: HttpDetails = { exchange, status: response.status, statusText: response.statusText, headers: loggedHeaders(response.headers, secretNames) };
+    const rebuilt = (body: BodyInit | null) => new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+
+    if (!response.body) {
+      emit({ direction: 'in', kind: 'wire', bytes: new Uint8Array(0), http });
+      return response;
+    }
+    if (!/^\s*text\/event-stream\b/i.test(response.headers.get('content-type') ?? '')) {
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      emit({ direction: 'in', kind: 'wire', bytes, http });
+      return rebuilt(bytes);
+    }
+    const events = new SseEventSplitter();
+    const event = (bytes: Uint8Array) => emit({ direction: 'in', kind: 'wire', bytes, http: { ...http, framing: 'sse-event' } });
+    const logged = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        for (const e of events.push(chunk)) event(e);
+        controller.enqueue(chunk);
+      },
+      flush() {
+        const rest = events.flush();
+        if (rest) event(rest);
+      },
+    }));
+    return rebuilt(logged);
+  };
 }
 
 export async function connectHttp(opts: HttpConnectOptions): Promise<Connection> {
@@ -228,8 +403,14 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
     { negotiate: true, probeTimeoutMs: opts.probeTimeoutMs },
   );
   // No sibling-probe problem here: only the stdio transport spawns anything.
-  // The tap is still required, or negotiation traffic bypasses P1's logger.
-  await client.connect(tap(new Transport(new URL(opts.url)), opts.onFrame, opts.onFrameError));
+  // The taps are still required, or negotiation traffic bypasses P1's logger.
+  const emit = unitSink(opts.onUnit, opts.onUnitError);
+  const secretHeaders = opts.secretHeaders ?? {};
+  const transport = new Transport(new URL(opts.url), {
+    requestInit: { headers: { ...opts.headers, ...secretHeaders } },
+    ...(emit ? { fetch: loggingFetch(emit, Object.keys(secretHeaders)) } : {}),
+  });
+  await client.connect(tap(transport, opts.onFrame, opts.onFrameError));
   return describe(client);
 }
 
@@ -237,7 +418,37 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   const { Client } = await import('@modelcontextprotocol/client');
   const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
   const Base = StdioClientTransport as unknown as new (o: unknown) => any;
-  class SeamStdioTransport extends Base {}
+  const emit = unitSink(opts.onUnit, opts.onUnitError);
+
+  // The stdio half of the P1 seam (D34). Never define `_dispose` here: an own
+  // `_dispose` on this prototype is exactly what makes the SDK spawn a sibling
+  // (see the comment at the top of this file); test/seam.test.mjs asserts it.
+  class SeamStdioTransport extends Base {
+    constructor(o: unknown) {
+      super(o);
+      // Every line from the server passes through here as bytes before the
+      // SDK parses it, including the lines it would drop: a banner, an HTML
+      // page, a line that is not JSON at all.
+      if (emit) this._readBuffer = new LoggingReadBuffer(this._readBuffer, emit, (o as { maxBufferSize?: number }).maxBufferSize ?? STDIO_MAX_LINE_BYTES);
+    }
+
+    async start(): Promise<void> {
+      await super.start();
+      // The SDK writes each outgoing message with one stdin.write of its
+      // serialized line; recording at that call records exactly those bytes.
+      if (!emit) return;
+      // A server that exits on its own never makes the SDK clear its buffer,
+      // so a last line without a newline is recorded when stdout ends.
+      this._process?.stdout?.on('end', () => (this._readBuffer as LoggingReadBuffer).flushTail());
+      const stdin = this._process?.stdin;
+      if (!stdin) return;
+      const write = stdin.write.bind(stdin);
+      stdin.write = (chunk: string | Uint8Array, ...rest: unknown[]) => {
+        emit({ direction: 'out', kind: 'wire', bytes: typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk });
+        return (write as (...a: unknown[]) => boolean)(chunk, ...rest);
+      };
+    }
+  }
 
   const transportOptions = {
     command: opts.command,
@@ -249,13 +460,24 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   // Piping stderr obliges us to READ it. An unread pipe fills at roughly 64KB
   // and the child then blocks in write() forever -- the capture hangs with no
   // error, which is worse than any diagnostic this buffer provides.
+  // Read as bytes: a line the log records must be the bytes the server wrote,
+  // and decoding first would replace invalid UTF-8. The text view decodes with
+  // a streaming decoder, so a character split across chunks survives.
   const stderrTail = { text: '' };
   const makeTransport = () => {
     const inner = new SeamStdioTransport(transportOptions);
-    inner.stderr?.setEncoding('utf8');
-    inner.stderr?.on('data', (chunk: string) => {
-      opts.onStderr?.(chunk);
-      stderrTail.text = (stderrTail.text + chunk).slice(-STDERR_TAIL_BYTES);
+    const lines = new LineSplitter();
+    const text = new StringDecoder('utf8');
+    const stderrLine = (bytes: Uint8Array) => emit?.({ direction: 'in', kind: 'stderr', bytes });
+    inner.stderr?.on('data', (chunk: Buffer) => {
+      for (const line of lines.push(chunk)) stderrLine(line);
+      const decoded = text.write(chunk);
+      opts.onStderr?.(decoded);
+      stderrTail.text = (stderrTail.text + decoded).slice(-STDERR_TAIL_BYTES);
+    });
+    inner.stderr?.on('end', () => {
+      const rest = lines.flush();
+      if (rest) stderrLine(rest);
     });
     return tap(inner, opts.onFrame, opts.onFrameError);
   };

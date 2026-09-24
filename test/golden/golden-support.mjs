@@ -57,4 +57,23 @@ export function seedEveryTable(db) {
     db.prepare(`UPDATE server SET headers_json = '{"Accept":"application/json"}' WHERE id = 'srv-2'`).run();
     db.prepare(`INSERT INTO server_secret (server_id, kind, name, value, updated_at) VALUES ('srv-2', 'header', 'Authorization', 'golden-not-a-secret', ?)`).run(t);
   }
+
+  // Schema 3 (wire units, D34): a call-bound unit with its frame, a withheld
+  // unit, a unit that is not JSON-RPC, a stderr line, an app event, and HTTP
+  // details.
+  if (tableNames(db).includes('wire_unit')) {
+    const unit = db.prepare(`INSERT INTO wire_unit (id, connection_id, call_id, direction, kind, at, bytes, byte_length, withheld, http_json)
+                             VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const bytes = (text) => Buffer.from(text, 'utf8');
+    const call = '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"echo"}}\r\n';
+    unit.run(1, 1, 'out', 'wire', t + 6, bytes(call), Buffer.byteLength(call), 0, null);
+    unit.run(2, 1, 'in', 'wire', t + 7, null, 57, 1, '{"status":200,"contentType":"application/json"}');
+    unit.run(3, null, 'in', 'wire', t + 8, bytes('<html></html>'), 13, 0, '{"status":502,"contentType":"text/html"}');
+    unit.run(4, null, 'in', 'stderr', t + 8, bytes('listening\n'), 10, 0, null);
+    unit.run(5, null, 'local', 'app', t + 9, bytes('{"event":"exited","code":0}'), 27, 0, null);
+    const frame = db.prepare(`INSERT INTO frame (connection_id, unit_id, call_id, round_seq, direction, at, jsonrpc_id, method, result_withheld)
+                              VALUES (1, ?, 1, 2, ?, ?, '8', 'tools/call', ?)`);
+    frame.run(1, 'out', t + 6, 0);
+    frame.run(2, 'in', t + 7, 1);
+  }
 }

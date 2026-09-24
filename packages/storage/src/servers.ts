@@ -24,6 +24,17 @@ export interface ServerDefinition {
   /** Stored as secrets. Refused for an unencrypted workspace. */
   secretEnv?: Record<string, string>;
   secretHeaders?: Record<string, string>;
+  /**
+   * Secrets this server needs whose values are not stored: every secret of a
+   * server in an unencrypted workspace, whose values the app asks for each
+   * session (D31, amended 2026-09-24). Names only; a name is not a secret.
+   */
+  unstoredSecrets?: SecretNames;
+}
+
+export interface SecretNames {
+  env?: string[];
+  headers?: string[];
 }
 
 export interface ServerSummary {
@@ -54,15 +65,25 @@ function validate(def: ServerDefinition): void {
   } else {
     throw bad(`unknown transport ${String(def.transport)}`);
   }
-  for (const [plain, secret, what] of [[def.env, def.secretEnv, 'environment variable'], [def.headers, def.secretHeaders, 'header']] as const) {
-    for (const name of Object.keys(secret ?? {})) {
+  if (def.transport === 'stdio' && hasNames(def.unstoredSecrets?.headers)) throw bad('a stdio server has no HTTP headers');
+  const lists = [
+    [def.env, def.secretEnv, def.unstoredSecrets?.env, 'environment variable'],
+    [def.headers, def.secretHeaders, def.unstoredSecrets?.headers, 'header'],
+  ] as const;
+  for (const [plain, secret, unstored, what] of lists) {
+    const seen = new Set<string>();
+    for (const name of [...Object.keys(secret ?? {}), ...(unstored ?? [])]) {
       if (!name) throw bad(`a secret ${what} has an empty name`);
-      // One name in both maps would leave the app to guess which value the
-      // server gets, and the plain one is readable on disk.
+      // One name in two places would leave the app to guess which value the
+      // server gets, and a plain one is readable on disk.
       if (plain && Object.hasOwn(plain, name)) throw bad(`${what} ${name} is both plain and secret`);
+      if (seen.has(name)) throw bad(`secret ${what} ${name} is given twice`);
+      seen.add(name);
     }
   }
 }
+
+const hasNames = (names?: string[]) => names !== undefined && names.length > 0;
 
 /**
  * Creates or replaces a server definition and its secrets in one transaction.
@@ -93,6 +114,10 @@ export function saveServer(ws: Workspace, def: ServerDefinition, now: () => numb
     const insert = ws.db.prepare('INSERT INTO server_secret (server_id, kind, name, value, updated_at) VALUES (?, ?, ?, ?, ?)');
     for (const [name, value] of Object.entries(def.secretEnv ?? {})) insert.run(def.id, 'env', name, value, at);
     for (const [name, value] of Object.entries(def.secretHeaders ?? {})) insert.run(def.id, 'header', name, value, at);
+    ws.db.prepare('DELETE FROM server_secret_name WHERE server_id = ?').run(def.id);
+    const insertName = ws.db.prepare('INSERT INTO server_secret_name (server_id, kind, name) VALUES (?, ?, ?)');
+    for (const name of def.unstoredSecrets?.env ?? []) insertName.run(def.id, 'env', name);
+    for (const name of def.unstoredSecrets?.headers ?? []) insertName.run(def.id, 'header', name);
   })();
 }
 
@@ -116,6 +141,11 @@ export function loadServer(ws: Workspace, id: string): ServerDefinition | null {
   for (const s of secrets) {
     const map = s.kind === 'env' ? (def.secretEnv ??= {}) : (def.secretHeaders ??= {});
     map[s.name] = s.value;
+  }
+  const names = ws.db.prepare('SELECT kind, name FROM server_secret_name WHERE server_id = ? ORDER BY kind, name').all(id) as { kind: 'env' | 'header'; name: string }[];
+  for (const n of names) {
+    const unstored = (def.unstoredSecrets ??= {});
+    (n.kind === 'env' ? (unstored.env ??= []) : (unstored.headers ??= [])).push(n.name);
   }
   return def;
 }

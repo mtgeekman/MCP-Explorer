@@ -51,7 +51,10 @@ export interface ConnectionManagerOptions {
   events: Partial<ConnectionEvents>;
   now?: () => number;
   probeTimeoutMs?: number;
-  /** How long a closed stdio server gets to exit before its tree is killed (D36). */
+  /**
+   * How long a closed stdio server gets to exit before its tree is killed
+   * (D36). Capped below the SDK's own wait, see SDK_STDIN_CLOSE_WAIT_MS.
+   */
   closeGraceMs?: number;
 }
 
@@ -63,7 +66,18 @@ interface Slot {
   busy?: Promise<unknown>;
 }
 
-const DEFAULT_CLOSE_GRACE_MS = 2000;
+/**
+ * How long the SDK's StdioClientTransport.close() waits after ending stdin
+ * before it sends SIGTERM to the process it spawned, and only to that one
+ * (@modelcontextprotocol/client 2.0.0, dist/stdio.mjs close()). On Windows
+ * that SIGTERM ends a cmd.exe root at once and leaves the node under it
+ * running, unfindable from the dead root. So the tree kill must land before
+ * this, while the root is alive to be walked from.
+ */
+const SDK_STDIN_CLOSE_WAIT_MS = 2000;
+const DEFAULT_CLOSE_GRACE_MS = 1000;
+/** The tree kill must finish before the SDK's SIGTERM; taskkill takes tens of milliseconds. */
+const TREE_KILL_MARGIN_MS = 500;
 
 export class ConnectionManager {
   private readonly slots = new Map<string, Slot>();
@@ -249,7 +263,7 @@ export class ConnectionManager {
     // the root. Whatever of the tree is still alive after the grace is killed
     // as a tree from that root, while it can still be found (D36).
     const pid = conn.pid;
-    const grace = this.opts.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
+    const grace = Math.min(this.opts.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS, SDK_STDIN_CLOSE_WAIT_MS - TREE_KILL_MARGIN_MS);
     const treeKill = pid === undefined ? undefined : setTimeout(() => { if (isAlive(pid)) void killProcessTree(pid).catch(() => undefined); }, grace);
     try {
       await conn.close();

@@ -195,3 +195,28 @@ test('an HTTP legacy server connects and is pinned legacy, over both transports'
     assert.equal(ended.status, 'ended');
   }
 });
+
+test('D36: disconnecting a server behind a shell ends the shell and the server under it, at the default grace', async () => {
+  // Review of the smoke test's quit case: the tree kill fired as the SDK's own
+  // close sent its SIGTERM to the root, and when the SDK won, cmd.exe was gone
+  // before taskkill /T could find the node under it. Run at the default grace,
+  // which is the one the app uses.
+  const spawns = spawnLog();
+  const env = { STUBBORN: '1', SPAWN_LOG: spawns };
+  const s = process.platform === 'win32'
+    ? { ...stdio(modern, env), command: join(process.env.SystemRoot ?? 'C:\Windows', 'System32', 'cmd.exe'), args: ['/d', '/c', process.execPath, modern] }
+    : { ...stdio(modern, env), command: '/bin/sh', args: ['-c', `"${process.execPath}" "${modern}"; exit $?`] };
+  const path = join(root, `${randomUUID()}.db`);
+  const ws = createWorkspaceDb({ path, workspaceId: randomUUID(), name: 'tree', custody: { kind: 'none' }, secrets: noSecrets });
+  workspaces.push(ws);
+  saveServer(ws, s);
+  const manager = new ConnectionManager(ws, { probeTimeoutMs: 1000, events: {} });
+  managers.push(manager);
+  const up = await manager.connect(s.id);
+  assert.equal(up.status, 'connected', JSON.stringify(up));
+  const server = Number(/pid=(\d+)/.exec(readFileSync(spawns, 'utf8'))[1]);
+  assert.notEqual(server, up.pid, 'the root is the shell');
+  await manager.disconnect(s.id);
+  await waitFor(() => !isAlive(up.pid));
+  await waitFor(() => !isAlive(server), 8000);
+});

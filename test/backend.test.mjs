@@ -169,6 +169,14 @@ test('a connect is announced as states and units, and the log reads back the sam
   assert.deepEqual(earlier.map((u) => u.id), log.slice(0, -3).map((u) => u.id));
   const tail = await call('log.units', { serverId: s.id, limit: 2 });
   assert.deepEqual(tail.map((u) => u.id), log.slice(-2).map((u) => u.id));
+
+  // Each unit names the messages it carried, so a row is labelled without parsing its bytes.
+  const discover = log.filter((u) => u.frames.some((f) => f.method === 'server/discover'));
+  assert.deepEqual(discover.map((u) => u.direction), ['out', 'in'], 'the probe and its answer, paired by id');
+  assert.equal(discover[0].frames[0].jsonrpcId, discover[1].frames[0].jsonrpcId);
+  assert.ok(log.filter((u) => u.kind !== 'wire').every((u) => u.frames.length === 0));
+  assert.deepEqual(await call('log.get', { id: discover[1].id }), discover[1]);
+  assert.equal(await call('log.get', { id: 999999 }), null);
 });
 
 test('D34: a frame written before exact capture is listed from its message, marked re-serialized', async () => {
@@ -181,6 +189,8 @@ test('D34: a frame written before exact capture is listed from its message, mark
   db.prepare("INSERT INTO frame (connection_id, direction, at, method, message_json) VALUES (?, 'out', 5, 'ping', '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}')").run(conn);
   const [unit] = await call('log.units', { serverId: s.id });
   assert.equal(unit.reserialized, true);
+  assert.deepEqual(unit.frames, [{ jsonrpcId: null, method: 'ping', resultWithheld: false }]);
+  assert.deepEqual(await call('log.get', { id: unit.id, reserialized: true }), unit);
   assert.equal(Buffer.from(unit.bytes).toString(), '{"jsonrpc":"2.0","id":1,"method":"ping"}');
 });
 

@@ -54,8 +54,18 @@ export interface LogUnit {
   /** Null when withheld under the results opt-out (D30). */
   bytes: Uint8Array | null;
   http?: HttpDetails;
+  /** The JSON-RPC messages the unit carried, in order: none for stderr, app events and bytes that are not JSON-RPC. */
+  frames: LogFrame[];
   /** Frames written before schema 3 have no unit; they are listed from their re-serialized message and say so (D34). */
   reserialized?: boolean;
+}
+
+/** A message within a unit, as the log indexed it: the id keeps its type (7 is "7", "7" is "\"7\""). */
+export interface LogFrame {
+  jsonrpcId: string | null;
+  method: string | null;
+  /** A result withheld under the opt-out (D30). */
+  resultWithheld: boolean;
 }
 
 /** Where a page of the log ends: units and re-serialized frames are ordered together by time. */
@@ -82,6 +92,8 @@ export interface Requests {
   'connections.disconnect': { params: { serverId: string }; result: ConnectionState };
   /** A page of a server's log, newest last, older than `before` when given. */
   'log.units': { params: { serverId: string; before?: LogCursor; limit?: number }; result: LogUnit[] };
+  /** One unit, for a window showing a selection it did not load (the popped-out pane, board 1A). */
+  'log.get': { params: { id: number; reserialized?: boolean }; result: LogUnit | null };
 }
 
 export type Method = keyof Requests;

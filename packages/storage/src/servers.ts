@@ -155,6 +155,31 @@ export function listServers(ws: Workspace): ServerSummary[] {
   return ws.db.prepare('SELECT id, name, transport FROM server ORDER BY name, id').all() as ServerSummary[];
 }
 
+/** The protocol era a server was last seen to speak, pinned on its definition (D20). */
+export interface DetectedEra {
+  era: 'legacy' | 'modern';
+  /** Null when the era was inferred without a handshake: a server that died on the probe is pinned legacy before it has answered one. */
+  revision: string | null;
+  detectedAt: number;
+}
+
+export function readDetectedEra(ws: Workspace, id: string): DetectedEra | null {
+  const row = ws.db.prepare('SELECT detected_era, detected_revision, era_detected_at FROM server WHERE id = ?').get(id) as
+    { detected_era: 'legacy' | 'modern' | null; detected_revision: string | null; era_detected_at: number | null } | undefined;
+  if (!row || row.detected_era === null) return null;
+  return { era: row.detected_era, revision: row.detected_revision, detectedAt: row.era_detected_at ?? 0 };
+}
+
+/** Pins the era; later connects use it instead of probing (D20). */
+export function pinEra(ws: Workspace, id: string, era: 'legacy' | 'modern', revision: string | null, now: () => number = Date.now): void {
+  ws.db.prepare('UPDATE server SET detected_era = ?, detected_revision = ?, era_detected_at = ? WHERE id = ?').run(era, revision, now(), id);
+}
+
+/** Forgets the pinned era, so the next connect probes: the user's explicit re-detect (D20). */
+export function clearEra(ws: Workspace, id: string): void {
+  ws.db.prepare('UPDATE server SET detected_era = NULL, detected_revision = NULL, era_detected_at = NULL WHERE id = ?').run(id);
+}
+
 /** True when the server existed. Its secrets and its whole history go with it. */
 export function deleteServer(ws: Workspace, id: string): boolean {
   return ws.db.prepare('DELETE FROM server WHERE id = ?').run(id).changes > 0;

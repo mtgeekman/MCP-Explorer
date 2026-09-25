@@ -64,6 +64,8 @@ interface Slot {
   recorder?: HistoryRecorder;
   /** Set while a connect or close is running, so a second one waits its turn rather than racing it. */
   busy?: Promise<unknown>;
+  /** A stdio process spawned by a connect still under way: reported from its spawn, so a backend that dies mid-connect leaves it findable (D36). */
+  starting?: ServerRoot;
 }
 
 /**
@@ -161,7 +163,7 @@ export class ConnectionManager {
   }
 
   private announceProcesses(): void {
-    const roots = [...this.slots.values()].flatMap((s) => (s.conn?.pid !== undefined ? [{ pid: s.conn.pid, startedAt: s.conn.startedAt ?? this.now() }] : []));
+    const roots = [...this.slots.values()].flatMap((s) => (s.conn?.pid !== undefined ? [{ pid: s.conn.pid, startedAt: s.conn.startedAt ?? this.now() }] : s.starting ? [s.starting] : []));
     this.opts.events.processes?.(roots);
   }
 
@@ -187,7 +189,12 @@ export class ConnectionManager {
     const onUnit = (u: WireUnit) => {
       const unitId = recorder.unit(u);
       this.opts.events.unit?.(serverId, connectionId, unitId, u);
-      if (u.kind === 'app' && this.state(serverId).status === 'connecting' && appEventName(u) === 'spawned') {
+      const event = u.kind === 'app' ? appEvent(u) : undefined;
+      if (event?.event === 'spawned' && typeof event.pid === 'number') {
+        slot.starting = { pid: event.pid, startedAt: this.now() };
+        this.announceProcesses();
+      }
+      if (event?.event === 'spawned' && this.state(serverId).status === 'connecting') {
         this.set(serverId, { status: 'connecting', step: 'negotiating', era, connectionId });
       }
     };
@@ -211,6 +218,9 @@ export class ConnectionManager {
     } catch (e) {
       recorder.close();
       slot.recorder = undefined;
+      // The adapter has ended whatever it spawned (terminate, above).
+      slot.starting = undefined;
+      this.announceProcesses();
       if (!(e instanceof ConnectError)) {
         return this.set(serverId, { status: 'failed', failure: { kind: 'protocol' }, message: e instanceof Error ? e.message : String(e), stderr: '', at: this.now(), connectionId });
       }
@@ -218,6 +228,7 @@ export class ConnectionManager {
     }
 
     slot.conn = conn;
+    slot.starting = undefined;
     recorder.negotiated(conn.revision, conn.era);
     if (pinned?.era !== conn.era || pinned.revision !== conn.revision) pinEra(this.ws, serverId, conn.era, conn.revision, this.now);
     this.announceProcesses();
@@ -297,9 +308,9 @@ function missingSecrets(def: ServerDefinition, session: SecretValues | undefined
   return { ...(env.length ? { env } : {}), ...(headers.length ? { headers } : {}) };
 }
 
-function appEventName(u: WireUnit): string | undefined {
+function appEvent(u: WireUnit): { event?: unknown; pid?: unknown } | undefined {
   try {
-    return JSON.parse(Buffer.from(u.bytes).toString('utf8')).event;
+    return JSON.parse(Buffer.from(u.bytes).toString('utf8'));
   } catch {
     return undefined;
   }

@@ -104,9 +104,12 @@ ipcMain.handle('choose-folder', async (e) => {
 });
 
 // Every window's port died with the old backend, not only the asking one's:
-// the popped-out readable pane needs a new port too (deferred/phase-04).
+// the popped-out readable pane needs a new port too (deferred/phase-04). A
+// request while the backend is running (a second click) changes nothing: a new
+// port remounts the page and drops what it was showing.
 ipcMain.on('backend-restart', () => {
-  if (!backend) backend = startBackend();
+  if (backend) return;
+  backend = startBackend();
   for (const win of BrowserWindow.getAllWindows()) connect(win);
 });
 

@@ -297,3 +297,19 @@ test('after a backend restart the popped-out readable window has a live port aga
     await app.close();
   }
 });
+
+test('R05-7: a restart request while the backend is running does not reset the page', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'kept', transport: 'stdio', command: process.execPath, args: [modern] }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await page.locator('.server-row', { hasText: 'kept' }).click();
+    await page.getByRole('button', { name: 'Connect', exact: true }).waitFor();
+    // A second Restart click, or one from another window, arrives with the backend alive.
+    await page.evaluate(() => window.mcpxShell.restartBackend());
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.ok(await page.getByRole('button', { name: 'Connect', exact: true }).isVisible(), 'the page was remounted and lost the selected server');
+  } finally {
+    await app.close();
+  }
+});

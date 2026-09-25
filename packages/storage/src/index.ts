@@ -63,12 +63,16 @@ export {
 } from './snapshots.js';
 export {
   purgeHistory,
+  previewPurge,
   compact,
+  fileBytes,
   liveBytes,
   usedBytes,
+  type PurgeResult,
+} from './retention.js';
+export {
   readSettings,
   updateSettings,
   InvalidSettingsError,
-  type PurgeResult,
   type WorkspaceSettings,
-} from './retention.js';
+} from './settings.js';

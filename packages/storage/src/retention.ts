@@ -1,4 +1,4 @@
-import { StorageError } from './errors.js';
+import { readSettings } from './settings.js';
 import type { Database } from './sqlite.js';
 import type { Workspace } from './workspace-db.js';
 
@@ -38,14 +38,6 @@ export interface PurgeResult {
   overCapWithNothingToPurge: boolean;
 }
 
-export interface WorkspaceSettings {
-  persistResults: boolean;
-  retentionMaxBytes: number;
-  retentionMaxAgeDays: number;
-}
-
-export class InvalidSettingsError extends StorageError {}
-
 const DAY_MS = 86_400_000;
 // Rows deleted between size measurements: measuring is a full dbstat scan, so
 // one row at a time is slow, and a large batch overshoots the cap.
@@ -67,25 +59,6 @@ export function liveBytes(db: Database): number {
   return (db.prepare('SELECT coalesce(sum(pgsize - unused), 0) AS bytes FROM dbstat').get() as { bytes: number }).bytes;
 }
 
-export function readSettings(ws: Workspace): WorkspaceSettings {
-  const row = ws.db.prepare('SELECT persist_results, retention_max_bytes, retention_max_age_days FROM workspace_meta WHERE id = 1').get() as
-    { persist_results: number; retention_max_bytes: number; retention_max_age_days: number };
-  return { persistResults: row.persist_results === 1, retentionMaxBytes: row.retention_max_bytes, retentionMaxAgeDays: row.retention_max_age_days };
-}
-
-/** Changes any of the workspace's settings (D4, D24). Applies from the next frame, round or purge. */
-export function updateSettings(ws: Workspace, changes: Partial<WorkspaceSettings>): WorkspaceSettings {
-  const positiveInt = (name: string, v: number | undefined) => {
-    if (v !== undefined && (!Number.isSafeInteger(v) || v <= 0)) throw new InvalidSettingsError(`${name} must be a positive whole number, got ${v}`);
-  };
-  positiveInt('retentionMaxBytes', changes.retentionMaxBytes);
-  positiveInt('retentionMaxAgeDays', changes.retentionMaxAgeDays);
-  const current = readSettings(ws);
-  const next = { ...current, ...changes };
-  ws.db.prepare('UPDATE workspace_meta SET persist_results = ?, retention_max_bytes = ?, retention_max_age_days = ? WHERE id = 1')
-    .run(next.persistResults ? 1 : 0, next.retentionMaxBytes, next.retentionMaxAgeDays);
-  return next;
-}
 
 export function purgeHistory(ws: Workspace, now: () => number = Date.now): PurgeResult {
   const db = ws.db;
@@ -167,17 +140,42 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
   return { callsDeleted, framesDeleted, unitsDeleted, connectionsDeleted, usedBytesBefore, usedBytesAfter: usedBytes(db), overCapWithNothingToPurge };
 }
 
+/** Thrown to roll back a preview's transaction, carrying what the purge did inside it. */
+class PreviewRollback {
+  constructor(readonly result: PurgeResult) {}
+}
+
+/**
+ * What purgeHistory would delete right now, without deleting it: the real
+ * purge runs inside a transaction that is always rolled back (better-sqlite3
+ * nests the purge's own transactions as savepoints), so the preview cannot
+ * disagree with the purge's rules. It can disagree with a later purge only by
+ * what was written in between.
+ */
+export function previewPurge(ws: Workspace, now: () => number = Date.now): PurgeResult {
+  try {
+    ws.db.transaction(() => {
+      throw new PreviewRollback(purgeHistory(ws, now));
+    })();
+  } catch (e) {
+    if (e instanceof PreviewRollback) return e.result;
+    throw e;
+  }
+  throw new Error('a purge preview returned without rolling back');
+}
+
 /**
  * Rewrites the file to drop the pages a purge freed (D24). An explicit user
  * command, never automatic: it rewrites the whole database and can take a
  * while. Returns the file size before and after, in bytes.
  */
 export function compact(ws: Workspace): { before: number; after: number } {
-  const size = () => {
-    const r = ws.db.prepare('SELECT page_count * page_size AS bytes FROM pragma_page_count(), pragma_page_size()').get() as { bytes: number };
-    return r.bytes;
-  };
-  const before = size();
+  const before = fileBytes(ws.db);
   ws.db.exec('VACUUM');
-  return { before, after: size() };
+  return { before, after: fileBytes(ws.db) };
+}
+
+/** Pages in the file times page size, freed pages included: what the file occupies until compacted. */
+export function fileBytes(db: Database): number {
+  return (db.prepare('SELECT page_count * page_size AS bytes FROM pragma_page_count(), pragma_page_size()').get() as { bytes: number }).bytes;
 }

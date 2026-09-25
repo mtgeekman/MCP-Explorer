@@ -144,6 +144,43 @@ test('requests that need a workspace say so when none is open', async () => {
   await assert.rejects(call('servers.list'), { name: 'NoWorkspaceError' });
 });
 
+// --- settings and history (phase 05) ------------------------------------------------------
+
+test('settings: each is per workspace and survives closing and reopening it', async () => {
+  const { call } = setup();
+  const a = await call('workspaces.create', { name: 'A', protection: { kind: 'keychain' } });
+  assert.deepEqual(await call('settings.get'), { persistResults: true, retentionMaxBytes: 524_288_000, retentionMaxAgeDays: 90, askBeforeCalls: true, mrtrSoftCap: 5 });
+  const changed = { persistResults: false, retentionMaxBytes: 10_000_000, retentionMaxAgeDays: 30, askBeforeCalls: false, mrtrSoftCap: 9 };
+  assert.deepEqual(await call('settings.update', { changes: changed }), changed);
+  await call('workspaces.create', { name: 'B', protection: { kind: 'keychain' } });
+  assert.equal((await call('settings.get')).mrtrSoftCap, 5, 'a second workspace has its own settings');
+  await call('workspaces.close');
+  await call('workspaces.open', { id: a.id, unlock: { kind: 'keychain' } });
+  assert.deepEqual(await call('settings.get'), changed);
+});
+
+test('settings: a bad value is refused by name and nothing changes', async () => {
+  const { call } = setup();
+  await call('workspaces.create', { name: 'W', protection: { kind: 'none' } });
+  await assert.rejects(call('settings.update', { changes: { mrtrSoftCap: 0 } }), { name: 'InvalidSettingsError' });
+  assert.equal((await call('settings.get')).mrtrSoftCap, 5);
+});
+
+test('history: size, preview, purge and compact answer for the open workspace', async () => {
+  const { call } = setup();
+  await call('workspaces.create', { name: 'W', protection: { kind: 'none' } });
+  const size = await call('history.size');
+  assert.ok(size.fileBytes >= size.usedBytes && size.usedBytes > 0, JSON.stringify(size));
+  const preview = await call('history.previewPurge');
+  assert.equal(preview.callsDeleted, 0);
+  assert.deepEqual(await call('history.purge'), preview);
+  // A database with nothing freed can grow by a page when repacked; shrinking
+  // after a purge is test/storage-retention.test.mjs's to show.
+  const compacted = await call('history.compact');
+  assert.equal(compacted.before, size.fileBytes);
+  assert.equal(compacted.after, (await call('history.size')).fileBytes);
+});
+
 // --- connections and the log (D34) --------------------------------------------------------
 
 test('a connect is announced as states and units, and the log reads back the same bytes in order', async () => {

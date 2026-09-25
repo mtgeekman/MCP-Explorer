@@ -346,16 +346,19 @@ function loggedHeaders(headers: HeadersInit | undefined, secretNames: Set<string
   return out;
 }
 
-async function requestBytes(input: string | URL | Request, init: RequestInit | undefined): Promise<Uint8Array> {
+/**
+ * A request body's bytes, or the body's type when they cannot be had: a
+ * stream or a Blob would have to be read to be logged, and reading it here
+ * would consume what the request is about to send.
+ */
+async function requestBytes(input: string | URL | Request, init: RequestInit | undefined): Promise<Uint8Array | { unrecorded: string }> {
   const body = init?.body ?? (input instanceof Request ? await input.clone().arrayBuffer() : undefined);
   if (body === undefined || body === null) return new Uint8Array(0);
   if (typeof body === 'string') return Buffer.from(body, 'utf8');
   if (body instanceof ArrayBuffer) return new Uint8Array(body);
   if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
   if (body instanceof URLSearchParams) return Buffer.from(body.toString(), 'utf8');
-  // A stream or a Blob would have to be read to be logged, and reading it here
-  // would consume what the request is about to send.
-  throw new Error(`the wire log cannot record a request body of type ${Object.prototype.toString.call(body)}`);
+  return { unrecorded: Object.prototype.toString.call(body) };
 }
 
 /**
@@ -378,10 +381,12 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
     const exchange = ++exchanges;
     const url = input instanceof Request ? input.url : String(input);
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
-    emit({
-      direction: 'out', kind: 'wire', bytes: await requestBytes(input, init),
-      http: { exchange, method, url, headers: loggedHeaders(init?.headers ?? (input instanceof Request ? input.headers : undefined), secretNames) },
-    });
+    const request: HttpDetails = { exchange, method, url, headers: loggedHeaders(init?.headers ?? (input instanceof Request ? input.headers : undefined), secretNames) };
+    const body = await requestBytes(input, init);
+    // A body the log cannot read still goes to the server; the log says so
+    // in place of bytes it does not have.
+    if (body instanceof Uint8Array) emit({ direction: 'out', kind: 'wire', bytes: body, http: request });
+    else appEvent(emit, { event: 'request-body-not-recorded', bodyType: body.unrecorded, ...request });
 
     const response = await base(input, init);
     const http: HttpDetails = { exchange, status: response.status, statusText: response.statusText, headers: loggedHeaders(response.headers, secretNames) };

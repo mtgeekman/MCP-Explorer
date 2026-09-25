@@ -103,10 +103,11 @@ ipcMain.handle('choose-folder', async (e) => {
   return r.canceled ? null : (r.filePaths[0] ?? null);
 });
 
-ipcMain.on('backend-restart', (e) => {
+// Every window's port died with the old backend, not only the asking one's:
+// the popped-out readable pane needs a new port too (deferred/phase-04).
+ipcMain.on('backend-restart', () => {
   if (!backend) backend = startBackend();
-  const win = BrowserWindow.fromWebContents(e.sender);
-  if (win) connect(win);
+  for (const win of BrowserWindow.getAllWindows()) connect(win);
 });
 
 app.whenReady().then(() => {

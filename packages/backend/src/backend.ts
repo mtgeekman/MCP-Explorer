@@ -10,6 +10,7 @@ import type { ServerRoot } from '../../platform/dist/index.js';
 import { ConnectionManager } from './connections.js';
 import { WorkspaceManager, type OpenWorkspace } from './workspaces.js';
 import { logPage, logUnit } from './log.js';
+import { listConfigLocations, readConfigs, saveImported } from './importer.js';
 import type { ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow } from './api.js';
 
 export interface BackendOptions {
@@ -81,6 +82,14 @@ export class Backend {
       'history.previewPurge': () => previewPurge(this.ws(), this.opts.now),
       'history.purge': () => purgeHistory(this.ws(), this.opts.now),
       'history.compact': () => compact(this.ws()),
+      'import.locations': ({ projectRoots }) => listConfigLocations(projectRoots),
+      'import.read': ({ locations }) => readConfigs(locations),
+      'import.save': ({ servers }) => {
+        const ids = saveImported(this.ws(), servers, this.opts.now);
+        // A replaced server may have been connected with secrets it no longer names.
+        for (const id of ids) this.conns().forgetSecrets(id);
+        return ids.map((id) => this.row(id));
+      },
     };
   }
 

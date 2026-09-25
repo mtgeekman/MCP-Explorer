@@ -4,9 +4,11 @@
 import type { ConnectFailure, HttpDetails } from '../../protocol/dist/index.js';
 import type { PurgeResult, ServerSummary, Transport, WorkspaceSettings } from '../../storage/dist/index.js';
 
-export type { PurgeResult, WorkspaceSettings };
+export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
 import type { ConnectionState, SecretValues } from './connections.js';
 import type { Protection, Unlock, WorkspaceListing, WorkspaceNotice } from './workspaces.js';
+import type { ConfigLocation } from '../../platform/dist/index.js';
+import type { FoundLocation, ImportChoice, ReadConfig } from './importer.js';
 
 /**
  * A server definition as the renderer sees and edits it. Secret values never
@@ -105,6 +107,12 @@ export interface Requests {
   'history.purge': { params: Record<string, never>; result: PurgeResult };
   /** VACUUM: an explicit user command, never automatic (D24). */
   'history.compact': { params: Record<string, never>; result: { before: number; after: number } };
+  /** Which known config files exist, the user's and those of chosen project folders; nothing is read (decision 1). */
+  'import.locations': { params: { projectRoots?: string[] }; result: FoundLocation[] };
+  /** Reads and parses the files the user picked. */
+  'import.read': { params: { locations: ConfigLocation[] }; result: ReadConfig[] };
+  /** Saves the servers the user kept, all or none. Nothing is started. */
+  'import.save': { params: { servers: ImportChoice[] }; result: ServerRow[] };
 }
 
 /** The workspace file against the retention cap: the file can be larger than the cap until compacted (D24). */

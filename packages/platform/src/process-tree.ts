@@ -17,14 +17,31 @@ export interface KillTreeOptions {
   graceMs?: number;
 }
 
-/** Whether a process with this PID exists. A PID can be reused; callers hold PIDs only while they own the process. */
+/**
+ * Whether a process with this PID is running. A PID can be reused; callers
+ * hold PIDs only while they own the process.
+ *
+ * On Linux a zombie still answers kill(pid, 0) until its parent reaps it,
+ * though it has exited and holds nothing. An orphan is re-parented to PID 1,
+ * and a container whose PID 1 never reaps (a shell running a CI job) keeps it
+ * that way for good, so a zombie counts as not alive (pipeline 567).
+ */
 export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch (e) {
     // EPERM: it exists and belongs to someone else.
     return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+  if (process.platform !== 'linux') return true;
+  try {
+    // The state follows the command name, which is parenthesized and may itself contain ") ".
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const state = stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3);
+    return state !== 'Z' && state !== 'X';
+  } catch {
+    // Gone between the signal and the read.
+    return false;
   }
 }
 

@@ -90,7 +90,19 @@ smoke:linux:
           libgbm1 libasound2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxss1 libx11-xcb1
         npm ci --ignore-scripts
         node node_modules/electron/install.js
-        npm run build
+        # Diagnostics (2026-09-25): this job once hung in build:renderer while
+        # `check`, running the same build, passed. Each step is marked and
+        # bounded so a hang names its step and fails in 10 minutes.
+        echo "== nproc $(nproc); $(free -m | awk "/Mem:/ {print \$2\" MB RAM\"}")"
+        step() { echo "== $1 ($(date +%T))"; shift; timeout 600 "$@"; }
+        step protocol npm run build:protocol
+        step storage npm run build:storage
+        step platform npm run build:platform
+        step backend npm run build:backend
+        step app npm run build:app
+        step "renderer tsc" npx tsc -p app/renderer/tsconfig.json
+        step "renderer vite" npx vite build -c app/renderer/vite.config.mts --logLevel info
+        echo "== build done ($(date +%T))"
         xvfb-run -a npm run test:smoke
       '
 

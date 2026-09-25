@@ -44,7 +44,7 @@ export function ImportServers({ client, encrypted, servers, onImported, onClose 
         setPicked((picked) => mergePicked(picked, before, found));
         setLocations(found);
       } catch (e) {
-        setError(message(e));
+        if (request === latest.current) setError(message(e));
       }
     })();
   }, [client, projectRoots]);

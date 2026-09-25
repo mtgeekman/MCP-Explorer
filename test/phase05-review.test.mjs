@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseConfig } from '../packages/backend/dist/index.js';
-import { mergePicked, redactRaw } from '../app/renderer/src/lib/importReview.ts';
+import { hiddenValues, mergePicked, redactRaw } from '../app/renderer/src/lib/importReview.ts';
 
 const cc = (projectRoot) => ({ client: 'claude-code', format: 'mcpServers', home: '/home/me', sep: '/', projectRoot });
 
@@ -64,4 +64,14 @@ test('R05-13: redaction finds a value with a backslash and a quote', () => {
   const raw = JSON.stringify({ env: { K: value } }, null, 2);
   assert.ok(raw.includes(String.raw`a\"b\\c`), 'the sample must hold both escapes');
   assert.ok(!redactRaw(raw, [value]).includes(String.raw`a\"b\\c`));
+});
+
+test('R05-14: the raw view hides marked values of an importable entry, and credential-looking ones of a disabled entry', () => {
+  const server = { name: 's', transport: 'stdio', command: 'node', env: { API_KEY: 'k1', MODE: 'dev' }, headers: {}, askFor: { env: [], headers: [] }, suggestedSecrets: { env: ['API_KEY'], headers: [] } };
+  const importable = { name: 's', location: 'mcpServers', dropped: [], notes: [], raw: '{}', sensitive: ['k1'], server };
+  assert.deepEqual(hiddenValues(importable, { keep: true, name: 's', onClash: 'skip', secretEnv: ['API_KEY'], secretHeaders: [] }), ['k1']);
+  // Unmarked by the user: shown, as the table shows it.
+  assert.deepEqual(hiddenValues(importable, { keep: true, name: 's', onClash: 'skip', secretEnv: [], secretHeaders: [] }), []);
+  const disabled = { name: 'd', location: 'mcpServers', dropped: [], notes: [], raw: '{}', sensitive: ['k2'], disabled: 'no' };
+  assert.deepEqual(hiddenValues(disabled, undefined), ['k2']);
 });

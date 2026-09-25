@@ -23,16 +23,27 @@ const UNION = `
   FROM frame f JOIN connection c ON c.id = f.connection_id WHERE f.unit_id IS NULL
 `;
 
+// What a page is chosen by, and nothing else. wire_unit stores byte_length,
+// withheld and http_json after its bytes, so reading any of them walks the
+// row's whole BLOB overflow chain; choosing a page from these keys alone
+// touches no BLOB, and only the page's own rows are then read in full.
+const KEYS = `
+  SELECT u.id, u.at, 0 AS reserialized FROM wire_unit u JOIN connection c ON c.id = u.connection_id WHERE c.server_id = @server
+  UNION ALL
+  SELECT f.id, f.at, 1 FROM frame f JOIN connection c ON c.id = f.connection_id WHERE c.server_id = @server AND f.unit_id IS NULL
+`;
+
 /** A page of a server's log, oldest first, older than `before` when given. */
 export function logPage(db: Database, serverId: string, before: LogCursor | undefined, limit: number): LogUnit[] {
   const cursor = before ? [before.at, before.reserialized ? 1 : 0, before.id] : [Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER];
-  const rows = db.prepare(`
-    SELECT * FROM (${UNION})
-    WHERE server_id = @server AND (at, reserialized, id) < (@at, @reserialized, @id)
+  const keys = db.prepare(`
+    SELECT id, reserialized FROM (${KEYS})
+    WHERE (at, reserialized, id) < (@at, @reserialized, @id)
     ORDER BY at DESC, reserialized DESC, id DESC
     LIMIT @limit
-  `).all({ server: serverId, at: cursor[0], reserialized: cursor[1], id: cursor[2], limit }) as Row[];
-  return withFrames(db, rows.reverse());
+  `).all({ server: serverId, at: cursor[0], reserialized: cursor[1], id: cursor[2], limit }) as { id: number; reserialized: number }[];
+  const rows = keys.reverse().map((k) => db.prepare(`SELECT * FROM (${UNION}) WHERE id = ? AND reserialized = ?`).get(k.id, k.reserialized) as Row);
+  return withFrames(db, rows);
 }
 
 /** One unit by id, or null. `reserialized` picks a pre-schema-3 frame, whose ids are a separate sequence. */

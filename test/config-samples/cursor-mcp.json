@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "notes": {
+      "command": "node",
+      "args": ["${userHome}/notes-mcp/index.js"],
+      "env": { "NOTES_API_KEY": "${env:NOTES_API_KEY}", "NOTES_PASSWORD": "hunter2" }
+    },
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer abc123" },
+      "auth": { "CLIENT_ID": "x", "scopes": ["read"] }
+    },
+    "both": { "command": "node", "url": "https://example.com/mcp" },
+    "bad-args": { "command": "node", "args": "server.js" },
+    "not-an-object": "node server.js"
+  }
+}

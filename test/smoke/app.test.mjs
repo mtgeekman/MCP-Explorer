@@ -1,4 +1,4 @@
-// Phase 04 acceptance, driven through the real app with playwright-core. Run
+// Phase 04 and 05 acceptance, driven through the real app with playwright-core. Run
 // with `npm run test:smoke` after `npm run build`; it needs a display (CI
 // runs it under xvfb on Linux). Set MCPX_APP_EXE to drive a packaged build
 // instead of the built tree.
@@ -7,7 +7,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { _electron as electron } from 'playwright-core';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -213,4 +213,103 @@ test('D36: a hard kill of the whole app is best effort, and a server that exits 
   for (const m of metrics) { try { process.kill(m.pid, 'SIGKILL'); } catch { /* already gone with its parent */ } }
   const [server] = pids(spawns);
   assert.ok(await gone(server), `the server ${server} did not exit when its stdin closed`);
+});
+
+// --- phase 05 -----------------------------------------------------------------------------
+
+test('settings persist per workspace and survive a restart', async () => {
+  const { dataDir } = seed([]);
+  let run = await launch(dataDir);
+  try {
+    await openWorkspace(run.page);
+    await run.page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await run.page.getByLabel('Rounds before pausing a call').fill('7');
+    await run.page.getByLabel('Ask before calls').uncheck();
+    await run.page.getByRole('button', { name: 'Save', exact: true }).click();
+    await run.page.getByText('Saved.').waitFor();
+  } finally {
+    await run.app.close();
+  }
+  run = await launch(dataDir);
+  try {
+    await openWorkspace(run.page);
+    await run.page.getByRole('button', { name: 'Settings', exact: true }).click();
+    assert.equal(await run.page.getByLabel('Rounds before pausing a call').inputValue(), '7');
+    assert.equal(await run.page.getByLabel('Ask before calls').isChecked(), false);
+  } finally {
+    await run.app.close();
+  }
+});
+
+test('import: the Cursor config in a project folder is found, reviewed with its command shown, and imported; the secret value is not kept', async () => {
+  const folder = mkdtempSync(join(work, 'project-'));
+  const secret = 'smoke-secret-value-4242';
+  mkdirSync(join(folder, '.cursor'));
+  writeFileSync(join(folder, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { imported: { command: process.execPath, args: [modern], env: { API_KEY: secret, MODE: 'x' } } } }));
+  const { dataDir } = seed([]);
+  const { app, page } = await launch(dataDir);
+  try {
+    // The system folder dialog cannot be driven; it answers with the folder.
+    await app.evaluate(({ dialog }, dir) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] }); }, folder);
+    await openWorkspace(page);
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await page.getByRole('button', { name: 'Add a project folder' }).click();
+    await page.getByText('Cursor, project').waitFor();
+    // Real user-level files on this machine may be found too; they are unticked and never read.
+    for (const box of await page.locator('.import .choice', { hasNotText: 'Cursor, project' }).locator('input').all()) await box.uncheck();
+    await page.getByRole('button', { name: 'Read 1 file' }).click();
+    await page.locator('.will-run code', { hasText: 'modern-server.mjs' }).waitFor();
+    assert.equal(await page.getByLabel('API_KEY is a secret').isChecked(), true, 'a credential-looking name is pre-marked');
+    await page.getByText('this workspace is not encrypted', { exact: false }).waitFor();
+    await page.getByRole('button', { name: 'Import 1 server' }).click();
+    await page.getByText('Imported 1 server').waitFor();
+    await page.getByRole('button', { name: 'Done' }).click();
+    await page.locator('.server-row', { hasText: 'imported' }).waitFor();
+  } finally {
+    await app.close();
+  }
+  for (const f of readdirSync(dataDir, { recursive: true }).map((r) => join(dataDir, r)).filter((p) => statSync(p).isFile())) {
+    assert.ok(!readFileSync(f).includes(secret), `the secret's value was written to ${f}`);
+  }
+});
+
+test('after a backend restart the popped-out readable window has a live port again', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'readable', transport: 'stdio', command: process.execPath, args: [modern] }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'readable');
+    await disconnect(page);
+    const popped = app.waitForEvent('window');
+    await page.getByRole('button', { name: 'Pop out' }).click();
+    const readable = await popped;
+    await readable.locator('.readable-window').waitFor();
+    const backend = (await app.evaluate(({ app: a }) => a.getAppMetrics())).find((m) => m.type === 'Utility' && m.name === 'MCP Explorer backend');
+    process.kill(backend.pid, 'SIGKILL');
+    await page.getByText('The backend stopped').waitFor({ timeout: 15_000 });
+    await page.getByRole('button', { name: 'Restart' }).click();
+    await openWorkspace(page);
+    await page.locator('.server-row', { hasText: 'readable' }).click();
+    await page.locator('.log-line').first().click();
+    // The unit is read through the readable window's own port: a dead one never answers.
+    await readable.locator('.readable-body').waitFor({ timeout: 10_000 });
+  } finally {
+    await app.close();
+  }
+});
+
+test('R05-7: a restart request while the backend is running does not reset the page', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'kept', transport: 'stdio', command: process.execPath, args: [modern] }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await page.locator('.server-row', { hasText: 'kept' }).click();
+    await page.getByRole('button', { name: 'Connect', exact: true }).waitFor();
+    // A second Restart click, or one from another window, arrives with the backend alive.
+    await page.evaluate(() => window.mcpxShell.restartBackend());
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.ok(await page.getByRole('button', { name: 'Connect', exact: true }).isVisible(), 'the page was remounted and lost the selected server');
+  } finally {
+    await app.close();
+  }
 });

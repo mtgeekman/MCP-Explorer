@@ -1,0 +1,4 @@
+{
+  "editor.fontSize": 14,
+  "mcp": { "servers": { "old": { "type": "stdio", "command": "uvx", "args": ["mcp-server-time"] } } }
+}

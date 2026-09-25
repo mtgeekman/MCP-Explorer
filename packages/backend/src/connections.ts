@@ -200,6 +200,8 @@ export class ConnectionManager {
           command: def.command!, args: def.args, cwd: def.cwd,
           env: { ...inheritedEnv(), ...def.env, ...def.secretEnv, ...session?.env },
           era, onUnit, onClose, probeTimeoutMs: this.opts.probeTimeoutMs,
+          // A failed connect ends the whole tree, not just its root (D36).
+          terminate: (pid) => killProcessTree(pid),
         })
         : await connectHttp({
           url: def.url!, kind: def.transport, era,

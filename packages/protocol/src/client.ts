@@ -67,6 +67,12 @@ export interface ConnectOptions {
   era?: EraPreference;
   /** Called once when a connected session ends, for any reason, with how the process exited. */
   onClose?: (info: CloseInfo) => void;
+  /**
+   * Ends the spawned process and everything it started, for a connect that
+   * fails with the server still running. Without it the SDK's close() is used,
+   * which signals the spawned process alone.
+   */
+  terminate?: (pid: number) => Promise<void>;
   clientName?: string;
   clientVersion?: string;
   /**
@@ -654,9 +660,13 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
     await client.connect(tap(inner, opts.onFrame, opts.onFrameError));
   } catch (e) {
     const failure = classifyStdio(e, watch);
-    // A server that answered is still running. End it here; the caller's
-    // process-tree kill (D36) is the backstop for one that ignores this.
-    if (failure.kind !== 'not-started' && failure.kind !== 'exited') await inner.close().catch(() => undefined);
+    // A server that answered is still running, and must be ended here. The
+    // SDK's close() signals only the process it spawned, which orphans what a
+    // shell root started (D36), so a caller that can end a whole tree says so.
+    if (failure.kind !== 'not-started' && failure.kind !== 'exited') {
+      if (opts.terminate && watch.pid !== undefined) await opts.terminate(watch.pid).catch(() => undefined);
+      await inner.close().catch(() => undefined);
+    }
     // D20 (revised 2026-09-24): no second spawn here. A server that died on
     // the probe, or answered -32022 to a pinned legacy initialize, is
     // reported; starting it again is the user's decision.

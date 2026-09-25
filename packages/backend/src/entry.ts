@@ -42,14 +42,20 @@ export function rawEntry(db: Database, capture: { connectionId: number | null; o
     if (unit.bytes === null) { withheld = true; continue; }
     const bytes = new Uint8Array(unit.bytes);
     const range = findEntry(bytes, unit.http_json, list, key);
+    if (range === 'split') {
+      return { found: false, reason: `The reply (wire log unit ${unit.id}) sent this entry across several data lines of one SSE event, so its bytes are not one piece to cut out. The wire log shows the event whole.` };
+    }
     if (range) return { found: true, unitId: unit.id, offset: range[0], bytes: bytes.slice(range[0], range[1]) };
   }
   if (withheld) return { found: false, reason: 'The reply was withheld under this workspace\'s results setting, so its bytes were not kept.' };
   return { found: false, reason: 'The wire log no longer holds the reply this entry was listed in; it may have been purged.' };
 }
 
-/** The entry's [start, end) byte range within the unit, or undefined. */
-function findEntry(bytes: Uint8Array, httpJson: string | null, list: EntryList, key: string): [number, number] | undefined {
+/**
+ * The entry's [start, end) byte range within the unit, `split` when the unit
+ * holds it but not as contiguous bytes, or undefined.
+ */
+function findEntry(bytes: Uint8Array, httpJson: string | null, list: EntryList, key: string): [number, number] | 'split' | undefined {
   let whole: string;
   try {
     whole = utf8.decode(bytes);
@@ -57,14 +63,18 @@ function findEntry(bytes: Uint8Array, httpJson: string | null, list: EntryList, 
     return undefined;
   }
   // An SSE event carries its JSON after `data: `; only a one-line data field
-  // maps back to contiguous bytes, which is how servers send a message.
+  // maps back to contiguous bytes, which is how servers send a message. The
+  // data of a multi-line field is still searched, so the caller can say why
+  // there is nothing to cut rather than report the reply as gone (R06-9).
   let json = whole;
   let base = 0;
+  let split = false;
   const framing = httpJson ? (JSON.parse(httpJson) as { framing?: string }).framing : undefined;
   if (framing === 'sse-event') {
     const data = sseEventData(bytes);
-    if (data === null || data.includes('\n')) return undefined;
-    base = whole.indexOf(data);
+    if (data === null) return undefined;
+    split = data.includes('\n');
+    base = split ? 0 : whole.indexOf(data);
     if (base === -1) return undefined;
     json = data;
   }
@@ -76,6 +86,7 @@ function findEntry(bytes: Uint8Array, httpJson: string | null, list: EntryList, 
     for (const entry of entries?.type === 'array' ? entries.children ?? [] : []) {
       const id = property(entry, ENTRY_KEY[list]);
       if (id?.type !== 'string' || id.value !== key) continue;
+      if (split) return 'split';
       // Offsets are in UTF-16 units of the decoded text; the bytes are UTF-8.
       const at = byteLength(whole.slice(0, base + entry.offset));
       return [at, at + byteLength(json.slice(entry.offset, entry.offset + entry.length))];

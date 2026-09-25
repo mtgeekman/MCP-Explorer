@@ -13,8 +13,9 @@ import { ServerEditor } from './servers/ServerEditor';
 import { Notices } from './Notices';
 import { WireLog } from './log/WireLog';
 import { ReadablePane } from './log/ReadablePane';
+import { Settings } from './settings/Settings';
 
-type Main = { kind: 'server'; id: string } | { kind: 'add' } | { kind: 'edit'; id: string } | { kind: 'none' };
+type Main = { kind: 'server'; id: string } | { kind: 'add' } | { kind: 'edit'; id: string } | { kind: 'settings' } | { kind: 'none' };
 
 export function App({ client }: { client: BackendClient }) {
   const [workspace, setWorkspace] = useState<OpenedWorkspace | null | undefined>(undefined);
@@ -100,6 +101,8 @@ export function App({ client }: { client: BackendClient }) {
       <header className="app-header">
         <span className="app-title">MCP Explorer</span>
         <WorkspaceSwitcher client={client} current={workspace} workspaces={workspaces} onOpened={opened} onCreate={() => setCreating(true)} onClosed={async () => { setWorkspace(null); await refreshWorkspaces(); }} />
+        <span className="header-spacer" />
+        <button onClick={() => { selectUnit(null); setMain({ kind: 'settings' }); }}>Settings</button>
       </header>
       <Notices notices={notices} onDismiss={(i) => setNotices((n) => n.filter((_, j) => j !== i))} />
       <div className="app-body">
@@ -108,6 +111,9 @@ export function App({ client }: { client: BackendClient }) {
         <main className="app-main">
           {main.kind === 'none' && (
             <div className="empty">{servers.length ? 'Choose a server.' : 'No servers yet. Add one to connect to it.'}</div>
+          )}
+          {main.kind === 'settings' && (
+            <Settings client={client} workspaceName={workspace.name} onClose={() => setMain({ kind: 'none' })} />
           )}
           {main.kind === 'add' && (
             <ServerEditor client={client} encrypted={workspace.encrypted} onSaved={async (row) => { await refreshServers(); setMain({ kind: 'server', id: row.id }); }} onCancel={() => setMain({ kind: 'none' })} />

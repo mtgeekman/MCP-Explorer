@@ -38,7 +38,10 @@ function startBackend(): UtilityProcess {
 async function killServerTrees(): Promise<void> {
   const roots = serverRoots;
   serverRoots = [];
-  await Promise.all(roots.map((root) => killServerTree(root).catch(() => undefined)));
+  // A tree that could not be ended is said so on stderr, never dropped silently.
+  await Promise.all(roots.map((root) => killServerTree(root).catch((e: unknown) => {
+    console.error(`could not end the process tree of server process ${root.pid}: ${e instanceof Error ? e.message : String(e)}`);
+  })));
 }
 
 /** Gives a window its own port to the backend. */

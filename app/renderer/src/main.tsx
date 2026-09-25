@@ -18,6 +18,8 @@ declare global {
       selectReadable(selection: { id: number; reserialized: boolean } | null): void;
       onReadableSelect(listener: (selection: { id: number; reserialized: boolean } | null) => void): void;
       onReadableClosed(listener: () => void): void;
+      /** A folder the user chose in the system dialog, or null if they cancelled. */
+      chooseFolder(): Promise<string | null>;
     };
   }
 }

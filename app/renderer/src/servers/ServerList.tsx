@@ -7,14 +7,17 @@ const STATUS: Record<ServerRow['state']['status'], string> = {
   failed: 'Failed', closing: 'Closing', ended: 'Stopped',
 };
 
-export function ServerList({ servers, selectedId, onSelect, onAdd }: {
-  servers: ServerRow[]; selectedId?: string; onSelect: (id: string) => void; onAdd: () => void;
+export function ServerList({ servers, selectedId, onSelect, onAdd, onImport }: {
+  servers: ServerRow[]; selectedId?: string; onSelect: (id: string) => void; onAdd: () => void; onImport: () => void;
 }) {
   return (
     <nav className="server-list">
       <div className="server-list-head">
         <span>Servers</span>
-        <button onClick={onAdd}>Add</button>
+        <span className="server-list-actions">
+          <button onClick={onImport}>Import</button>
+          <button onClick={onAdd}>Add</button>
+        </span>
       </div>
       <ul>
         {servers.map((s) => (

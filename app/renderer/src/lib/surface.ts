@@ -151,3 +151,22 @@ export function annotationRows(annotations: unknown): [string, string][] | undef
 export function entryKey(list: EntryList, item: Record<string, unknown>): string {
   return String(item[LISTS.find((l) => l.list === list)!.key]);
 }
+
+/** An entry chosen in a surface view, with the definition it was chosen from. */
+export interface Selection {
+  serverId: string;
+  list: EntryList;
+  key: string;
+  item: Record<string, unknown>;
+  revision: string;
+}
+
+/**
+ * The selection re-read from a newer capture: the pane must show the same
+ * definition the raw view fetches, not the one clicked before a Refresh
+ * (R06-4). Null when the entry is no longer listed.
+ */
+export function reselect(selected: Selection, surface: Pick<NormalizedSurface, 'revision' | EntryList> | undefined): Selection | null {
+  const item = (surface?.[selected.list] as unknown as Record<string, unknown>[] | undefined)?.find((i) => entryKey(selected.list, i) === selected.key);
+  return surface && item ? { ...selected, item, revision: surface.revision } : null;
+}

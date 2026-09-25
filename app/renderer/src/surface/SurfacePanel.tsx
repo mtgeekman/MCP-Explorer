@@ -2,19 +2,14 @@
 // resources and templates. Each entry opens on its exact bytes from the list
 // reply (board 5.1A); the readable pane beside it is where a person reads.
 // Refresh is the only way anything is listed again (P2, phase 06 decision 3).
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { EntryList, RawEntry, ServerRow, SurfaceView } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
-import { LISTS, entryKey, listLabel, listState } from '../lib/surface';
+import { LISTS, entryKey, listLabel, listState, reselect, type Selection } from '../lib/surface';
+import { latestOnly } from '../lib/latest';
 import { RawViewer } from '../log/RawViewer';
 
-export interface SelectedItem {
-  serverId: string;
-  list: EntryList;
-  key: string;
-  item: Record<string, unknown>;
-  revision: string;
-}
+export type SelectedItem = Selection;
 
 type Tab = 'instructions' | EntryList;
 
@@ -27,9 +22,23 @@ export function SurfacePanel({ client, server, selected, onSelect }: {
   const [tab, setTab] = useState<Tab>('tools');
   const [error, setError] = useState<string | null>(null);
 
+  // Loads overlap (a capture's start and end each announce a change); only
+  // the newest reply is shown (R06-5).
+  const latest = useMemo(() => latestOnly(), [server.id]);
+  const failed = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
+
   const load = useCallback(() => {
-    client.request('surface.get', { serverId: server.id }).then(setView, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, [client, server.id]);
+    latest(client.request('surface.get', { serverId: server.id }), setView).catch(failed);
+  }, [client, server.id, latest]);
+
+  // A new capture replaces the definition the pane shows, as the raw view's
+  // fetch does (R06-4).
+  useEffect(() => {
+    if (!view || !selected || selected.serverId !== server.id) return;
+    const next = reselect(selected, view.capture?.surface);
+    if (next?.item !== selected.item) onSelect(next);
+    // Only a new view re-reads the selection; a new selection is already current.
+  }, [view]);
 
   useEffect(() => {
     load();
@@ -40,11 +49,7 @@ export function SurfacePanel({ client, server, selected, onSelect }: {
 
   const refresh = async () => {
     setError(null);
-    try {
-      setView(await client.request('surface.refresh', { serverId: server.id }));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+    await latest(client.request('surface.refresh', { serverId: server.id }), setView).catch(failed);
   };
 
   const live = server.state.status === 'connected';

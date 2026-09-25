@@ -134,7 +134,10 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
     }
     db.transaction(() => {
       if (oldestCall && (!oldestLoose || oldestCall.at <= oldestLoose.at)) {
-        callsDeleted += db.prepare(`DELETE FROM call WHERE id IN (SELECT id FROM call WHERE status <> 'in_progress' ORDER BY started_at, id LIMIT ${SIZE_BATCH})`).run().changes;
+        // Oldest first across kinds: a batch of calls stops at the oldest
+        // loose unit or frame, which goes before any call newer than it.
+        callsDeleted += db.prepare(`DELETE FROM call WHERE id IN (SELECT id FROM call WHERE status <> 'in_progress' AND started_at <= ? ORDER BY started_at, id LIMIT ${SIZE_BATCH})`)
+          .run(oldestLoose?.at ?? Number.MAX_SAFE_INTEGER).changes;
       } else if (oldestLoose === oldestUnit) {
         // Sized by the bytes still to free, not by a row count: small units
         // at 25 a scan took thousands of scans; many at once overshot the cap.
@@ -152,7 +155,11 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
         }
         unitsDeleted += db.prepare('DELETE FROM wire_unit WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids)).changes;
       } else {
-        framesDeleted += db.prepare(`DELETE FROM frame WHERE id IN (SELECT id FROM frame WHERE call_id IS NULL AND unit_id IS NULL ORDER BY at, id LIMIT ${SIZE_BATCH * 20})`).run().changes;
+        // The same bound for frames written before schema 3: none newer than
+        // the oldest call or loose unit.
+        const frameBound = Math.min(oldestCall?.at ?? Number.MAX_SAFE_INTEGER, oldestUnit?.at ?? Number.MAX_SAFE_INTEGER);
+        framesDeleted += db.prepare(`DELETE FROM frame WHERE id IN (SELECT id FROM frame WHERE call_id IS NULL AND unit_id IS NULL AND at <= ? ORDER BY at, id LIMIT ${SIZE_BATCH * 20})`)
+          .run(frameBound).changes;
       }
     })();
   }

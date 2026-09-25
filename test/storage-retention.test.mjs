@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   createWorkspaceDb, openWorkspaceDb, saveServer, HistoryRecorder, recordCapture,
-  purgeHistory, compact, liveBytes, readSettings, updateSettings, InvalidSettingsError,
+  purgeHistory, previewPurge, compact, liveBytes, readSettings, updateSettings, InvalidSettingsError,
 } from '../packages/storage/dist/index.js';
 import { unavailableFields } from '../packages/protocol/dist/index.js';
 import { memoryStore } from './support/memory-store.mjs';
@@ -262,26 +262,94 @@ test('triggers: creating a workspace reports no purge', () => {
 
 // --- settings and compaction ------------------------------------------------------------
 
-test('settings: defaults are 500 MB, 90 days and results kept, and changes persist', () => {
+test('settings: defaults are 500 MB, 90 days, results kept, ask before calls, 5 rounds; changes persist', () => {
   const { ws, req } = setup();
-  assert.deepEqual(readSettings(ws), { persistResults: true, retentionMaxBytes: 524_288_000, retentionMaxAgeDays: 90 });
-  updateSettings(ws, { persistResults: false, retentionMaxBytes: 1_000_000 });
+  assert.deepEqual(readSettings(ws), { persistResults: true, retentionMaxBytes: 524_288_000, retentionMaxAgeDays: 90, askBeforeCalls: true, mrtrSoftCap: 5 });
+  updateSettings(ws, { persistResults: false, retentionMaxBytes: 1_000_000, askBeforeCalls: false, mrtrSoftCap: 12 });
   ws.close();
   const reopened = openWorkspaceDb({ ...req, now: () => NOW });
   try {
-    assert.deepEqual(readSettings(reopened), { persistResults: false, retentionMaxBytes: 1_000_000, retentionMaxAgeDays: 90 });
+    assert.deepEqual(readSettings(reopened), { persistResults: false, retentionMaxBytes: 1_000_000, retentionMaxAgeDays: 90, askBeforeCalls: false, mrtrSoftCap: 12 });
   } finally {
     reopened.close();
   }
 });
 
-test('settings: non-positive or fractional limits are refused and nothing changes', () => {
+test('settings: non-positive, fractional or mistyped values are refused and nothing changes', () => {
   const { ws } = setup();
   try {
-    for (const bad of [{ retentionMaxBytes: 0 }, { retentionMaxBytes: -5 }, { retentionMaxAgeDays: 1.5 }, { retentionMaxAgeDays: Number.NaN }]) {
+    for (const bad of [{ retentionMaxBytes: 0 }, { retentionMaxBytes: -5 }, { retentionMaxAgeDays: 1.5 }, { retentionMaxAgeDays: Number.NaN },
+      { mrtrSoftCap: 0 }, { mrtrSoftCap: 2.5 }, { mrtrSoftCap: '5' }, { askBeforeCalls: 'no' }, { persistResults: 0 }]) {
       assert.throws(() => updateSettings(ws, bad), InvalidSettingsError, JSON.stringify(bad));
     }
-    assert.deepEqual(readSettings(ws), { persistResults: true, retentionMaxBytes: 524_288_000, retentionMaxAgeDays: 90 });
+    assert.deepEqual(readSettings(ws), { persistResults: true, retentionMaxBytes: 524_288_000, retentionMaxAgeDays: 90, askBeforeCalls: true, mrtrSoftCap: 5 });
+  } finally {
+    ws.close();
+  }
+});
+
+test('settings: a key that is not a setting is neither stored nor returned', () => {
+  const { ws } = setup();
+  try {
+    const next = updateSettings(ws, { mrtrSoftCap: 7, bogus: 'x' });
+    assert.deepEqual(next, { persistResults: true, retentionMaxBytes: 524_288_000, retentionMaxAgeDays: 90, askBeforeCalls: true, mrtrSoftCap: 7 });
+    assert.deepEqual(readSettings(ws), next);
+  } finally {
+    ws.close();
+  }
+});
+
+// --- purge preview ("Purge now", phase 05) -------------------------------------
+
+/** Every row count that a purge can change. */
+const historyCounts = (ws) => Object.fromEntries(['call', 'call_round', 'frame', 'wire_unit', 'connection'].map((t) => [t, count(ws, t)]));
+
+test('preview: by age, it reports exactly what the purge then deletes, and deletes nothing itself', () => {
+  const { ws, serverId } = setup();
+  try {
+    // Recent first: finishing a call purges at its own clock, which would
+    // delete the old calls if they were already there.
+    for (let i = 0; i < 3; i++) seedCall(ws, { serverId }, NOW - DAY - i);
+    for (let i = 0; i < 5; i++) seedCall(ws, { serverId }, NOW - 100 * DAY - i);
+    const before = historyCounts(ws);
+    const preview = previewPurge(ws, () => NOW);
+    assert.deepEqual(historyCounts(ws), before, 'the preview deleted rows');
+    assert.equal(preview.callsDeleted, 5);
+    const actual = purgeHistory(ws, () => NOW);
+    assert.deepEqual(preview, actual);
+  } finally {
+    ws.close();
+  }
+});
+
+test('preview: over the size cap, it matches the purge and leaves the pages in use unchanged', () => {
+  const { ws, serverId } = setup();
+  try {
+    for (let i = 0; i < 120; i++) seedCall(ws, { serverId }, NOW - (120 - i) * 60_000, { bytes: 2000 });
+    updateSettings(ws, { retentionMaxBytes: Math.floor(liveBytes(ws.db) / 2) });
+    const before = historyCounts(ws);
+    const live = liveBytes(ws.db);
+    const preview = previewPurge(ws, () => NOW);
+    assert.deepEqual(historyCounts(ws), before, 'the preview deleted rows');
+    assert.equal(liveBytes(ws.db), live);
+    assert.ok(preview.callsDeleted > 0 && preview.callsDeleted < 120);
+    assert.deepEqual(purgeHistory(ws, () => NOW), preview);
+  } finally {
+    ws.close();
+  }
+});
+
+test('preview: an error inside the purge still rolls back and is thrown as itself', () => {
+  const { ws, serverId } = setup();
+  try {
+    seedCall(ws, { serverId }, NOW - 100 * DAY);
+    const before = historyCounts(ws);
+    // A trigger that fails the purge's first delete after it has started.
+    ws.db.exec("CREATE TEMP TRIGGER fail_purge BEFORE DELETE ON wire_unit BEGIN SELECT RAISE(ABORT, 'refused'); END");
+    assert.throws(() => previewPurge(ws, () => NOW), /refused/);
+    ws.db.exec('DROP TRIGGER fail_purge');
+    assert.deepEqual(historyCounts(ws), before);
+    assert.equal(ws.db.inTransaction, false);
   } finally {
     ws.close();
   }

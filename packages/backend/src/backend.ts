@@ -3,7 +3,7 @@
 // testable without Electron (D17); the utility-process entry only wires ports.
 import { randomUUID } from 'node:crypto';
 import {
-  deleteServer, listServers, loadServer, readDetectedEra, saveServer,
+  compact, deleteServer, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
   type ServerDefinition, type SecretStore,
 } from '../../storage/dist/index.js';
 import type { ServerRoot } from '../../platform/dist/index.js';
@@ -75,6 +75,12 @@ export class Backend {
       'connections.disconnect': ({ serverId }) => this.conns().disconnect(serverId),
       'log.units': ({ serverId, before, limit }) => logPage(this.ws().db, serverId, before, limit ?? DEFAULT_PAGE),
       'log.get': ({ id, reserialized }) => logUnit(this.ws().db, id, reserialized),
+      'settings.get': () => readSettings(this.ws()),
+      'settings.update': ({ changes }) => updateSettings(this.ws(), changes),
+      'history.size': () => ({ fileBytes: fileBytes(this.ws().db), usedBytes: usedBytes(this.ws().db) }),
+      'history.previewPurge': () => previewPurge(this.ws(), this.opts.now),
+      'history.purge': () => purgeHistory(this.ws(), this.opts.now),
+      'history.compact': () => compact(this.ws()),
     };
   }
 

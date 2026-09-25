@@ -220,7 +220,7 @@ function readEntry(name: string, value: unknown, location: string, ctx: ConfigSo
       const r = substitute(raw, ctx);
       if ('unresolved' in r) {
         // Decision 9: never filled from the app's own environment. The value
-        // is asked for at connect, and held as a secret from then on.
+        // is asked for at connect and held for the session (D31, amended).
         server.askFor[kind].push(key);
         entry.notes.push(`${what[0].toUpperCase()}${what.slice(1)} ${key} comes from ${r.unresolved}; you will be asked for its value when you connect.`);
       } else {

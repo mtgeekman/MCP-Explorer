@@ -17,6 +17,7 @@ export {
   type Unlock,
 } from './workspaces.js';
 export { Backend, NoWorkspaceError, serve, type BackendOptions } from './backend.js';
+export { listConfigLocations, readConfigs, saveImported, ImportError, type FoundLocation, type ReadConfig, type ImportChoice } from './importer.js';
 export {
   parseConfig,
   looksSecret,

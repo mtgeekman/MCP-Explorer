@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "everything": { "type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"], "env": {} },
+    "helper": { "type": "http", "url": "https://example.com/mcp", "headersHelper": "/usr/local/bin/get-headers.sh" }
+  }
+}

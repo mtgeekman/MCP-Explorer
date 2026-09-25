@@ -14,7 +14,7 @@ function sources(dir, acc = []) {
     const rel = `${dir}/${entry}`;
     if (entry === 'node_modules' || entry === 'dist' || entry.startsWith('.')) continue;
     if (statSync(join(root, rel)).isDirectory()) sources(rel, acc);
-    else if (/\.(ts|mjs)$/.test(entry)) acc.push(rel);
+    else if (/\.(ts|tsx|mts|cts|mjs)$/.test(entry)) acc.push(rel);
   }
   return acc;
 }
@@ -32,7 +32,7 @@ const TRANSPORT_LAYER = ['packages/protocol/src/client.ts'];
  * Deliberately excluded: test/, which builds fixtures and asserts on frames by
  * design, and scripts/fixture/, which is servers (see FIXTURES below).
  */
-const SOURCE_DIRS = ['packages', 'src', 'scripts'];
+const SOURCE_DIRS = ['packages', 'app', 'scripts'];
 // Fixtures are SERVERS. They exist to put frames on the wire for the client to
 // read, so the client-side rule does not apply to them.
 const FIXTURES = 'scripts/fixture/';

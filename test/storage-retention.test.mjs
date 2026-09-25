@@ -12,6 +12,7 @@ import {
 } from '../packages/storage/dist/index.js';
 import { unavailableFields } from '../packages/protocol/dist/index.js';
 import { memoryStore } from './support/memory-store.mjs';
+import { frame } from './support/units.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'mcpx-ret-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -35,8 +36,8 @@ function seedCall(ws, rec, at, { bytes = 100, status = 'completed' } = {}) {
   const r = HistoryRecorder.open(ws, rec.serverId, clock);
   const call = r.beginCall('tool', 'echo');
   const seq = r.beginRound(call, { text: padding(bytes) });
-  r.frame('out', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: { text: padding(bytes) } } });
-  r.frame('in', { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: padding(bytes) }] } });
+  frame(r, 'out', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: { text: padding(bytes) } } });
+  frame(r, 'in', { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: padding(bytes) }] } });
   if (status === 'in_progress') return call;
   r.finishRound(call, seq, { result: { content: [] }, resultType: 'complete' });
   // finishCall applies retention too, but against the seeded clock, at which
@@ -67,6 +68,8 @@ test('age: calls older than the threshold go with their rounds and frames; newer
     assert.equal(ws.db.prepare('SELECT count(*) AS n FROM call_round WHERE call_id = ?').get(old).n, 0);
     assert.equal(ws.db.prepare('SELECT count(*) AS n FROM frame WHERE call_id = ?').get(old).n, 0);
     assert.equal(ws.db.prepare('SELECT count(*) AS n FROM frame WHERE call_id = ?').get(recent).n, 2);
+    assert.equal(ws.db.prepare('SELECT count(*) AS n FROM wire_unit WHERE call_id = ?').get(old).n, 0, "the old call's wire units were kept");
+    assert.equal(ws.db.prepare('SELECT count(*) AS n FROM wire_unit WHERE call_id = ?').get(recent).n, 2);
   } finally {
     ws.close();
   }
@@ -95,16 +98,51 @@ test('age: a call still in progress is never purged, however old', () => {
   }
 });
 
-test('age: connection-level frames go by their own time', () => {
+test('age: connection-level wire units go by their own time, with their frames', () => {
   const { ws, serverId } = setup();
   try {
     const oldConn = HistoryRecorder.open(ws, serverId, () => NOW - 100 * DAY);
-    oldConn.frame('out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    frame(oldConn, 'out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
     const newConn = HistoryRecorder.open(ws, serverId, () => NOW - DAY);
-    newConn.frame('out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    frame(newConn, 'out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    const result = purgeHistory(ws, () => NOW);
+    assert.equal(result.unitsDeleted, 1);
+    assert.deepEqual(ws.db.prepare('SELECT connection_id FROM wire_unit').all().map((r) => r.connection_id), [newConn.connectionId]);
+    assert.deepEqual(ws.db.prepare('SELECT connection_id FROM frame').all().map((r) => r.connection_id), [newConn.connectionId]);
+  } finally {
+    ws.close();
+  }
+});
+
+test('age: frames written before schema 3, which have no unit, still go by their own time', () => {
+  const { ws, serverId } = setup();
+  try {
+    const conn = HistoryRecorder.open(ws, serverId, () => NOW - 100 * DAY);
+    const legacy = ws.db.prepare("INSERT INTO frame (connection_id, direction, at, method, message_json) VALUES (?, 'out', ?, 'ping', '{}')");
+    legacy.run(conn.connectionId, NOW - 100 * DAY);
+    legacy.run(conn.connectionId, NOW - DAY);
     const result = purgeHistory(ws, () => NOW);
     assert.equal(result.framesDeleted, 1);
-    assert.deepEqual(ws.db.prepare('SELECT connection_id FROM frame').all().map((r) => r.connection_id), [newConn.connectionId]);
+    assert.deepEqual(ws.db.prepare('SELECT at FROM frame').all().map((r) => r.at), [NOW - DAY]);
+  } finally {
+    ws.close();
+  }
+});
+
+test('size: over the cap, connection-level wire units go oldest first, with their frames', () => {
+  const { ws, serverId } = setup();
+  try {
+    let t = NOW - DAY;
+    const conn = HistoryRecorder.open(ws, serverId, () => t);
+    for (let i = 0; i < 200; i++, t += 1000) frame(conn, 'in', { jsonrpc: '2.0', method: 'notifications/message', params: { data: padding(2000) } });
+    const cap = Math.floor(liveBytes(ws.db) / 2);
+    updateSettings(ws, { retentionMaxBytes: cap });
+    const result = purgeHistory(ws, () => NOW);
+    assert.ok(liveBytes(ws.db) <= cap, `still ${liveBytes(ws.db)} live bytes over a ${cap} cap`);
+    assert.ok(result.unitsDeleted > 0 && result.unitsDeleted < 200);
+    const oldestKept = ws.db.prepare('SELECT min(at) AS at FROM wire_unit').get().at;
+    assert.equal(ws.db.prepare('SELECT count(*) AS n FROM wire_unit WHERE at > ?').get(oldestKept).n + 1, 200 - result.unitsDeleted, 'the kept units must be the newest ones');
+    assert.equal(ws.db.prepare('SELECT count(*) AS n FROM frame').get().n, 200 - result.unitsDeleted, 'frames go with their unit');
   } finally {
     ws.close();
   }
@@ -292,7 +330,7 @@ test('age: a connection goes once it is past the threshold and nothing refers to
   const { ws, serverId } = setup();
   try {
     const emptied = HistoryRecorder.open(ws, serverId, () => NOW - 100 * DAY);
-    emptied.frame('out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    frame(emptied, 'out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
     emptied.close();
     const stillUsed = HistoryRecorder.open(ws, serverId, () => NOW - 100 * DAY);
     const recentFrameClock = () => NOW - DAY;
@@ -326,12 +364,12 @@ test('age: a connection still open is kept, even once its frames have aged out',
   try {
     let t = NOW - 2 * DAY;
     const live = HistoryRecorder.open(ws, serverId, () => t);
-    live.frame('out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    frame(live, 'out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
     updateSettings(ws, { retentionMaxAgeDays: 1 });
     purgeHistory(ws, () => NOW);
     assert.equal(ws.db.prepare('SELECT count(*) AS n FROM connection WHERE id = ?').get(live.connectionId).n, 1);
     t = NOW;
-    live.frame('out', { jsonrpc: '2.0', id: 2, method: 'ping' });
+    frame(live, 'out', { jsonrpc: '2.0', id: 2, method: 'ping' });
     assert.equal(ws.db.prepare('SELECT count(*) AS n FROM frame WHERE connection_id = ?').get(live.connectionId).n, 1);
   } finally {
     ws.close();

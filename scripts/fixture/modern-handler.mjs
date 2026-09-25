@@ -64,10 +64,21 @@ export function handleModern(msg) {
       resultType: 'complete',
       supportedVersions: ['2026-07-28'],
       capabilities: { tools: {}, prompts: {}, resources: {} },
-      instructions: 'Phase 01 fixture. Modern era.',
+      // BIG_INSTRUCTIONS=<bytes>: instructions that long, so the handshake
+      // reply is one line of several megabytes (the raw viewer's case, 4.2B).
+      instructions: process.env.BIG_INSTRUCTIONS ? `Phase 01 fixture. ${'x'.repeat(Number(process.env.BIG_INSTRUCTIONS))} end.` : 'Phase 01 fixture. Modern era.',
       ...serverMeta(),
       ...volatile(),
     }));
+  }
+
+  // INITIALIZE_UNSUPPORTED: answer a legacy initialize with -32022 and the
+  // versions this server speaks, as a modern-only server can. The fixture's
+  // default stays the plain -32601 below; this mode exists so a client that
+  // pinned this server as legacy can be shown the server has moved on (D20,
+  // clarified 2026-09-24).
+  if (method === 'initialize' && process.env.INITIALIZE_UNSUPPORTED) {
+    return err(id, -32022, 'Unsupported protocol version', { supported: ['2026-07-28'], requested: params?.protocolVersion });
   }
 
   if (method === 'prompts/list' && lies.includes('prompts')) return err(id, -32601, 'Method not found: prompts/list');

@@ -4,12 +4,12 @@
     "module": "node16",
     "moduleResolution": "node16",
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": "app",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["app/main/**/*.mts", "app/host/**/*.mts", "app/preload/**/*.cts"]
 }

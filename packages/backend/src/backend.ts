@@ -99,9 +99,10 @@ export class Backend {
       },
       'surface.entry': ({ serverId, list, key }) => {
         this.server(serverId);
-        const latest = latestCapture(this.ws(), serverId);
-        if (!latest) return { found: false, reason: 'Nothing has been captured from this server yet.' };
-        return rawEntry(this.ws().db, latest, list, key);
+        // The capture the panel shows: this session's partial one when there is one.
+        const shown = this.conns().partialCapture(serverId) ?? latestCapture(this.ws(), serverId);
+        if (!shown) return { found: false, reason: 'Nothing has been captured from this server yet.' };
+        return rawEntry(this.ws().db, shown, list, key);
       },
       'context.get': ({ excluded }) => this.context(new Set(excluded ?? [])),
     };
@@ -183,7 +184,7 @@ export class Backend {
   private surface(serverId: string): SurfaceView {
     this.server(serverId);
     const latest = latestCapture(this.ws(), serverId);
-    return { capture: latest ?? null, status: this.conns().captureStatus(serverId) };
+    return { capture: latest ?? null, status: this.conns().captureStatus(serverId), partial: this.conns().partialCapture(serverId) ?? null };
   }
 
   private context(excluded: Set<string>): ContextView {

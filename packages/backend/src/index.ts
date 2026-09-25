@@ -6,6 +6,7 @@ export {
   type SecretValues,
   type StartAgainOffer,
   type CaptureStatus,
+  type PartialCapture,
 } from './connections.js';
 export {
   WorkspaceManager,

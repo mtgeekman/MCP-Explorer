@@ -70,6 +70,18 @@ test('killing a process that has already exited resolves', async () => {
   await killProcessTree(child.pid);
 });
 
+test('a zombie is not alive: it has exited, only its parent has not reaped it', { skip: process.platform !== 'linux' && 'zombie state is read from /proc' }, async () => {
+  // The shell forks `sleep 0` and execs into a `sleep 5` that never waits,
+  // so the finished `sleep 0` stays a zombie for five seconds. A container
+  // whose PID 1 does not reap leaves every orphan like this (pipeline 567).
+  const sh = spawn('/bin/sh', ['-c', 'sleep 0 & echo $!; exec sleep 5'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  started.push(sh.pid);
+  const zombie = Number(await new Promise((r) => sh.stdout.once('data', (d) => r(String(d).trim()))));
+  await waitFor(() => readFileSync(`/proc/${zombie}/stat`, 'utf8').split(') ')[1]?.startsWith('Z'), 'the child to become a zombie');
+  assert.equal(isAlive(zombie), false);
+  assert.equal(isAlive(sh.pid), true, 'old valid input: a running process is alive');
+});
+
 test('a PID that cannot be a process is refused rather than signalled', async () => {
   // process.kill(0) and process.kill(-1) signal a whole process group or every
   // process the user owns; neither may ever reach here.

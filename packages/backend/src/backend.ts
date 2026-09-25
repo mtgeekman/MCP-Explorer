@@ -11,6 +11,7 @@ import type { ServerRoot } from '../../platform/dist/index.js';
 import { ConnectionManager } from './connections.js';
 import { WorkspaceManager, type OpenWorkspace } from './workspaces.js';
 import { logPage, logUnit } from './log.js';
+import { rawEntry } from './entry.js';
 import { listConfigLocations, readConfigs, saveImported } from './importer.js';
 import type { ContextView, ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow, SurfaceView } from './api.js';
 
@@ -95,6 +96,12 @@ export class Backend {
       'surface.refresh': async ({ serverId }) => {
         await this.conns().capture(serverId);
         return this.surface(serverId);
+      },
+      'surface.entry': ({ serverId, list, key }) => {
+        this.server(serverId);
+        const latest = latestCapture(this.ws(), serverId);
+        if (!latest) return { found: false, reason: 'Nothing has been captured from this server yet.' };
+        return rawEntry(this.ws().db, latest, list, key);
       },
       'context.get': ({ excluded }) => this.context(new Set(excluded ?? [])),
     };

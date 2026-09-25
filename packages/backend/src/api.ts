@@ -91,6 +91,14 @@ export interface SurfaceView {
   status: CaptureStatus;
 }
 
+/** A list of a server's surface whose entries have their own detail view. */
+export type EntryList = 'tools' | 'prompts' | 'resources' | 'resourceTemplates';
+
+/** One entry's exact bytes from the reply it was listed in (board 5.1A), or why they cannot be shown. */
+export type RawEntry =
+  | { found: true; bytes: Uint8Array; unitId: number; offset: number }
+  | { found: false; reason: string };
+
 /** A server as the context preview lists it: included or not, and how old its surface is. */
 export interface ContextServerRow {
   id: string;
@@ -146,6 +154,8 @@ export interface Requests {
   'surface.get': { params: { serverId: string }; result: SurfaceView };
   /** Lists the connected server's surface again and records it; resolves once done (decision 3). */
   'surface.refresh': { params: { serverId: string }; result: SurfaceView };
+  /** The exact bytes of one entry of the latest capture, keyed by name, uri or uriTemplate. */
+  'surface.entry': { params: { serverId: string; list: EntryList; key: string }; result: RawEntry };
   /** Every server's latest surface, less the ones excluded, as one block with its cost. */
   'context.get': { params: { excluded?: string[] }; result: ContextView };
 }

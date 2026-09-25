@@ -37,15 +37,15 @@ export class Backend {
     this.handlers = {
       'workspaces.list': () => this.workspaces.list(),
       'workspaces.current': () => (this.workspaces.open ? this.opened(this.workspaces.open) : null),
+      // The current workspace's sessions end only once the new one is open: a
+      // wrong passphrase or a refused create must leave them running.
       'workspaces.create': async ({ name, protection }) => {
-        await this.closeConnections();
-        const { workspace, recoveryKey } = this.workspaces.create(name, protection);
+        const { workspace, recoveryKey } = await this.workspaces.create(name, protection, () => this.closeConnections());
         this.startConnections(workspace);
         return { ...this.opened(workspace), ...(recoveryKey ? { recoveryKey } : {}) };
       },
       'workspaces.open': async ({ id, unlock }) => {
-        await this.closeConnections();
-        const workspace = this.workspaces.openWorkspace(id, unlock);
+        const workspace = await this.workspaces.openWorkspace(id, unlock, () => this.closeConnections());
         this.startConnections(workspace);
         return this.opened(workspace);
       },

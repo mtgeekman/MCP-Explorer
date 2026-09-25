@@ -78,15 +78,26 @@ function windowsProcesses(): Promise<ProcessInfo[]> {
  * the root alive when the backend dies, so the first path applies there).
  * Returns the PIDs killed as orphans.
  */
-export async function killServerTree(root: ServerRoot, opts: { listProcesses?: () => Promise<ProcessInfo[]> } = {}): Promise<number[]> {
+export async function killServerTree(
+  root: ServerRoot,
+  opts: { listProcesses?: () => Promise<ProcessInfo[]>; kill?: (pid: number) => Promise<void> } = {},
+): Promise<number[]> {
   const list = opts.listProcesses ?? windowsProcesses;
+  const kill = opts.kill ?? killProcessTree;
+  // Every tree is tried; any that could not be ended is named in the
+  // rejection, so the caller can keep reporting it rather than believe it gone.
+  const endAll = async (pids: number[]) => {
+    const results = await Promise.allSettled(pids.map((pid) => kill(pid)));
+    const failed = results.flatMap((r, i) => (r.status === 'rejected' ? [`${pids[i]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`] : []));
+    if (failed.length) throw new Error(`could not end process tree ${failed.join('; ')}`);
+  };
   if (isAlive(root.pid) && !(process.platform === 'win32' && (await rootWasReused(root, list)))) {
-    await killProcessTree(root.pid);
+    await endAll([root.pid]);
     return [];
   }
   if (process.platform !== 'win32') return [];
   const orphans = findOrphans(await list(), root);
-  await Promise.all(orphans.map((pid) => killProcessTree(pid).catch(() => undefined)));
+  await endAll(orphans);
   return orphans;
 }
 

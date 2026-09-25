@@ -67,6 +67,12 @@ export interface ImportEntry {
   notes: string[];
   /** The entry as the file has it, for the review to show. */
   raw: string;
+  /**
+   * Values in its env and headers whose names look like credentials, found
+   * whether or not the entry can be imported: the review hides them in the
+   * raw view of a disabled entry, which has no values table to mark them in.
+   */
+  sensitive: string[];
 }
 
 export interface ParsedConfig {
@@ -157,7 +163,7 @@ const DROPPED: Record<string, string> = {
 };
 
 function readEntry(name: string, value: unknown, location: string, ctx: ConfigSource): ImportEntry {
-  const entry: ImportEntry = { name, location, ...(ctx.projectRoot ? { projectRoot: ctx.projectRoot } : {}), dropped: [], notes: [], raw: JSON.stringify(value, null, 2) ?? String(value) };
+  const entry: ImportEntry = { name, location, ...(ctx.projectRoot ? { projectRoot: ctx.projectRoot } : {}), dropped: [], notes: [], raw: JSON.stringify(value, null, 2) ?? String(value), sensitive: sensitiveValues(value) };
   const disable = (why: string): ImportEntry => ({ ...entry, disabled: why });
   if (!name.trim()) return disable('The entry has no name.');
   if (!isObject(value)) return disable('The entry is not an object.');
@@ -232,6 +238,13 @@ function readEntry(name: string, value: unknown, location: string, ctx: ConfigSo
   return { ...entry, server };
 }
 
+function sensitiveValues(value: unknown): string[] {
+  if (!isObject(value)) return [];
+  return [value.env, value.headers].flatMap((map) => (isObject(map)
+    ? Object.entries(map).filter(([k, v]) => typeof v === 'string' && v !== '' && looksSecret(k)).map(([, v]) => v as string)
+    : []));
+}
+
 function transportOf(value: Record<string, unknown>, client: ImportClient): { transport: Transport } | { refused: string } {
   const hasCommand = value.command !== undefined;
   const hasUrl = value.url !== undefined;
@@ -285,7 +298,8 @@ function substitute(text: string, ctx: ConfigSource): { value: string } | { unre
 }
 
 function known(name: string, ctx: ConfigSource): string | undefined {
-  if (ctx.client === 'claude-code') return name === 'CLAUDE_PROJECT_DIR' ? ctx.projectRoot : undefined;
+  // Claude Code writes a default as ${NAME:-default}; the name is what decides.
+  if (ctx.client === 'claude-code') return name.replace(/:-[\s\S]*$/, '') === 'CLAUDE_PROJECT_DIR' ? ctx.projectRoot : undefined;
   switch (name) {
     case 'userHome': return ctx.home;
     case 'workspaceFolder': return ctx.projectRoot;

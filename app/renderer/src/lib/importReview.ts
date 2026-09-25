@@ -127,15 +127,23 @@ export function mergePicked(picked: Set<string>, before: { path: string; found: 
   return new Set(after.filter((l) => l.found && (picked.has(l.path) || !known.has(l.path))).map((l) => l.path));
 }
 
-/** The entry as written, with every value the user marked secret replaced, so the raw view hides what the table hides. */
-export function redactRaw(raw: string, values: Record<string, string>, marked: string[]): string {
+/**
+ * The entry as written, with each of these values replaced wherever it is a
+ * whole JSON string, so the raw view hides what the table hides. A value
+ * inside a longer string (an argument like --token=...) is not found; the
+ * command line on the same card shows those too.
+ */
+export function redactRaw(raw: string, hide: string[]): string {
   let out = raw;
-  for (const name of marked) {
-    const value = values[name];
-    if (value === undefined || value === '') continue;
-    out = out.split(JSON.stringify(value)).join('"(hidden)"');
-  }
+  for (const value of hide) if (value !== '') out = out.split(JSON.stringify(value)).join('"(hidden)"');
   return out;
+}
+
+/** What the raw view of an entry hides: the values marked secret, or for an entry that cannot be imported, its credential-looking ones. */
+export function hiddenValues(entry: ReadConfig['entries'][number], s: EntryState | undefined): string[] {
+  if (!entry.server || !s) return entry.sensitive;
+  const { env, headers } = entry.server;
+  return [...s.secretEnv.map((k) => env[k]), ...s.secretHeaders.map((k) => headers[k])].filter((v): v is string => v !== undefined);
 }
 
 /** Toggles one name in a list, keeping order. */

@@ -9,7 +9,7 @@ import {
   HistoryRecorder, loadServer, pinEra, clearEra, readDetectedEra,
   type ServerDefinition, type SecretNames, type Workspace,
 } from '../../storage/dist/index.js';
-import { killProcessTree, killServerTree, isAlive, type ServerRoot } from '../../platform/dist/index.js';
+import { killServerTree, type ServerRoot } from '../../platform/dist/index.js';
 
 /**
  * What the app offers after a stdio failure that a second spawn could get
@@ -56,6 +56,8 @@ export interface ConnectionManagerOptions {
    * (D36). Capped below the SDK's own wait, see SDK_STDIN_CLOSE_WAIT_MS.
    */
   closeGraceMs?: number;
+  /** Ends a server's process tree; the platform's killServerTree unless a test stands in. */
+  killTree?: (root: ServerRoot) => Promise<unknown>;
 }
 
 interface Slot {
@@ -64,8 +66,8 @@ interface Slot {
   recorder?: HistoryRecorder;
   /** Set while a connect or close is running, so a second one waits its turn rather than racing it. */
   busy?: Promise<unknown>;
-  /** A stdio process spawned by a connect still under way: reported from its spawn, so a backend that dies mid-connect leaves it findable (D36). */
-  starting?: ServerRoot;
+  /** The stdio process this slot's current connect or session spawned. */
+  root?: ServerRoot;
 }
 
 /**
@@ -83,6 +85,15 @@ const TREE_KILL_MARGIN_MS = 500;
 
 export class ConnectionManager {
   private readonly slots = new Map<string, Slot>();
+  /**
+   * Every server process root this manager spawned and has not seen ended,
+   * by PID (D36). A root enters at its spawn and leaves only once its whole
+   * tree was ended; one that could not be stays, is reported to the main
+   * process, and is tried again by closeAll. This is the one record of what
+   * the app is still running, and the processes report is exactly it.
+   */
+  private readonly owned = new Map<number, ServerRoot>();
+  private readonly ending = new Map<number, Promise<void>>();
   private readonly sessionSecrets = new Map<string, SecretValues>();
   private readonly now: () => number;
 
@@ -125,10 +136,13 @@ export class ConnectionManager {
     return this.serialize(serverId, () => this.doDisconnect(serverId));
   }
 
-  /** Ends every session: the app is quitting, or the workspace is closing. */
+  /**
+   * Ends every session, then every process root still owned, including ones
+   * an earlier end could not finish: the app is quitting, or the workspace is
+   * closing. One failure does not stop the rest, nor fail the quit or switch
+   * that asked (R04-1); it is reported, and a root not ended stays reported.
+   */
   async closeAll(): Promise<void> {
-    // One session that fails to close must not stop the others, nor fail the
-    // quit or workspace switch that asked (R04-1); it is reported instead.
     const ids = [...this.slots.keys()];
     const results = await Promise.allSettled(ids.map((id) => this.disconnect(id)));
     results.forEach((r, i) => {
@@ -136,6 +150,7 @@ export class ConnectionManager {
         process.emitWarning(`server ${ids[i]} did not close cleanly: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`, 'MCPExplorerConnectionWarning');
       }
     });
+    await Promise.all([...this.owned.values()].map((root) => this.endTree(root)));
   }
 
   /** Session secrets are forgotten with the manager; this forgets one server's early, as when its definition changes. */
@@ -171,8 +186,32 @@ export class ConnectionManager {
   }
 
   private announceProcesses(): void {
-    const roots = [...this.slots.values()].flatMap((s) => (s.conn?.pid !== undefined ? [{ pid: s.conn.pid, startedAt: s.conn.startedAt ?? this.now() }] : s.starting ? [s.starting] : []));
-    this.opts.events.processes?.(roots);
+    this.opts.events.processes?.([...this.owned.values()]);
+  }
+
+  /**
+   * Ends a root's whole tree, the one way a server process is ended here. The
+   * root leaves the registry only if that succeeded; otherwise the failure is
+   * reported and the root stays owned. Concurrent calls for one root share one
+   * attempt.
+   */
+  private endTree(root: ServerRoot): Promise<void> {
+    if (!this.owned.has(root.pid)) return Promise.resolve();
+    const inFlight = this.ending.get(root.pid);
+    if (inFlight) return inFlight;
+    const attempt = (async () => {
+      try {
+        await (this.opts.killTree ?? killServerTree)(root);
+        this.owned.delete(root.pid);
+      } catch (e) {
+        process.emitWarning(`server process ${root.pid} and what it started could not all be ended: ${e instanceof Error ? e.message : String(e)}`, 'MCPExplorerProcessWarning');
+      } finally {
+        this.ending.delete(root.pid);
+        this.announceProcesses();
+      }
+    })();
+    this.ending.set(root.pid, attempt);
+    return attempt;
   }
 
   private async doConnect(serverId: string, given?: SecretValues): Promise<ConnectionState> {
@@ -199,7 +238,8 @@ export class ConnectionManager {
       this.opts.events.unit?.(serverId, connectionId, unitId, u);
       const event = u.kind === 'app' ? appEvent(u) : undefined;
       if (event?.event === 'spawned' && typeof event.pid === 'number') {
-        slot.starting = { pid: event.pid, startedAt: this.now() };
+        slot.root = { pid: event.pid, startedAt: this.now() };
+        this.owned.set(event.pid, slot.root);
         this.announceProcesses();
       }
       if (event?.event === 'spawned' && this.state(serverId).status === 'connecting') {
@@ -215,8 +255,9 @@ export class ConnectionManager {
           command: def.command!, args: def.args, cwd: def.cwd,
           env: { ...inheritedEnv(), ...def.env, ...def.secretEnv, ...session?.env },
           era, onUnit, onClose, probeTimeoutMs: this.opts.probeTimeoutMs,
-          // A failed connect ends the whole tree, not just its root (D36).
-          terminate: (pid) => killProcessTree(pid),
+          // A failed connect ends the whole tree, not just its root (D36),
+          // before the SDK's own close signals the root alone.
+          terminate: (pid) => { const root = this.owned.get(pid); return root ? this.endTree(root) : Promise.resolve(); },
         })
         : await connectHttp({
           url: def.url!, kind: def.transport, era,
@@ -226,17 +267,10 @@ export class ConnectionManager {
     } catch (e) {
       recorder.close();
       slot.recorder = undefined;
-      // The adapter ended a live root's tree (terminate, above), but not what a
-      // root that already exited left behind; on Windows that is still findable
-      // (D36). A root still alive after this stays reported to the main process.
-      const spawned = slot.starting;
-      if (spawned) {
-        await killServerTree(spawned).catch((err: unknown) => {
-          process.emitWarning(`could not end the processes of server ${serverId} after its failed connect: ${err instanceof Error ? err.message : String(err)}`, 'MCPExplorerProcessWarning');
-        });
-        if (!isAlive(spawned.pid)) slot.starting = undefined;
-      }
-      this.announceProcesses();
+      // A live root was ended through terminate, above; a root that exited on
+      // its own is ended here, which on Windows finds what it left behind.
+      if (slot.root) await this.endTree(slot.root);
+      slot.root = undefined;
       if (!(e instanceof ConnectError)) {
         return this.set(serverId, { status: 'failed', failure: { kind: 'protocol' }, message: e instanceof Error ? e.message : String(e), stderr: '', at: this.now(), connectionId });
       }
@@ -244,10 +278,8 @@ export class ConnectionManager {
     }
 
     slot.conn = conn;
-    slot.starting = undefined;
     recorder.negotiated(conn.revision, conn.era);
     if (pinned?.era !== conn.era || pinned.revision !== conn.revision) pinEra(this.ws, serverId, conn.era, conn.revision, this.now);
-    this.announceProcesses();
     return this.set(serverId, { status: 'connected', era: conn.era, revision: conn.revision, pid: conn.pid, connectionId, connectedAt: this.now() });
   }
 
@@ -274,7 +306,11 @@ export class ConnectionManager {
     slot.conn = undefined;
     slot.recorder?.close();
     slot.recorder = undefined;
-    this.announceProcesses();
+    // A server that exited on its own may have left processes behind; this
+    // ends them, and does nothing for a root already ended by a disconnect.
+    const root = slot.root;
+    slot.root = undefined;
+    if (root) void this.endTree(root);
     this.set(serverId, { status: 'ended', ...(info.exit ? { exit: info.exit } : {}), byUser, at: this.now(), connectionId });
   }
 
@@ -289,17 +325,20 @@ export class ConnectionManager {
     const connectionId = (slot.state as { connectionId: number }).connectionId;
     this.set(serverId, { status: 'closing', connectionId });
     // The SDK ends stdin and waits before its own SIGTERM, which reaches only
-    // the root. Whatever of the tree is still alive after the grace is killed
-    // as a tree from that root, while it can still be found (D36).
-    const pid = conn.pid;
+    // the root. The tree is ended after the grace, from that root, while it
+    // can still be found (D36); a close that throws still ends the tree and
+    // the session, and is reported.
+    const root = slot.root;
     const grace = Math.min(this.opts.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS, SDK_STDIN_CLOSE_WAIT_MS - TREE_KILL_MARGIN_MS);
-    const treeKill = pid === undefined ? undefined : setTimeout(() => { if (isAlive(pid)) void killProcessTree(pid).catch(() => undefined); }, grace);
+    const treeKill = root ? setTimeout(() => void this.endTree(root), grace) : undefined;
     try {
       await conn.close();
+    } catch (e) {
+      process.emitWarning(`server ${serverId} did not close cleanly: ${e instanceof Error ? e.message : String(e)}`, 'MCPExplorerConnectionWarning');
     } finally {
       if (treeKill) clearTimeout(treeKill);
     }
-    if (pid !== undefined && isAlive(pid)) await killProcessTree(pid).catch(() => undefined);
+    if (root) await this.endTree(root);
     // onClose normally reports the end; a transport that never fires it (HTTP
     // fires it only from close()) is ended here.
     if (slot.conn) this.sessionEnded(serverId, connectionId, {});

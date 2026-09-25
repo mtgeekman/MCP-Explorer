@@ -29,8 +29,11 @@ export function listState(surface: NormalizedSurface, list: EntryList): ListStat
   const spec = LISTS.find((l) => l.list === list)!;
   const caps = (surface.capabilities ?? {}) as Record<string, unknown>;
   if (caps[spec.capability] === undefined) return { kind: 'not-advertised' };
-  // A duplicate-name problem is reported on the same endpoint but the list itself was read.
-  const failure = surface.problems.find((p) => p.endpoint === spec.endpoint && !p.message.startsWith('duplicate identity key'));
+  // A duplicate-name problem is reported on the same endpoint but the list
+  // itself was read. Problems stored before phase 06 carry no kind; for those
+  // the message is all there is (R06-12).
+  const failure = surface.problems.find((p) => p.endpoint === spec.endpoint
+    && (p.kind ? p.kind === 'list-failed' : !p.message.startsWith('duplicate identity key')));
   if (failure) return { kind: 'failed', message: failure.message };
   const count = (surface[list] as unknown[]).length;
   return count === 0 ? { kind: 'empty' } : { kind: 'items', count };
@@ -168,5 +171,8 @@ export interface Selection {
  */
 export function reselect(selected: Selection, surface: Pick<NormalizedSurface, 'revision' | EntryList> | undefined): Selection | null {
   const item = (surface?.[selected.list] as unknown as Record<string, unknown>[] | undefined)?.find((i) => entryKey(selected.list, i) === selected.key);
-  return surface && item ? { ...selected, item, revision: surface.revision } : null;
+  if (!surface || !item) return null;
+  // The same selection when nothing changed, so a reload does not re-render the app (R06-15).
+  if (surface.revision === selected.revision && JSON.stringify(item) === JSON.stringify(selected.item)) return selected;
+  return { ...selected, item, revision: surface.revision };
 }

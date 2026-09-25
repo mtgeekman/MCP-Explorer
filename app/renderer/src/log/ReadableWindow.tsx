@@ -21,7 +21,7 @@ export function ReadableWindow({ client }: { client: BackendClient }) {
         return;
       }
       client.request('surface.get', { serverId: selection.serverId }).then((view) => {
-        const surface = view.capture?.surface;
+        const surface = (view.partial ?? view.capture)?.surface;
         const item = (surface?.[selection.list] as unknown as Record<string, unknown>[] | undefined)?.find((i) => entryKey(selection.list, i) === selection.key);
         if (!surface || !item) return setError('That entry is no longer in the latest capture.');
         setContent({ kind: 'item', item: { serverId: selection.serverId, list: selection.list, key: selection.key, item, revision: surface.revision } });

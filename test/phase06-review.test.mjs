@@ -80,7 +80,9 @@ test('R06-3: a capture where a list failed is not recorded, and the last good ca
   const after = await call('surface.refresh', { serverId: row.id });
   assert.equal(after.capture.snapshotId, good.capture.snapshotId, 'no new version from a failed list');
   assert.equal(after.capture.observedAt, good.capture.observedAt, 'not even a new observation');
-  assert.match(after.status.error, /tools\/list failed on purpose/);
+  // Shown as this session's partial capture since R06-11, never recorded.
+  assert.deepEqual(after.partial.surface.problems.map((p) => [p.endpoint, p.kind]), [['tools/list', 'list-failed']]);
+  assert.match(after.partial.surface.problems[0].message, /tools\/list failed on purpose/);
 });
 
 test('R06-3: capture tells a failed list from duplicate keys, and a surface with duplicates is still whole', async () => {
@@ -107,8 +109,8 @@ test('R06-5: only the newest request\'s answer is applied', async () => {
   const applied = [];
   const run = latestOnly();
   let resolveFirst;
-  const first = run(new Promise((r) => { resolveFirst = r; }), (v) => applied.push(v));
-  const second = run(Promise.resolve('new'), (v) => applied.push(v));
+  const first = run(new Promise((r) => { resolveFirst = r; }), (v) => applied.push(v), () => {});
+  const second = run(Promise.resolve('new'), (v) => applied.push(v), () => {});
   await second;
   resolveFirst('old');
   await first;
@@ -137,4 +139,50 @@ test('R06-10: the context view lists servers without an included flag the screen
   await call('servers.save', { server: legacyStdio() });
   const [row] = (await call('context.get', {})).servers;
   assert.equal('included' in row, false);
+});
+
+// --- Re-review of the fix chain (R06-11 to R06-15) ---------------------------------------
+
+test('R06-11: a server whose prompts/list always fails still shows what it did list, for the session, marked partial', async () => {
+  const call = await setup();
+  const row = await call('servers.save', { server: { name: 'liar', transport: 'stdio', command: process.execPath, args: [join(fixtures, 'modern-server.mjs')], env: { LIE_ABOUT: 'prompts' } } });
+  await call('connections.connect', { serverId: row.id });
+  const view = await settled(call, row.id);
+  assert.equal(view.capture, null, 'history holds only whole surfaces');
+  assert.deepEqual(view.partial.surface.tools.map((t) => t.name).sort(), ['echo', 'needs_input']);
+  assert.deepEqual(view.partial.surface.problems.map((p) => [p.endpoint, p.kind]), [['prompts/list', 'list-failed']]);
+  assert.equal(view.status.error, undefined, 'a partial capture is not an error');
+  const entry = await call('surface.entry', { serverId: row.id, list: 'tools', key: 'echo' });
+  assert.equal(entry.found, true, 'the partial capture\'s entries open on their bytes');
+  assert.equal((await call('context.get', {})).cost.servers.length, 0, 'the context preview uses whole captures only');
+  await call('connections.disconnect', { serverId: row.id });
+  assert.equal((await call('surface.get', { serverId: row.id })).partial, null, 'session only');
+});
+
+test('R06-12: the failed state reads the problem kind, and duplicates never read as failed', async () => {
+  const { listState } = await import('../app/renderer/src/lib/surface.ts');
+  const s = (problems) => ({ revision: '2026-07-28', capabilities: { tools: {} }, tools: [{ name: 'a' }], prompts: [], resources: [], resourceTemplates: [], problems });
+  assert.equal(listState(s([{ endpoint: 'tools/list', kind: 'duplicate-keys', message: 'x' }]), 'tools').kind, 'items');
+  assert.equal(listState(s([{ endpoint: 'tools/list', kind: 'list-failed', message: 'duplicate identity key lookalike' }]), 'tools').kind, 'failed');
+  assert.equal(listState(s([{ endpoint: 'tools/list', message: 'stored before kinds' }]), 'tools').kind, 'failed');
+});
+
+test('R06-13: a superseded request\'s failure is dropped too', async () => {
+  const { latestOnly } = await import('../app/renderer/src/lib/latest.ts');
+  const errors = [];
+  const run = latestOnly();
+  let rejectFirst;
+  const first = run(new Promise((_, rej) => { rejectFirst = rej; }), () => {}, (e) => errors.push(e.message));
+  await run(Promise.resolve('new'), () => {}, (e) => errors.push(e.message));
+  rejectFirst(new Error('old'));
+  await first;
+  await run(Promise.reject(new Error('current')), () => {}, (e) => errors.push(e.message));
+  assert.deepEqual(errors, ['current']);
+});
+
+test('R06-15: reselect keeps the same selection when the entry did not change', async () => {
+  const { reselect } = await import('../app/renderer/src/lib/surface.ts');
+  const selected = { serverId: 's', list: 'tools', key: 'echo', item: { name: 'echo', description: 'same' }, revision: '2025-06-18' };
+  const surface = { revision: '2025-06-18', tools: [{ name: 'echo', description: 'same' }], prompts: [], resources: [], resourceTemplates: [] };
+  assert.equal(reselect(selected, surface), selected);
 });

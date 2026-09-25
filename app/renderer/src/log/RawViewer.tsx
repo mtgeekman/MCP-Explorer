@@ -1,7 +1,7 @@
 // A unit's exact bytes, whole, with byte offsets and find (board 4.2B). Never
 // cut short, never folded: the rows are virtual, not the bytes.
 import { useLayoutEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { RawDocument, formatBytes, matchLabel, type Segment } from '../lib/raw';
+import { RawDocument, currentMatch, formatBytes, matchLabel, type Segment } from '../lib/raw';
 import { VirtualList, type VirtualListHandle } from './VirtualList';
 
 const ROW = 18;
@@ -37,6 +37,7 @@ export function RawViewer({ bytes, height }: { bytes: Uint8Array; height: number
   const list = useRef<VirtualListHandle | null>(null);
   const qLen = useMemo(() => new TextEncoder().encode(query).length, [query]);
   const found = useMemo(() => doc.find(query, { caseSensitive }), [doc, query, caseSensitive]);
+  const at = currentMatch(found, current);
 
   const go = (i: number) => {
     if (found.offsets.length === 0) return;
@@ -49,7 +50,7 @@ export function RawViewer({ bytes, height }: { bytes: Uint8Array; height: number
   const matchesIn = (row: number) => {
     const start = doc.rowStart(row);
     const end = row + 1 < doc.rowCount ? doc.rowStart(row + 1) : bytes.length;
-    return found.offsets.filter((o) => o < end && o + qLen > start).map((o) => [o, o + qLen, o === found.offsets[current]] as const);
+    return found.offsets.filter((o) => o < end && o + qLen > start).map((o) => [o, o + qLen, o === found.offsets[at]] as const);
   };
 
   const renderSegment = (s: Segment, ranges: (readonly [number, number, boolean])[], key: number) => {
@@ -82,13 +83,13 @@ export function RawViewer({ bytes, height }: { bytes: Uint8Array; height: number
       <div className="raw-toolbar">
         <span className="muted">{formatBytes(bytes.length)}, {doc.rowCount.toLocaleString()} rows, exact bytes</span>
         <input className="mono" placeholder="Find" value={query} onChange={(e) => { setQuery(e.target.value); setCurrent(0); }}
-          onKeyDown={(e) => { if (e.key === 'Enter') go(current + (e.shiftKey ? -1 : 1)); }} />
+          onKeyDown={(e) => { if (e.key === 'Enter') go(at + (e.shiftKey ? -1 : 1)); }} />
         <label className="inline"><input type="checkbox" checked={caseSensitive} onChange={(e) => setCaseSensitive(e.target.checked)} /> Match case</label>
         <span className="muted">
           {matchLabel(query, found, current)}
         </span>
-        <button disabled={!found.offsets.length} onClick={() => go(current - 1)}>Previous</button>
-        <button disabled={!found.offsets.length} onClick={() => go(current + 1)}>Next</button>
+        <button disabled={!found.offsets.length} onClick={() => go(at - 1)}>Previous</button>
+        <button disabled={!found.offsets.length} onClick={() => go(at + 1)}>Next</button>
       </div>
       <VirtualList
         className="raw-rows mono"

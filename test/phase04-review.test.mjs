@@ -356,3 +356,29 @@ test('RS-4: a size purge takes calls oldest first too: calls newer than a unit w
   assert.equal(ws.db.prepare('SELECT count(*) AS n FROM wire_unit').get().n, 0, 'the unit older than the newer calls was kept');
   assert.equal(ws.db.prepare('SELECT count(*) AS n FROM call WHERE started_at >= ?').get(base + 20).n, 30, 'calls newer than the unit went before it');
 });
+
+test('RS-5: an end still running for an old root does not end, or forget, a new root that got its PID', async () => {
+  const ws = workspace();
+  const slow = new Map();
+  const ended = [];
+  const manager = new ConnectionManager(ws, {
+    events: {},
+    killTree: (root) => { ended.push(root); return slow.has(root) ? new Promise((r) => slow.set(root, r)) : Promise.resolve(); },
+  });
+  const a = { pid: 4242, startedAt: 1 };
+  const b = { pid: 4242, startedAt: 2 };
+  // A's end is slow (a PowerShell listing); meanwhile B spawns with A's PID.
+  slow.set(a, null);
+  manager['owned'].set(a.pid, a);
+  const endingA = manager['endTree'](a);
+  manager['owned'].set(b.pid, b);
+  const outcome = await Promise.race([manager['endTree'](b).then(() => 'ended'), new Promise((r) => setTimeout(() => r('stuck behind A'), 500))]);
+  assert.equal(outcome, 'ended');
+  assert.ok(ended.includes(b), 'B was never ended itself');
+  // A finishing must not remove whatever holds its PID now.
+  const c = { pid: 4242, startedAt: 3 };
+  manager['owned'].set(c.pid, c);
+  slow.get(a)();
+  await endingA;
+  assert.equal(manager['owned'].get(4242), c, 'A finishing removed the root that now holds its PID');
+});

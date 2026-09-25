@@ -72,8 +72,9 @@ function windowsProcesses(): Promise<ProcessInfo[]> {
 }
 
 /**
- * Ends a server's whole tree. While the root lives, from the root. Once it is
- * gone, on Windows, by finding what it left behind; elsewhere an orphan has
+ * Ends a server's whole tree. While the root lives, from the root, and then on
+ * Windows whatever the root left behind if it died first. Once it is gone, on
+ * Windows, by finding what it left behind; elsewhere an orphan has
  * been re-parented and cannot be told apart, and D36 accepts that (POSIX keeps
  * the root alive when the backend dies, so the first path applies there).
  * Returns the PIDs killed as orphans.
@@ -93,7 +94,22 @@ export async function killServerTree(
   };
   if (isAlive(root.pid) && !(process.platform === 'win32' && (await rootWasReused(root, list)))) {
     await endAll([root.pid]);
-    return [];
+    if (process.platform !== 'win32') return [];
+    // The root can die after it was seen alive and before taskkill walks the
+    // tree from it: the SDK's own close SIGTERMs the root on a timer, and
+    // taskkill takes hundreds of milliseconds to start. taskkill then reports
+    // no such process, which reads as success, and the server under the root
+    // is left running. Whatever the root left behind is found by its parent.
+    let after: ProcessInfo[];
+    try {
+      after = await list();
+    } catch (e) {
+      process.emitWarning(`process tree ${root.pid} was killed without checking it left nothing behind: ${e instanceof Error ? e.message : String(e)}`, 'MCPExplorerProcessWarning');
+      return [];
+    }
+    const orphans = findOrphans(after, root);
+    await endAll(orphans);
+    return orphans;
   }
   if (process.platform !== 'win32') return [];
   const orphans = findOrphans(await list(), root);

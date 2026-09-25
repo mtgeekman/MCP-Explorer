@@ -80,7 +80,12 @@ interface Slot {
  */
 const SDK_STDIN_CLOSE_WAIT_MS = 2000;
 const DEFAULT_CLOSE_GRACE_MS = 1000;
-/** The tree kill must finish before the SDK's SIGTERM; taskkill takes tens of milliseconds. */
+/**
+ * Room for the tree kill before the SDK's SIGTERM. Not always enough on
+ * Windows: the PID-reuse check lists processes (about 700 ms) and taskkill
+ * takes about 400 ms to start (both measured 2026-09-25), so the root can die
+ * first. killServerTree then finds what it left behind by its parent.
+ */
 const TREE_KILL_MARGIN_MS = 500;
 
 export class ConnectionManager {

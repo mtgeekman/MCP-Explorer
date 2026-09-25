@@ -6,11 +6,13 @@ import { sseEventData } from '../../../../packages/protocol/dist/wire.js';
 import { formatBytes } from './raw.ts';
 
 /**
- * The largest unit the pane parses and indents. A design assumption, not a
- * decision: the raw view holds any size whole (board 4.2B), and pretty-printing
- * a multi-megabyte result would stall the window it is meant to help read.
+ * The largest unit the pane parses and indents: 10 MB, the SDK's stdio line
+ * cap, so anything that can arrive can be read here (decided 2026-09-25, phase
+ * 06 decision 5; it was 2 MB). The raw view holds any size whole (board 4.2B).
+ * Pretty-printing near this size can stall the pane; Phase 07's large results
+ * are where that gets measured.
  */
-export const READABLE_LIMIT = 2 * 1024 * 1024;
+export const READABLE_LIMIT = 10 * 1024 * 1024;
 
 export type Readable =
   | { kind: 'withheld' }

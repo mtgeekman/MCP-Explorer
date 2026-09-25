@@ -7,6 +7,10 @@ import './styles.css';
 import { App } from './App';
 import { ReadableWindow } from './log/ReadableWindow';
 import { BackendClient } from './lib/client';
+import type { EntryList } from '../../../packages/backend/dist/index.js';
+
+/** What the popped-out pane is told to show: a wire log unit, or a surface entry. */
+type ReadableSelection = { id: number; reserialized: boolean } | { serverId: string; list: EntryList; key: string } | null;
 
 /** The shell's preload bridge (app/preload/preload.cts). */
 declare global {
@@ -15,8 +19,8 @@ declare global {
       onBackendExit(listener: (code: number) => void): void;
       restartBackend(): void;
       popOutReadable(): void;
-      selectReadable(selection: { id: number; reserialized: boolean } | null): void;
-      onReadableSelect(listener: (selection: { id: number; reserialized: boolean } | null) => void): () => void;
+      selectReadable(selection: ReadableSelection): void;
+      onReadableSelect(listener: (selection: ReadableSelection) => void): () => void;
       onReadableClosed(listener: () => void): void;
       /** A folder the user chose in the system dialog, or null if they cancelled. */
       chooseFolder(): Promise<string | null>;

@@ -1,0 +1,45 @@
+{
+  "system": "# MCP server instructions\n\n## legacy fixture\n\nPhase 00 fixture. Legacy era.\n\n## modern fixture\n\nPhase 01 fixture. Modern era.",
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echoes its input.",
+      "input_schema": {
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "echo",
+      "description": "Echoes its input.",
+      "input_schema": {
+        "properties": {
+          "text": {
+            "description": "What to echo.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "needs_input",
+      "description": "Always answers with an InputRequiredResult, to exercise MRTR.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    }
+  ]
+}

@@ -162,3 +162,24 @@ export function listObservations(ws: Workspace, serverId: string): Observation[]
 export function diffSnapshots(ws: Workspace, before: number, after: number): SurfaceDiff {
   return diffSurfaces(loadSnapshot(ws, before), loadSnapshot(ws, after));
 }
+
+/** A server's most recent capture: what the surface views and the context preview show. */
+export interface LatestCapture {
+  snapshotId: number;
+  observedAt: number;
+  connectionId: number | null;
+  /** The surface with that capture's problems, which the snapshot alone does not hold. */
+  surface: NormalizedSurface;
+}
+
+export function latestCapture(ws: Workspace, serverId: string): LatestCapture | undefined {
+  const row = ws.db.prepare('SELECT snapshot_id, connection_id, observed_at, problems_json FROM surface_observation WHERE server_id = ? ORDER BY observed_at DESC, id DESC LIMIT 1').get(serverId) as
+    { snapshot_id: number; connection_id: number | null; observed_at: number; problems_json: string } | undefined;
+  if (!row) return undefined;
+  return {
+    snapshotId: row.snapshot_id,
+    observedAt: row.observed_at,
+    connectionId: row.connection_id,
+    surface: { ...loadSnapshot(ws, row.snapshot_id), problems: JSON.parse(row.problems_json) },
+  };
+}

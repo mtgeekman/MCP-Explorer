@@ -90,6 +90,8 @@ export interface ConnectOptions {
   probeTimeoutMs?: number;
   /** Receives the child's stderr as text as it arrives. The stream is drained either way. */
   onStderr?: (text: string) => void;
+  /** A server's notice that a list changed. Nothing is re-listed. */
+  onListChanged?: ListChangedListener;
 }
 
 /**
@@ -200,15 +202,38 @@ const CLIENT_CAPABILITIES = { sampling: {}, elicitation: {}, roots: {} };
 function makeClient(
   Client: any,
   info: { name: string; version: string },
-  opts: { negotiate: boolean; probeTimeoutMs?: number },
+  opts: { negotiate: boolean; probeTimeoutMs?: number; onListChanged?: ListChangedListener },
 ): any {
-  return new Client(info, {
+  // Never the SDK's `listChanged` option: its autoRefresh defaults to true and
+  // re-lists on every notice, and on the modern era it also opens a
+  // subscription at connect. Both are calls the user did not make (P2).
+  const client = new Client(info, {
     capabilities: CLIENT_CAPABILITIES,
     ...(opts.negotiate
       ? { versionNegotiation: { mode: 'auto', probe: { timeoutMs: opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS } } }
       : {}),
   });
+  const onListChanged = opts.onListChanged;
+  if (onListChanged) {
+    // Registering sends nothing; a notice is only reported. On 2026-07-28 a
+    // server sends these only on a subscriptions/listen stream, which the app
+    // does not open (phase 06 decision 7), so in practice this is legacy only.
+    for (const [method, list] of LIST_CHANGED) {
+      client.setNotificationHandler(method, () => onListChanged(list));
+    }
+  }
+  return client;
 }
+
+export type ChangedList = 'tools' | 'prompts' | 'resources';
+/** Told which list a server says changed. The app never re-lists on its own (P2). */
+export type ListChangedListener = (list: ChangedList) => void;
+
+const LIST_CHANGED: [string, ChangedList][] = [
+  ['notifications/tools/list_changed', 'tools'],
+  ['notifications/prompts/list_changed', 'prompts'],
+  ['notifications/resources/list_changed', 'resources'],
+];
 
 function tap(inner: any, listener?: FrameListener, onFrameError: FrameErrorListener = warnFrameError): any {
   if (!listener) return inner;
@@ -328,6 +353,8 @@ export interface HttpConnectOptions {
   /** P1 and D34: receives every request body, response body and SSE event, as exact bytes. */
   onUnit?: UnitListener;
   onUnitError?: UnitErrorListener;
+  /** A server's notice that a list changed. Nothing is re-listed. */
+  onListChanged?: ListChangedListener;
   probeTimeoutMs?: number;
 }
 
@@ -491,7 +518,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   const fetchOption = emit ? { fetch: loggingFetch(emit, Object.keys(secretHeaders)) } : {};
 
   const attempt = async (negotiate: boolean) => {
-    const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs });
+    const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged });
     const transport = new Transport(new URL(opts.url), { requestInit: { headers: { ...opts.headers, ...secretHeaders } }, ...fetchOption });
     try {
       await client.connect(tap(transport, opts.onFrame, opts.onFrameError));
@@ -659,7 +686,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   });
 
   const era = opts.era ?? 'auto';
-  const client = makeClient(Client, { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' }, { negotiate: era === 'auto', probeTimeoutMs: opts.probeTimeoutMs });
+  const client = makeClient(Client, { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' }, { negotiate: era === 'auto', probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged });
 
   try {
     await client.connect(tap(inner, opts.onFrame, opts.onFrameError));

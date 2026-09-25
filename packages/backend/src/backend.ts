@@ -2,16 +2,18 @@
 // and the wire log behind one message API. Plain Node, so every request is
 // testable without Electron (D17); the utility-process entry only wires ports.
 import { randomUUID } from 'node:crypto';
+import { buildContext, costContext, renderContext, O200K, type ContextServer } from '../../protocol/dist/index.js';
 import {
-  compact, deleteServer, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
+  compact, deleteServer, latestCapture, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
   type ServerDefinition, type SecretStore,
 } from '../../storage/dist/index.js';
 import type { ServerRoot } from '../../platform/dist/index.js';
 import { ConnectionManager } from './connections.js';
 import { WorkspaceManager, type OpenWorkspace } from './workspaces.js';
 import { logPage, logUnit } from './log.js';
+import { rawEntry } from './entry.js';
 import { listConfigLocations, readConfigs, saveImported } from './importer.js';
-import type { ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow } from './api.js';
+import type { ContextView, ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow, SurfaceView } from './api.js';
 
 export interface BackendOptions {
   dataDir: string;
@@ -90,6 +92,19 @@ export class Backend {
         for (const id of ids) this.conns().forgetSecrets(id);
         return ids.map((id) => this.row(id));
       },
+      'surface.get': ({ serverId }) => this.surface(serverId),
+      'surface.refresh': async ({ serverId }) => {
+        await this.conns().capture(serverId);
+        return this.surface(serverId);
+      },
+      'surface.entry': ({ serverId, list, key }) => {
+        this.server(serverId);
+        // The capture the panel shows: this session's partial one when there is one.
+        const shown = this.conns().partialCapture(serverId) ?? latestCapture(this.ws(), serverId);
+        if (!shown) return { found: false, reason: 'Nothing has been captured from this server yet.' };
+        return rawEntry(this.ws().db, shown, list, key);
+      },
+      'context.get': ({ excluded }) => this.context(new Set(excluded ?? [])),
     };
   }
 
@@ -135,6 +150,7 @@ export class Backend {
         state: (serverId, state) => this.emit('connection.state', { serverId, state }),
         unit: (_serverId, _connectionId, unitId) => this.emit('log.unit', this.liveUnit(unitId)),
         processes: (roots) => this.opts.onProcesses?.(roots),
+        surface: (serverId) => this.emit('surface.changed', { serverId }),
       },
     });
   }
@@ -162,6 +178,31 @@ export class Backend {
       id: def.id, name: def.name, transport: def.transport,
       state: this.conns().state(id),
       ...(era ? { era: { era: era.era, revision: era.revision } } : {}),
+    };
+  }
+
+  private surface(serverId: string): SurfaceView {
+    this.server(serverId);
+    const latest = latestCapture(this.ws(), serverId);
+    return { capture: latest ?? null, status: this.conns().captureStatus(serverId), partial: this.conns().partialCapture(serverId) ?? null };
+  }
+
+  private context(excluded: Set<string>): ContextView {
+    const ws = this.ws();
+    const rows = listServers(ws)
+      .map((s) => ({ server: s, latest: latestCapture(ws, s.id) }))
+      .sort((a, b) => (a.server.name < b.server.name ? -1 : a.server.name > b.server.name ? 1 : a.server.id < b.server.id ? -1 : 1));
+    const included: ContextServer[] = rows
+      .filter((r) => r.latest && !excluded.has(r.server.id))
+      .map((r) => ({ id: r.server.id, name: r.server.name, surface: r.latest!.surface }));
+    return {
+      servers: rows.map((r) => ({
+        id: r.server.id, name: r.server.name,
+        capturedAt: r.latest?.observedAt ?? null,
+        ...(r.latest ? { revision: r.latest.surface.revision } : {}),
+      })),
+      text: renderContext(buildContext(included)),
+      cost: costContext(included, O200K),
     };
   }
 

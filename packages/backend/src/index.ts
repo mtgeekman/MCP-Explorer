@@ -5,6 +5,7 @@ export {
   type ConnectionState,
   type SecretValues,
   type StartAgainOffer,
+  type CaptureStatus,
 } from './connections.js';
 export {
   WorkspaceManager,

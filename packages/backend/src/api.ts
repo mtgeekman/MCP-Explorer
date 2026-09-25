@@ -1,11 +1,11 @@
 // The messages between the renderer and the backend (D32). Deliberately not
 // JSON-RPC: no module outside the transport layer constructs a JSON-RPC
 // message (P1), and these are the app's own, not protocol traffic.
-import type { ConnectFailure, HttpDetails } from '../../protocol/dist/index.js';
+import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface } from '../../protocol/dist/index.js';
 import type { PurgeResult, ServerSummary, Transport, WorkspaceSettings } from '../../storage/dist/index.js';
 
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
-import type { ConnectionState, SecretValues } from './connections.js';
+import type { CaptureStatus, ConnectionState, SecretValues } from './connections.js';
 import type { Protection, Unlock, WorkspaceListing, WorkspaceNotice } from './workspaces.js';
 import type { ConfigLocation } from '../../platform/dist/index.js';
 import type { FoundLocation, ImportChoice, ReadConfig } from './importer.js';
@@ -79,6 +79,36 @@ export interface LogCursor {
   reserialized: boolean;
 }
 
+/** A server's latest stored surface and where this session's capture stands. */
+export interface SurfaceView {
+  capture: {
+    snapshotId: number;
+    observedAt: number;
+    /** Null for a capture recorded outside a connection. */
+    connectionId: number | null;
+    surface: NormalizedSurface;
+  } | null;
+  status: CaptureStatus;
+}
+
+/** A server as the context preview lists it: included or not, and how old its surface is. */
+export interface ContextServerRow {
+  id: string;
+  name: string;
+  included: boolean;
+  /** When its latest surface was captured; null when it has none, so it adds nothing. */
+  capturedAt: number | null;
+  revision?: string;
+}
+
+/** The workspace union (D3; phase 06 decisions 2 and 4). */
+export interface ContextView {
+  servers: ContextServerRow[];
+  /** The block as the preview shows it. */
+  text: string;
+  cost: ContextCost;
+}
+
 /** Every request the backend answers, by method name. */
 export interface Requests {
   'workspaces.list': { params: Record<string, never>; result: WorkspaceListing[] };
@@ -113,6 +143,11 @@ export interface Requests {
   'import.read': { params: { locations: ConfigLocation[] }; result: ReadConfig[] };
   /** Saves the servers the user kept, all or none. Nothing is started. */
   'import.save': { params: { servers: ImportChoice[] }; result: ServerRow[] };
+  'surface.get': { params: { serverId: string }; result: SurfaceView };
+  /** Lists the connected server's surface again and records it; resolves once done (decision 3). */
+  'surface.refresh': { params: { serverId: string }; result: SurfaceView };
+  /** Every server's latest surface, less the ones excluded, as one block with its cost. */
+  'context.get': { params: { excluded?: string[] }; result: ContextView };
 }
 
 /** The workspace file against the retention cap: the file can be larger than the cap until compacted (D24). */
@@ -129,6 +164,8 @@ export type Method = keyof Requests;
 export interface Events {
   'connection.state': { serverId: string; state: ConnectionState };
   'log.unit': LogUnit;
+  /** A capture started or finished, or the server said a list changed: read surface.get again. */
+  'surface.changed': { serverId: string };
   notice: WorkspaceNotice;
 }
 

@@ -46,6 +46,8 @@ const settled = (call, serverId) => until(async () => {
   return v.status.capturing ? undefined : v;
 }, 'the capture to settle');
 
+// R06-1 and R06-2 are pins, not regression tests: both findings were refuted,
+// passing on the code as reviewed. They hold the property against later change.
 test('R06-1: a capture still running from an earlier session does not stand in for the next session\'s', async () => {
   const call = await setup();
   const row = await call('servers.save', { server: legacyStdio({ HANG_ONCE_FILE: join(root, `${randomUUID()}.once`) }) });

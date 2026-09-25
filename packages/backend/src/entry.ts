@@ -32,11 +32,13 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
  */
 export function rawEntry(db: Database, capture: { connectionId: number | null; observedAt: number }, list: EntryList, key: string): RawEntry {
   if (capture.connectionId === null) return { found: false, reason: 'This capture was recorded without a connection, so there is no reply to cut it from.' };
+  // Newest first, one row at a time: the newest reply usually holds the
+  // entry, and every older reply's bytes need not be read (R06-7).
   const units = db.prepare(`
     SELECT DISTINCT u.id, u.bytes, u.http_json FROM frame f JOIN wire_unit u ON u.id = f.unit_id
     WHERE f.connection_id = ? AND f.direction = 'in' AND f.method = ? AND u.at <= ?
     ORDER BY u.id DESC
-  `).all(capture.connectionId, METHOD[list], capture.observedAt) as { id: number; bytes: Uint8Array | null; http_json: string | null }[];
+  `).iterate(capture.connectionId, METHOD[list], capture.observedAt) as Iterable<{ id: number; bytes: Uint8Array | null; http_json: string | null }>;
   let withheld = false;
   for (const unit of units) {
     if (unit.bytes === null) { withheld = true; continue; }

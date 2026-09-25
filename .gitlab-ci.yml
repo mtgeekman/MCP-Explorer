@@ -94,10 +94,9 @@ smoke:linux:
         xvfb-run -a npm run test:smoke
       '
 
-# The same on Windows. UNPROVEN: the runner is a LocalSystem service, and
-# whether Electron can open a window in its session has never been tested. If
-# it cannot, this job's failure says so, and the Windows smoke tests become a
-# manual checklist item (plan, phase 04) rather than being skipped.
+# The same on Windows. The runner is a LocalSystem service, and Electron opens
+# its windows in that session: this job passed on its first run (2026-09-25),
+# so the Windows smoke tests stay automated.
 smoke:windows:
   stage: check
   tags: [miniserver, windows]

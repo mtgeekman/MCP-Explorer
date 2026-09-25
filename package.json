@@ -18,7 +18,7 @@
     "dist:win": "npm run build && electron-builder --win nsis",
     "dist:linux": "npm run build && electron-builder --linux AppImage deb",
     "test": "node --test \"test/*.test.mjs\"",
-    "test:smoke": "node --test --test-concurrency=1 \"test/smoke/*.test.mjs\"",
+    "test:smoke": "node --test --test-concurrency=1 --test-timeout=180000 \"test/smoke/*.test.mjs\"",
     "probe:seam": "node scripts/probe-seam.mjs",
     "probe:fallback": "node scripts/probe-fallback.mjs",
     "check:macos-prebuilds": "node scripts/check-macos-prebuilds.mjs",

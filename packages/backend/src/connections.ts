@@ -206,6 +206,14 @@ export class ConnectionManager {
         // A session that ended mid-capture fails every list, and recording
         // that would store an empty surface as a new version.
         if (slot.conn !== conn) throw new Error('the session ended during the capture; nothing was recorded');
+        // A failed list reads as an empty one, and the hash cannot tell them
+        // apart: recorded, it would be a new version with that list gone. So
+        // history holds only whole surfaces (phase 06 review, R06-3); the
+        // failure is reported here and every frame of it is in the wire log.
+        const failed = surface.problems.filter((p) => p.kind === 'list-failed');
+        if (failed.length > 0) {
+          throw new Error(`${failed.map((p) => `${p.endpoint} failed: ${p.message}`).join('; ')}. Nothing was recorded; the last whole capture is kept`);
+        }
         recordCapture(this.ws, serverId, surface, { connectionId, now: this.now });
       } catch (e) {
         for (const list of noticed) slot.changed.add(list);

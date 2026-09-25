@@ -143,7 +143,7 @@ async function collectOrRecord<T>(
     if (e instanceof TypeError || e instanceof RangeError || e instanceof ReferenceError || e instanceof SyntaxError) {
       throw e;
     }
-    problems.push({ endpoint: what, message: e instanceof Error ? e.message : String(e) });
+    problems.push({ endpoint: what, kind: 'list-failed', message: e instanceof Error ? e.message : String(e) });
     return [];
   }
 }
@@ -178,6 +178,7 @@ function reportDuplicates<T>(
   if (duplicated.size > 0) {
     problems.push({
       endpoint,
+      kind: 'duplicate-keys',
       message: `duplicate identity key(s): ${[...duplicated].sort().join(', ')} -- only one of each survives hashing and diffing`,
     });
   }

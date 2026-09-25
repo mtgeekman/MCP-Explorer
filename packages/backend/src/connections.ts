@@ -93,7 +93,8 @@ export class ConnectionManager {
    * the app is still running, and the processes report is exactly it.
    */
   private readonly owned = new Map<number, ServerRoot>();
-  private readonly ending = new Map<number, Promise<void>>();
+  /** Attempts under way, by root: a PID can pass to a new root while an old one is still being ended. */
+  private readonly ending = new Map<ServerRoot, Promise<void>>();
   private readonly sessionSecrets = new Map<string, SecretValues>();
   private readonly now: () => number;
 
@@ -196,21 +197,22 @@ export class ConnectionManager {
    * attempt.
    */
   private endTree(root: ServerRoot): Promise<void> {
-    if (!this.owned.has(root.pid)) return Promise.resolve();
-    const inFlight = this.ending.get(root.pid);
+    if (this.owned.get(root.pid) !== root) return Promise.resolve();
+    const inFlight = this.ending.get(root);
     if (inFlight) return inFlight;
     const attempt = (async () => {
       try {
         await (this.opts.killTree ?? killServerTree)(root);
-        this.owned.delete(root.pid);
+        // Only this root: its PID may have passed to a newer one meanwhile.
+        if (this.owned.get(root.pid) === root) this.owned.delete(root.pid);
       } catch (e) {
         process.emitWarning(`server process ${root.pid} and what it started could not all be ended: ${e instanceof Error ? e.message : String(e)}`, 'MCPExplorerProcessWarning');
       } finally {
-        this.ending.delete(root.pid);
+        this.ending.delete(root);
         this.announceProcesses();
       }
     })();
-    this.ending.set(root.pid, attempt);
+    this.ending.set(root, attempt);
     return attempt;
   }
 

@@ -3,7 +3,7 @@
 // and nothing started that the user did not ask for (P2).
 import {
   captureSurface, connectHttp, connectStdio, ConnectError,
-  type ChangedList, type CloseInfo, type ConnectFailure, type Connection, type EraPreference, type ProcessExit, type WireUnit,
+  type ChangedList, type CloseInfo, type NormalizedSurface, type ConnectFailure, type Connection, type EraPreference, type ProcessExit, type WireUnit,
 } from '../../protocol/dist/index.js';
 import {
   HistoryRecorder, loadServer, pinEra, clearEra, readDetectedEra, recordCapture,
@@ -82,6 +82,15 @@ interface Slot {
   capturing?: Promise<void>;
   changed: Set<ChangedList>;
   captureError?: string;
+  /** This session's newest capture when a list failed: shown, never recorded (R06-11). */
+  partial?: PartialCapture;
+}
+
+/** A capture with at least one failed list, kept for the session it was taken in. */
+export interface PartialCapture {
+  surface: NormalizedSurface;
+  observedAt: number;
+  connectionId: number;
 }
 
 /**
@@ -182,6 +191,10 @@ export class ConnectionManager {
     };
   }
 
+  partialCapture(serverId: string): PartialCapture | undefined {
+    return this.slots.get(serverId)?.partial;
+  }
+
   /**
    * Lists the connected server's whole surface and records it (D8). Done on
    * connect and when the user presses Refresh (phase 06 decision 3); a
@@ -208,13 +221,19 @@ export class ConnectionManager {
         if (slot.conn !== conn) throw new Error('the session ended during the capture; nothing was recorded');
         // A failed list reads as an empty one, and the hash cannot tell them
         // apart: recorded, it would be a new version with that list gone. So
-        // history holds only whole surfaces (phase 06 review, R06-3); the
-        // failure is reported here and every frame of it is in the wire log.
+        // history holds only whole surfaces (R06-3), and a partial one is kept
+        // for this session only, so a server with one list that never works
+        // still shows the rest (R06-11). Every frame of it is in the wire log.
         const failed = surface.problems.filter((p) => p.kind === 'list-failed');
         if (failed.length > 0) {
-          throw new Error(`${failed.map((p) => `${p.endpoint} failed: ${p.message}`).join('; ')}. Nothing was recorded; the last whole capture is kept`);
+          slot.partial = { surface, observedAt: this.now(), connectionId };
+          for (const list of noticed) {
+            if (failed.some((p) => p.endpoint.startsWith(`${list}/`))) slot.changed.add(list);
+          }
+        } else {
+          slot.partial = undefined;
+          recordCapture(this.ws, serverId, surface, { connectionId, now: this.now });
         }
-        recordCapture(this.ws, serverId, surface, { connectionId, now: this.now });
       } catch (e) {
         for (const list of noticed) slot.changed.add(list);
         slot.captureError = e instanceof Error ? e.message : String(e);
@@ -361,6 +380,7 @@ export class ConnectionManager {
     recorder.negotiated(conn.revision, conn.era);
     if (pinned?.era !== conn.era || pinned.revision !== conn.revision) pinEra(this.ws, serverId, conn.era, conn.revision, this.now);
     slot.changed.clear();
+    slot.partial = undefined;
     slot.captureError = undefined;
     const connected = this.set(serverId, { status: 'connected', era: conn.era, revision: conn.revision, pid: conn.pid, connectionId, connectedAt: this.now() });
     // Connecting includes listing what the server offers (decision 3). Not
@@ -392,6 +412,7 @@ export class ConnectionManager {
     const byUser = slot.state.status === 'closing';
     slot.conn = undefined;
     slot.changed.clear();
+    slot.partial = undefined;
     slot.recorder?.close();
     slot.recorder = undefined;
     // A server that exited on its own may have left processes behind; this

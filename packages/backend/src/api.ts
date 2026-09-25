@@ -5,7 +5,7 @@ import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface } from
 import type { PurgeResult, ServerSummary, Transport, WorkspaceSettings } from '../../storage/dist/index.js';
 
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
-import type { CaptureStatus, ConnectionState, SecretValues } from './connections.js';
+import type { CaptureStatus, ConnectionState, PartialCapture, SecretValues } from './connections.js';
 import type { Protection, Unlock, WorkspaceListing, WorkspaceNotice } from './workspaces.js';
 import type { ConfigLocation } from '../../platform/dist/index.js';
 import type { FoundLocation, ImportChoice, ReadConfig } from './importer.js';
@@ -89,6 +89,8 @@ export interface SurfaceView {
     surface: NormalizedSurface;
   } | null;
   status: CaptureStatus;
+  /** This session's newest capture when one of its lists failed: newer than `capture`, shown, never recorded (R06-11). */
+  partial: PartialCapture | null;
 }
 
 /** A list of a server's surface whose entries have their own detail view. */

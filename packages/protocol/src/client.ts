@@ -669,7 +669,11 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
     // SDK's close() signals only the process it spawned, which orphans what a
     // shell root started (D36), so a caller that can end a whole tree says so.
     if (failure.kind !== 'not-started' && failure.kind !== 'exited') {
-      if (opts.terminate && watch.pid !== undefined) await opts.terminate(watch.pid).catch(() => undefined);
+      if (opts.terminate && watch.pid !== undefined) {
+        await opts.terminate(watch.pid).catch((err: unknown) => {
+          process.emitWarning(`could not end process tree ${watch.pid} after a failed connect: ${messageOf(err)}`, 'MCPExplorerProcessWarning');
+        });
+      }
       await inner.close().catch(() => undefined);
     }
     // D20 (revised 2026-09-24): no second spawn here. A server that died on

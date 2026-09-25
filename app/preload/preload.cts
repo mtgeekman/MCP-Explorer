@@ -35,4 +35,6 @@ contextBridge.exposeInMainWorld('mcpxShell', {
   onReadableClosed: (listener: () => void) => {
     ipcRenderer.on('readable-closed', () => listener());
   },
+  /** The system folder dialog, for a project whose config files to import. */
+  chooseFolder: (): Promise<string | null> => ipcRenderer.invoke('choose-folder'),
 });

@@ -1,6 +1,6 @@
 // The Electron main process: windows, the backend utility process, and the
 // process trees it must never leave behind (D32, D36). No product logic.
-import { app, BrowserWindow, ipcMain, MessageChannelMain, utilityProcess, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, MessageChannelMain, utilityProcess, type UtilityProcess } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { killServerTree, type ServerRoot } from '../../packages/platform/dist/index.js';
@@ -93,6 +93,14 @@ ipcMain.on('readable-pop-out', () => {
 ipcMain.on('readable-select', (_e, selection: unknown) => {
   lastSelection = selection;
   readableWindow?.webContents.send('readable-select', selection);
+});
+
+// Config import asks for a project folder; the user picks it in the system dialog.
+ipcMain.handle('choose-folder', async (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const options = { title: 'Choose a project folder', properties: ['openDirectory' as const] };
+  const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+  return r.canceled ? null : (r.filePaths[0] ?? null);
 });
 
 ipcMain.on('backend-restart', (e) => {

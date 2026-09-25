@@ -50,6 +50,12 @@ const DAY_MS = 86_400_000;
 // Rows deleted between size measurements: measuring is a full dbstat scan, so
 // one row at a time is slow, and a large batch overshoots the cap.
 const SIZE_BATCH = 25;
+/**
+ * A wire unit's storage beyond its bytes: its other columns, its frame rows
+ * and index entries. An estimate that only sizes a purge batch; the cap is
+ * checked by measuring after each batch.
+ */
+const UNIT_ROW_OVERHEAD = 200;
 
 /** Pages in use (not on the freelist) times page size. Live bytes never exceed it. */
 export function usedBytes(db: Database): number {
@@ -86,7 +92,11 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
   const { retentionMaxBytes, retentionMaxAgeDays } = readSettings(ws);
   const cutoff = now() - retentionMaxAgeDays * DAY_MS;
   const usedBytesBefore = usedBytes(db);
-  const overCap = () => usedBytes(db) > retentionMaxBytes && liveBytes(db) > retentionMaxBytes;
+  /** Live bytes over the cap, or 0; the full dbstat scan runs only when the cheap bound is over. */
+  const excess = () => {
+    if (usedBytes(db) <= retentionMaxBytes) return 0;
+    return Math.max(0, liveBytes(db) - retentionMaxBytes);
+  };
   let callsDeleted = 0;
   let framesDeleted = 0;
   let unitsDeleted = 0;
@@ -110,7 +120,7 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
   })();
 
   let overCapWithNothingToPurge = false;
-  while (overCap()) {
+  for (let over = excess(); over > 0; over = excess()) {
     // Oldest first across every kind of history: whole calls by start time,
     // connection-level units and frames by their own time.
     const oldestCall = db.prepare("SELECT started_at AS at FROM call WHERE status <> 'in_progress' ORDER BY started_at, id LIMIT 1").get() as { at: number } | undefined;
@@ -126,7 +136,17 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
       if (oldestCall && (!oldestLoose || oldestCall.at <= oldestLoose.at)) {
         callsDeleted += db.prepare(`DELETE FROM call WHERE id IN (SELECT id FROM call WHERE status <> 'in_progress' ORDER BY started_at, id LIMIT ${SIZE_BATCH})`).run().changes;
       } else if (oldestLoose === oldestUnit) {
-        unitsDeleted += db.prepare(`DELETE FROM wire_unit WHERE id IN (SELECT id FROM wire_unit WHERE call_id IS NULL ORDER BY at, id LIMIT ${SIZE_BATCH})`).run().changes;
+        // Sized by the bytes still to free, not by a row count: small units
+        // at 25 a scan took thousands of scans; many at once overshot the cap.
+        // length() is answered from the record header, without the BLOB.
+        const ids: number[] = [];
+        let freed = 0;
+        for (const u of db.prepare('SELECT id, coalesce(length(bytes), 0) AS n FROM wire_unit WHERE call_id IS NULL ORDER BY at, id').all() as { id: number; n: number }[]) {
+          ids.push(u.id);
+          freed += u.n + UNIT_ROW_OVERHEAD;
+          if (freed >= over) break;
+        }
+        unitsDeleted += db.prepare('DELETE FROM wire_unit WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids)).changes;
       } else {
         framesDeleted += db.prepare(`DELETE FROM frame WHERE id IN (SELECT id FROM frame WHERE call_id IS NULL AND unit_id IS NULL ORDER BY at, id LIMIT ${SIZE_BATCH * 20})`).run().changes;
       }

@@ -29,6 +29,11 @@ export {
   type Transport,
   type ServerDefinition,
   type ServerSummary,
+  type SecretNames,
+  type DetectedEra,
+  readDetectedEra,
+  pinEra,
+  clearEra,
   InvalidServerDefinitionError,
   SecretsRequireEncryptionError,
   saveServer,
@@ -43,6 +48,7 @@ export {
   type CallKind,
   type CallStatus,
   type RoundOutcome,
+  type RawUnit,
 } from './history.js';
 export {
   recordCapture,

@@ -249,3 +249,59 @@ test('servers: an encrypted workspace reopened with its key reads its secrets ba
     again.close();
   }
 });
+
+// --- secrets without stored values (D31, amended 2026-09-24) ------------------------
+
+test('servers: an unencrypted workspace keeps the names of the secrets a server needs, never their values', () => {
+  const { ws, req } = create({ kind: 'none' });
+  try {
+    const { secretEnv: _e, ...a } = stdio({ unstoredSecrets: { env: ['API_KEY', 'GITHUB_TOKEN'] } });
+    const { secretHeaders: _h, ...b } = http({ unstoredSecrets: { headers: ['Authorization'] } });
+    saveServer(ws, a);
+    saveServer(ws, b);
+    assert.deepEqual(loadServer(ws, a.id), a);
+    assert.deepEqual(loadServer(ws, b.id), b);
+  } finally {
+    ws.close();
+  }
+  assert.equal(readFileSync(req.path).includes('ghp_example'), false);
+});
+
+test('servers: saving again replaces the unstored names, and deleting the server removes them', () => {
+  const { ws } = create({ kind: 'none' });
+  try {
+    const a = stdio({ secretEnv: undefined, unstoredSecrets: { env: ['OLD'] } });
+    saveServer(ws, a);
+    saveServer(ws, { ...a, unstoredSecrets: { env: ['NEW'] } });
+    assert.deepEqual(loadServer(ws, a.id).unstoredSecrets, { env: ['NEW'] });
+    deleteServer(ws, a.id);
+    assert.equal(ws.db.prepare('SELECT count(*) AS n FROM server_secret_name').get().n, 0);
+  } finally {
+    ws.close();
+  }
+});
+
+test('servers: an encrypted workspace can hold some values and ask for others', () => {
+  const { ws } = create({ kind: 'keychain' });
+  try {
+    const a = stdio({ unstoredSecrets: { env: ['ASK_EACH_TIME'] } });
+    saveServer(ws, a);
+    assert.deepEqual(loadServer(ws, a.id), a);
+  } finally {
+    ws.close();
+  }
+});
+
+test('servers: a secret name given twice, or also plain, is refused', () => {
+  const { ws } = create({ kind: 'keychain' });
+  try {
+    assert.throws(() => saveServer(ws, stdio({ unstoredSecrets: { env: ['GITHUB_TOKEN'] } })), /GITHUB_TOKEN is given twice/);
+    assert.throws(() => saveServer(ws, stdio({ secretEnv: undefined, unstoredSecrets: { env: ['LOG_LEVEL'] } })), /LOG_LEVEL is both plain and secret/);
+    assert.throws(() => saveServer(ws, stdio({ secretEnv: undefined, unstoredSecrets: { env: ['X', 'X'] } })), /X is given twice/);
+    assert.throws(() => saveServer(ws, stdio({ secretEnv: undefined, unstoredSecrets: { headers: ['Authorization'] } })), /has no HTTP headers/);
+    assert.throws(() => saveServer(ws, stdio({ secretEnv: undefined, unstoredSecrets: { env: [''] } })), /empty name/);
+    assert.deepEqual(listServers(ws), []);
+  } finally {
+    ws.close();
+  }
+});

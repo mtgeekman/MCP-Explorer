@@ -94,7 +94,7 @@ for (const file of readdirSync(golden).filter((f) => /^v\d+\.db$/.test(f))) {
     // and this test is about migration keeping rows, not about their age.
     const ws = openWorkspaceDb({ ...r, now: () => GOLDEN_TIME });
     try {
-      assert.equal(ws.purgedOnOpen.callsDeleted + ws.purgedOnOpen.framesDeleted, 0);
+      assert.equal(ws.purgedOnOpen.callsDeleted + ws.purgedOnOpen.framesDeleted + ws.purgedOnOpen.unitsDeleted, 0);
       assert.equal(userVersion(ws.db), SCHEMA_VERSION);
       const fresh = createWorkspaceDb(plain());
       try {
@@ -109,6 +109,10 @@ for (const file of readdirSync(golden).filter((f) => /^v\d+\.db$/.test(f))) {
       }
       assert.equal(ws.db.prepare('SELECT request_state FROM call_round WHERE call_id = 1 AND seq = 1').get().request_state.toString('hex'), '00ff01',
         'request_state must survive migration byte-exact');
+      // Frames from before schema 3 keep their re-serialized message and have
+      // no unit (D34): the log labels them rather than inventing bytes.
+      assert.deepEqual({ ...ws.db.prepare("SELECT unit_id, message_json FROM frame WHERE method = 'server/discover' AND unit_id IS NULL").get() },
+        { unit_id: null, message_json: '{"jsonrpc":"2.0","id":1,"method":"server/discover"}' });
     } finally {
       ws.close();
     }

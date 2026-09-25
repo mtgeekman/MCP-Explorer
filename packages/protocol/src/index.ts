@@ -3,3 +3,4 @@ export * from './canonical.js';
 export * from './capture.js';
 export * from './diff.js';
 export * from './client.js';
+export * from './wire.js';

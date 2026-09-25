@@ -33,8 +33,11 @@ test('a connect failure carries the child stderr that explains it', async () => 
       args: [join(fixtures, 'definitely-not-a-server.mjs')],
     }),
     (e) => {
-      assert.match(e.message, /server stderr:/, `no stderr in: ${e.message}`);
-      assert.match(e.message, /Cannot find module/, `stderr not the child's: ${e.message}`);
+      // The process ran and died: what it printed leads, the protocol message
+      // is kept separately.
+      assert.equal(e.failure.kind, 'exited');
+      assert.notEqual(e.failure.exit.code, 0);
+      assert.match(e.stderr, /Cannot find module/, `stderr not the child's: ${e.stderr}`);
       return true;
     },
   );

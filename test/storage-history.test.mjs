@@ -10,6 +10,7 @@ import { connectStdio, captureSurface } from '../packages/protocol/dist/index.js
 import {
   createWorkspaceDb, saveServer, HistoryRecorder, HistoryStateError, RESULT_METHODS,
 } from '../packages/storage/dist/index.js';
+import { frame, wire } from './support/units.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'mcpx-hist-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -26,7 +27,10 @@ function setup({ persistResults = true } = {}) {
 }
 
 const rows = (ws, sql, ...p) => ws.db.prepare(sql).all(...p).map((r) => ({ ...r }));
-const frames = (ws) => rows(ws, 'SELECT call_id, round_seq, direction, jsonrpc_id, method, message_json, result_withheld FROM frame ORDER BY id');
+const frames = (ws) => rows(ws, `
+  SELECT f.call_id, f.round_seq, f.direction, f.jsonrpc_id, f.method, f.unit_id, u.bytes, u.withheld, f.result_withheld
+  FROM frame f JOIN wire_unit u ON u.id = f.unit_id ORDER BY f.id`);
+const units = (ws) => rows(ws, 'SELECT connection_id, call_id, direction, kind, bytes, byte_length, withheld, http_json FROM wire_unit ORDER BY id');
 
 const toolCall = (id, name, args) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
 const reply = (id, result) => ({ jsonrpc: '2.0', id, result });
@@ -40,11 +44,11 @@ const INPUT_REQUIRED = {
 
 test('frames: requests, responses and notifications are all recorded, in order, with id and method', () => {
   const { ws, rec } = setup();
-  rec.frame('out', { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
-  rec.frame('in', reply(1, { tools: [] }));
-  rec.frame('in', { jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
-  rec.frame('out', { jsonrpc: '2.0', id: 'abc', method: 'ping' });
-  rec.frame('in', { jsonrpc: '2.0', id: 'abc', error: { code: -32601, message: 'nope' } });
+  frame(rec, 'out', { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+  frame(rec, 'in', reply(1, { tools: [] }));
+  frame(rec, 'in', { jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+  frame(rec, 'out', { jsonrpc: '2.0', id: 'abc', method: 'ping' });
+  frame(rec, 'in', { jsonrpc: '2.0', id: 'abc', error: { code: -32601, message: 'nope' } });
   assert.deepEqual(frames(ws).map((f) => [f.direction, f.jsonrpc_id, f.method, f.result_withheld]), [
     ['out', '1', 'tools/list', 0],
     ['in', '1', 'tools/list', 0],
@@ -52,31 +56,92 @@ test('frames: requests, responses and notifications are all recorded, in order, 
     ['out', '"abc"', 'ping', 0],
     ['in', '"abc"', 'ping', 0],
   ]);
-  assert.deepEqual(JSON.parse(frames(ws)[1].message_json), reply(1, { tools: [] }));
+  assert.equal(frames(ws)[1].bytes.toString('utf8'), JSON.stringify(reply(1, { tools: [] })) + '\n');
   ws.close();
 });
 
 test('frames: a numeric id and the same digits as a string are different ids', () => {
   const { ws, rec } = setup();
-  rec.frame('out', { jsonrpc: '2.0', id: 7, method: 'tools/list' });
-  rec.frame('out', { jsonrpc: '2.0', id: '7', method: 'prompts/list' });
-  rec.frame('in', reply('7', { prompts: [] }));
-  rec.frame('in', reply(7, { tools: [] }));
+  frame(rec, 'out', { jsonrpc: '2.0', id: 7, method: 'tools/list' });
+  frame(rec, 'out', { jsonrpc: '2.0', id: '7', method: 'prompts/list' });
+  frame(rec, 'in', reply('7', { prompts: [] }));
+  frame(rec, 'in', reply(7, { tools: [] }));
   assert.deepEqual(frames(ws).slice(2).map((f) => [f.jsonrpc_id, f.method]), [['"7"', 'prompts/list'], ['7', 'tools/list']]);
   ws.close();
 });
 
-test('frames: a batch is recorded as its members', () => {
+test('frames: a batch is one unit, recorded as its members', () => {
   const { ws, rec } = setup();
-  rec.frame('out', [{ jsonrpc: '2.0', id: 1, method: 'ping' }, { jsonrpc: '2.0', method: 'notifications/initialized' }]);
+  frame(rec, 'out', [{ jsonrpc: '2.0', id: 1, method: 'ping' }, { jsonrpc: '2.0', method: 'notifications/initialized' }]);
   assert.deepEqual(frames(ws).map((f) => f.method), ['ping', 'notifications/initialized']);
+  assert.equal(units(ws).length, 1);
+  assert.equal(new Set(frames(ws).map((f) => f.unit_id)).size, 1);
+  ws.close();
+});
+
+// --- wire units (D34) -----------------------------------------------------------------
+
+test('units: the bytes are stored exactly as they arrived, not re-serialized', () => {
+  const { ws, rec } = setup();
+  // Whitespace, key order, an escape, a duplicate key and a CRLF: everything
+  // a parse-and-stringify would change.
+  const raw = '{ "id":1,  "jsonrpc":"2.0", "result":{"a":1.50,"a":2,"t":"\\u00e9"} }\r\n';
+  rec.unit({ direction: 'in', kind: 'wire', bytes: Buffer.from(raw, 'utf8') });
+  const [u] = units(ws);
+  assert.equal(u.bytes.toString('utf8'), raw);
+  assert.equal(u.byte_length, Buffer.byteLength(raw));
+  assert.deepEqual(frames(ws).map((f) => f.jsonrpc_id), ['1']);
+  ws.close();
+});
+
+test('units: a unit that is not JSON-RPC is kept, with no frames', () => {
+  const { ws, rec } = setup();
+  const cases = ['<!doctype html><title>Sign in</title>\n', 'Server starting on stdio...\n', '42\n', '{"not":"jsonrpc"}\n', '', '{"jsonrpc":"2.0",'];
+  for (const text of cases) rec.unit({ direction: 'in', kind: 'wire', bytes: Buffer.from(text, 'utf8') });
+  rec.unit({ direction: 'in', kind: 'wire', bytes: Buffer.from([0xff, 0xfe, 0x7b]) });
+  assert.deepEqual(units(ws).map((u) => u.bytes.toString('latin1')), [...cases, '\xff\xfe{']);
+  assert.equal(frames(ws).length, 0);
+  ws.close();
+});
+
+test('units: stderr lines and app events are stored as their own kinds, never parsed', () => {
+  const { ws, rec } = setup();
+  rec.unit({ direction: 'in', kind: 'stderr', bytes: Buffer.from('{"jsonrpc":"2.0","method":"looks/like/a/frame"}\n') });
+  rec.unit({ direction: 'local', kind: 'app', bytes: Buffer.from('{"event":"exited","code":1}') });
+  assert.deepEqual(units(ws).map((u) => [u.direction, u.kind]), [['in', 'stderr'], ['local', 'app']]);
+  assert.equal(frames(ws).length, 0, 'stderr that happens to look like JSON-RPC is not a frame');
+  ws.close();
+});
+
+test('units: the schema refuses an app event with a wire direction, and a length that does not match', () => {
+  const { ws, rec } = setup();
+  assert.throws(() => rec.unit({ direction: 'in', kind: 'app', bytes: Buffer.from('x') }), /CHECK/);
+  assert.throws(() => ws.db.prepare("INSERT INTO wire_unit (connection_id, direction, kind, at, bytes, byte_length) VALUES (?, 'in', 'wire', 1, x'00', 2)").run(rec.connectionId), /CHECK/);
+  ws.close();
+});
+
+test('units: HTTP details are stored beside the bytes', () => {
+  const { ws, rec } = setup();
+  const http = { method: 'POST', url: 'https://example.test/mcp', headers: { authorization: '<secret: token>' } };
+  rec.unit({ ...wire('out', { jsonrpc: '2.0', id: 1, method: 'ping' }, ''), http });
+  assert.deepEqual(JSON.parse(units(ws)[0].http_json), http);
+  ws.close();
+});
+
+test('units: a unit whose messages all belong to one call goes with that call; a batch across calls does not', () => {
+  const { ws, rec } = setup();
+  const a = rec.beginCall('tool', 'a'); rec.beginRound(a, {});
+  const b = rec.beginCall('tool', 'b'); rec.beginRound(b, {});
+  frame(rec, 'out', toolCall(1, 'a', {}));
+  frame(rec, 'out', [toolCall(2, 'b', {}), { jsonrpc: '2.0', method: 'notifications/progress' }]);
+  assert.deepEqual(units(ws).map((u) => u.call_id), [a, null]);
   ws.close();
 });
 
 test('frames: a server-to-client request and our response are paired by id (legacy era)', () => {
   const { ws, rec } = setup();
-  rec.frame('in', { jsonrpc: '2.0', id: 9, method: 'sampling/createMessage', params: {} });
-  rec.frame('out', reply(9, { role: 'assistant', content: { type: 'text', text: 'typed by a human' } }));
+  frame(rec, 'in', { jsonrpc: '2.0', id: 9, method: 'sampling/createMessage', params: {} });
+  frame(rec, 'out', reply(9, { role: 'assistant', content: { type: 'text', text: 'typed by a human' } }));
   assert.deepEqual(frames(ws).map((f) => [f.direction, f.method]), [['in', 'sampling/createMessage'], ['out', 'sampling/createMessage']]);
   ws.close();
 });
@@ -87,10 +152,10 @@ test('calls: a round binds the request it declared and that request\'s response'
   const { ws, rec } = setup();
   const call = rec.beginCall('tool', 'echo');
   const seq = rec.beginRound(call, { text: 'hi' });
-  rec.frame('out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
-  rec.frame('out', toolCall(2, 'echo', { text: 'hi' }));
-  rec.frame('in', reply(1, { tools: [] }));
-  rec.frame('in', reply(2, COMPLETE));
+  frame(rec, 'out', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+  frame(rec, 'out', toolCall(2, 'echo', { text: 'hi' }));
+  frame(rec, 'in', reply(1, { tools: [] }));
+  frame(rec, 'in', reply(2, COMPLETE));
   rec.finishRound(call, seq, { result: COMPLETE, resultType: 'complete' });
   rec.finishCall(call, 'completed');
   assert.deepEqual(frames(ws).map((f) => [f.jsonrpc_id, f.call_id, f.round_seq]), [['1', null, null], ['2', call, 1], ['1', null, null], ['2', call, 1]]);
@@ -103,10 +168,10 @@ test('calls: two calls to the same tool bind in the order their requests were se
   const { ws, rec } = setup();
   const a = rec.beginCall('tool', 'echo'); rec.beginRound(a, { text: 'a' });
   const b = rec.beginCall('tool', 'echo'); rec.beginRound(b, { text: 'b' });
-  rec.frame('out', toolCall(10, 'echo', { text: 'a' }));
-  rec.frame('out', toolCall(11, 'echo', { text: 'b' }));
-  rec.frame('in', reply(11, COMPLETE));
-  rec.frame('in', reply(10, COMPLETE));
+  frame(rec, 'out', toolCall(10, 'echo', { text: 'a' }));
+  frame(rec, 'out', toolCall(11, 'echo', { text: 'b' }));
+  frame(rec, 'in', reply(11, COMPLETE));
+  frame(rec, 'in', reply(10, COMPLETE));
   assert.deepEqual(frames(ws).map((f) => [f.jsonrpc_id, f.call_id]), [['10', a], ['11', b], ['11', b], ['10', a]]);
   ws.close();
 });
@@ -114,9 +179,9 @@ test('calls: two calls to the same tool bind in the order their requests were se
 test('calls: a request for a different target is not bound to the round', () => {
   const { ws, rec } = setup();
   const call = rec.beginCall('tool', 'echo'); rec.beginRound(call, {});
-  rec.frame('out', toolCall(1, 'other', {}));
+  frame(rec, 'out', toolCall(1, 'other', {}));
   assert.equal(frames(ws)[0].call_id, null);
-  rec.frame('out', toolCall(2, 'echo', {}));
+  frame(rec, 'out', toolCall(2, 'echo', {}));
   assert.equal(frames(ws)[1].call_id, call);
   ws.close();
 });
@@ -125,8 +190,8 @@ test('calls: prompts bind by name and resources by uri', () => {
   const { ws, rec } = setup();
   const p = rec.beginCall('prompt', 'greet'); rec.beginRound(p, { who: 'x' });
   const r = rec.beginCall('resource', 'file:///a.md'); rec.beginRound(r, undefined);
-  rec.frame('out', { jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'file:///a.md' } });
-  rec.frame('out', { jsonrpc: '2.0', id: 2, method: 'prompts/get', params: { name: 'greet', arguments: { who: 'x' } } });
+  frame(rec, 'out', { jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'file:///a.md' } });
+  frame(rec, 'out', { jsonrpc: '2.0', id: 2, method: 'prompts/get', params: { name: 'greet', arguments: { who: 'x' } } });
   assert.deepEqual(frames(ws).map((f) => f.call_id), [r, p]);
   ws.close();
 });
@@ -135,13 +200,13 @@ test('calls: an MRTR sequence is rounds on one call, and request_state survives 
   const { ws, rec } = setup();
   const call = rec.beginCall('tool', 'needs_input');
   const r1 = rec.beginRound(call, {});
-  rec.frame('out', toolCall(1, 'needs_input', {}));
-  rec.frame('in', reply(1, INPUT_REQUIRED));
+  frame(rec, 'out', toolCall(1, 'needs_input', {}));
+  frame(rec, 'in', reply(1, INPUT_REQUIRED));
   rec.finishRound(call, r1, { result: INPUT_REQUIRED, resultType: 'input_required', inputRequests: INPUT_REQUIRED.inputRequests, requestState: INPUT_REQUIRED.requestState });
   rec.answerRound(call, r1, { who: { role: 'assistant', content: { type: 'text', text: 'human answer' } } });
   const r2 = rec.beginRound(call, {});
-  rec.frame('out', toolCall(2, 'needs_input', {}));
-  rec.frame('in', reply(2, COMPLETE));
+  frame(rec, 'out', toolCall(2, 'needs_input', {}));
+  frame(rec, 'in', reply(2, COMPLETE));
   rec.finishRound(call, r2, { result: COMPLETE, resultType: 'complete' });
   rec.finishCall(call, 'completed');
 
@@ -174,7 +239,7 @@ test('calls: abandoning a call closes its waiting round and stops binding its re
   const call = rec.beginCall('tool', 'echo');
   rec.beginRound(call, {});
   rec.finishCall(call, 'abandoned');
-  rec.frame('out', toolCall(1, 'echo', {}));
+  frame(rec, 'out', toolCall(1, 'echo', {}));
   assert.equal(frames(ws)[0].call_id, null, 'a late request must not bind to an abandoned call');
   assert.deepEqual(rows(ws, 'SELECT status FROM call'), [{ status: 'abandoned' }]);
   assert.equal(rows(ws, 'SELECT finished_at IS NULL AS open FROM call_round')[0].open, 0);
@@ -186,17 +251,18 @@ test('calls: abandoning a call closes its waiting round and stops binding its re
 test('opt-out: result responses are withheld, their requests and other frames are kept', () => {
   const { ws, rec } = setup({ persistResults: false });
   const call = rec.beginCall('tool', 'echo'); const seq = rec.beginRound(call, { text: 'hi' });
-  rec.frame('out', toolCall(1, 'echo', { text: 'hi' }));
-  rec.frame('in', reply(1, COMPLETE));
-  rec.frame('out', { jsonrpc: '2.0', id: 2, method: 'tools/list' });
-  rec.frame('in', reply(2, { tools: [] }));
+  frame(rec, 'out', toolCall(1, 'echo', { text: 'hi' }));
+  frame(rec, 'in', reply(1, COMPLETE));
+  frame(rec, 'out', { jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  frame(rec, 'in', reply(2, { tools: [] }));
   rec.finishRound(call, seq, { result: COMPLETE, resultType: 'complete' });
-  assert.deepEqual(frames(ws).map((f) => [f.direction, f.method, f.message_json === null, f.result_withheld]), [
-    ['out', 'tools/call', false, 0],
-    ['in', 'tools/call', true, 1],
-    ['out', 'tools/list', false, 0],
-    ['in', 'tools/list', false, 0],
+  assert.deepEqual(frames(ws).map((f) => [f.direction, f.method, f.bytes === null, f.withheld, f.result_withheld]), [
+    ['out', 'tools/call', false, 0, 0],
+    ['in', 'tools/call', true, 1, 1],
+    ['out', 'tools/list', false, 0, 0],
+    ['in', 'tools/list', false, 0, 0],
   ]);
+  assert.equal(units(ws)[1].byte_length, Buffer.byteLength(JSON.stringify(reply(1, COMPLETE)) + '\n'), 'a withheld unit still says how big it was');
   assert.equal(frames(ws)[1].jsonrpc_id, '1', 'a withheld frame still says what it answered');
   assert.equal(rows(ws, 'SELECT result_json FROM call_round')[0].result_json, null);
   ws.close();
@@ -205,8 +271,8 @@ test('opt-out: result responses are withheld, their requests and other frames ar
 test('opt-out: every result method is withheld', () => {
   const { ws, rec } = setup({ persistResults: false });
   RESULT_METHODS.forEach((method, i) => {
-    rec.frame('out', { jsonrpc: '2.0', id: i, method, params: { name: 'n', uri: 'u' } });
-    rec.frame('in', reply(i, { secret: 'data' }));
+    frame(rec, 'out', { jsonrpc: '2.0', id: i, method, params: { name: 'n', uri: 'u' } });
+    frame(rec, 'in', reply(i, { secret: 'data' }));
   });
   assert.deepEqual(frames(ws).filter((f) => f.direction === 'in').map((f) => [f.method, f.result_withheld]), RESULT_METHODS.map((m) => [m, 1]));
   ws.close();
@@ -227,32 +293,56 @@ test('opt-out: an input-required round withholds its requests and state, and kee
 
 test('opt-out: a response to a request the recorder never saw is withheld', () => {
   const { ws, rec } = setup({ persistResults: false });
-  rec.frame('in', reply(99, { content: [{ type: 'text', text: 'maybe a result' }] }));
+  frame(rec, 'in', reply(99, { content: [{ type: 'text', text: 'maybe a result' }] }));
   assert.deepEqual(frames(ws).map((f) => [f.method, f.result_withheld]), [[null, 1]]);
+  ws.close();
+});
+
+test('opt-out: a batch carrying a result is withheld whole, and its other frames still say what they were', () => {
+  const { ws, rec } = setup({ persistResults: false });
+  frame(rec, 'out', toolCall(1, 'echo', {}));
+  frame(rec, 'in', [reply(1, COMPLETE), { jsonrpc: '2.0', method: 'notifications/message', params: { data: 'log' } }]);
+  const batch = frames(ws).slice(1);
+  assert.deepEqual(batch.map((f) => [f.method, f.bytes, f.withheld, f.result_withheld]),
+    [['tools/call', null, 1, 1], ['notifications/message', null, 1, 0]]);
+  ws.close();
+});
+
+test('opt-out: an incoming unit that is not JSON-RPC is withheld; an outgoing one, an empty one, stderr and app events are not', () => {
+  const { ws, rec } = setup({ persistResults: false });
+  rec.unit({ direction: 'in', kind: 'wire', bytes: Buffer.from('<html>maybe a result</html>') });
+  rec.unit({ direction: 'out', kind: 'wire', bytes: Buffer.from('not json') });
+  rec.unit({ direction: 'in', kind: 'wire', bytes: Buffer.alloc(0) });
+  rec.unit({ direction: 'in', kind: 'stderr', bytes: Buffer.from('warning\n') });
+  rec.unit({ direction: 'local', kind: 'app', bytes: Buffer.from('{"event":"spawned"}') });
+  assert.deepEqual(units(ws).map((u) => u.withheld), [1, 0, 0, 0, 0]);
   ws.close();
 });
 
 test('opt-out: turning it on or off applies to the next frame', () => {
   const { ws, rec } = setup();
-  rec.frame('out', toolCall(1, 'echo', {}));
-  rec.frame('out', toolCall(2, 'echo', {}));
-  rec.frame('in', reply(1, COMPLETE));
+  frame(rec, 'out', toolCall(1, 'echo', {}));
+  frame(rec, 'out', toolCall(2, 'echo', {}));
+  frame(rec, 'in', reply(1, COMPLETE));
   ws.db.prepare('UPDATE workspace_meta SET persist_results = 0').run();
-  rec.frame('in', reply(2, COMPLETE));
+  frame(rec, 'in', reply(2, COMPLETE));
   assert.deepEqual(frames(ws).filter((f) => f.direction === 'in').map((f) => f.result_withheld), [0, 1]);
   ws.close();
 });
 
 // --- P1 end to end --------------------------------------------------------------------
 
-test('P1: every frame the transport tap emits in a real session is stored', async () => {
+test('P1: every unit the transport tap emits in a real session is stored, and every message the SDK handled is a frame', async () => {
   const { ws, rec } = setup();
   const seen = [];
+  const emitted = [];
   try {
   const conn = await connectStdio({
     command: process.execPath,
     args: [fileURLToPath(new URL('../scripts/fixture/modern-server.mjs', import.meta.url))],
-    onFrame: (direction, frame) => { seen.push([direction, frame]); rec.frame(direction, frame); },
+    env: { ...process.env, ODD_BYTES: '1' },
+    onUnit: (u) => { emitted.push(Buffer.from(u.bytes)); rec.unit(u); },
+    onFrame: (direction, message) => { seen.push([direction, message]); },
   });
   try {
     rec.negotiated(conn.revision, conn.era);
@@ -261,12 +351,13 @@ test('P1: every frame the transport tap emits in a real session is stored', asyn
     await conn.close();
     rec.close();
   }
+  assert.deepEqual(units(ws).map((u) => u.bytes), emitted, 'a stored unit differs from the bytes the tap emitted');
   const stored = frames(ws);
   assert.ok(seen.length >= 4, `only ${seen.length} frames in a whole capture`);
   assert.equal(stored.length, seen.length);
   stored.forEach((f, i) => {
     assert.equal(f.direction, seen[i][0]);
-    assert.deepEqual(JSON.parse(f.message_json), seen[i][1]);
+    assert.deepEqual(JSON.parse(f.bytes.toString('utf8')), seen[i][1]);
   });
   assert.ok(stored.some((f) => f.method === 'server/discover'), 'negotiation traffic is part of the record');
   assert.ok(stored.every((f) => f.method !== null), 'every response was paired with its request');
@@ -285,8 +376,8 @@ test('calls: a round finished without its request being sent does not capture th
     const r1 = rec.beginRound(call, {});
     rec.finishRound(call, r1, { error: { message: 'connection closed before send' } });
     const r2 = rec.beginRound(call, {});
-    rec.frame('out', toolCall(5, 'echo', {}));
-    rec.frame('in', reply(5, COMPLETE));
+    frame(rec, 'out', toolCall(5, 'echo', {}));
+    frame(rec, 'in', reply(5, COMPLETE));
     assert.deepEqual(frames(ws).map((f) => f.round_seq), [r2, r2]);
   } finally {
     ws.close();

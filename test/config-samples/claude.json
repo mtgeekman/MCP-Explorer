@@ -1,0 +1,19 @@
+{
+  "numStartups": 12,
+  "mcpServers": {
+    "sentry": { "type": "http", "url": "https://mcp.sentry.dev/mcp", "headers": { "Authorization": "Bearer ${SENTRY_TOKEN}" } },
+    "legacy-events": { "type": "sse", "url": "https://example.com/sse", "timeout": 30000 },
+    "sockets": { "type": "ws", "url": "wss://example.com/mcp" },
+    "no-type": { "url": "https://example.com/mcp" }
+  },
+  "projects": {
+    "/home/me/src/app": {
+      "allowedTools": [],
+      "mcpServers": {
+        "db": { "type": "stdio", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/tools/db.mjs", "--port", "${DB_PORT:-5432}"] },
+        "local-api": { "command": "python", "args": ["-m", "api"], "env": { "API_KEY": "${API_KEY:-dev}", "MODE": "local" } }
+      }
+    },
+    "/home/me/src/other": { "allowedTools": [] }
+  }
+}

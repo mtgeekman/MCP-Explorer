@@ -27,12 +27,16 @@ contextBridge.exposeInMainWorld('mcpxShell', {
   popOutReadable: () => ipcRenderer.send('readable-pop-out'),
   /** Tells the popped-out pane which unit to show. */
   selectReadable: (selection: Selection) => ipcRenderer.send('readable-select', selection),
+  /** Returns a function that stops listening: a page given a new backend port listens again with its new client. */
   onReadableSelect: (listener: (selection: Selection) => void) => {
     selectionListeners.add(listener);
     if (lastSelection !== undefined) listener(lastSelection);
+    return () => { selectionListeners.delete(listener); };
   },
   /** The popped-out pane was closed; the side pane shows again. */
   onReadableClosed: (listener: () => void) => {
     ipcRenderer.on('readable-closed', () => listener());
   },
+  /** The system folder dialog, for a project whose config files to import. */
+  chooseFolder: (): Promise<string | null> => ipcRenderer.invoke('choose-folder'),
 });

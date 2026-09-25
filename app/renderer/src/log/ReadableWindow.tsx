@@ -9,7 +9,9 @@ export function ReadableWindow({ client }: { client: BackendClient }) {
   const [unit, setUnit] = useState<LogUnit | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    window.mcpxShell?.onReadableSelect((selection) => {
+    // After a backend restart this window gets a new client; the old one's
+    // listener is removed so only the live port is asked.
+    return window.mcpxShell?.onReadableSelect((selection) => {
       setError(null);
       if (!selection) return setUnit(null);
       client.request('log.get', selection).then(setUnit, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));

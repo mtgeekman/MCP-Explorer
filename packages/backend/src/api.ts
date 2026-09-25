@@ -2,9 +2,13 @@
 // JSON-RPC: no module outside the transport layer constructs a JSON-RPC
 // message (P1), and these are the app's own, not protocol traffic.
 import type { ConnectFailure, HttpDetails } from '../../protocol/dist/index.js';
-import type { ServerSummary, Transport } from '../../storage/dist/index.js';
+import type { PurgeResult, ServerSummary, Transport, WorkspaceSettings } from '../../storage/dist/index.js';
+
+export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
 import type { ConnectionState, SecretValues } from './connections.js';
 import type { Protection, Unlock, WorkspaceListing, WorkspaceNotice } from './workspaces.js';
+import type { ConfigLocation } from '../../platform/dist/index.js';
+import type { FoundLocation, ImportChoice, ReadConfig } from './importer.js';
 
 /**
  * A server definition as the renderer sees and edits it. Secret values never
@@ -94,6 +98,29 @@ export interface Requests {
   'log.units': { params: { serverId: string; before?: LogCursor; limit?: number }; result: LogUnit[] };
   /** One unit, for a window showing a selection it did not load (the popped-out pane, board 1A). */
   'log.get': { params: { id: number; reserialized?: boolean }; result: LogUnit | null };
+  'settings.get': { params: Record<string, never>; result: WorkspaceSettings };
+  /** Applies from the next frame, call or purge; nothing already stored changes (D24, D30). */
+  'settings.update': { params: { changes: Partial<WorkspaceSettings> }; result: WorkspaceSettings };
+  'history.size': { params: Record<string, never>; result: HistorySize };
+  /** What a purge would delete now, deleting nothing: shown before "Purge now" (D24). */
+  'history.previewPurge': { params: Record<string, never>; result: PurgeResult };
+  'history.purge': { params: Record<string, never>; result: PurgeResult };
+  /** VACUUM: an explicit user command, never automatic (D24). */
+  'history.compact': { params: Record<string, never>; result: { before: number; after: number } };
+  /** Which known config files exist, the user's and those of chosen project folders; nothing is read (decision 1). */
+  'import.locations': { params: { projectRoots?: string[] }; result: FoundLocation[] };
+  /** Reads and parses the files the user picked. */
+  'import.read': { params: { locations: ConfigLocation[] }; result: ReadConfig[] };
+  /** Saves the servers the user kept, all or none. Nothing is started. */
+  'import.save': { params: { servers: ImportChoice[] }; result: ServerRow[] };
+}
+
+/** The workspace file against the retention cap: the file can be larger than the cap until compacted (D24). */
+export interface HistorySize {
+  /** Pages in the file times page size. */
+  fileBytes: number;
+  /** Pages in use: an upper bound on live bytes, which is what the cap measures. */
+  usedBytes: number;
 }
 
 export type Method = keyof Requests;

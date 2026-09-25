@@ -1,6 +1,6 @@
 // The Electron main process: windows, the backend utility process, and the
 // process trees it must never leave behind (D32, D36). No product logic.
-import { app, BrowserWindow, ipcMain, MessageChannelMain, utilityProcess, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, MessageChannelMain, utilityProcess, type UtilityProcess } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { killServerTree, type ServerRoot } from '../../packages/platform/dist/index.js';
@@ -95,10 +95,22 @@ ipcMain.on('readable-select', (_e, selection: unknown) => {
   readableWindow?.webContents.send('readable-select', selection);
 });
 
-ipcMain.on('backend-restart', (e) => {
-  if (!backend) backend = startBackend();
+// Config import asks for a project folder; the user picks it in the system dialog.
+ipcMain.handle('choose-folder', async (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
-  if (win) connect(win);
+  const options = { title: 'Choose a project folder', properties: ['openDirectory' as const] };
+  const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+  return r.canceled ? null : (r.filePaths[0] ?? null);
+});
+
+// Every window's port died with the old backend, not only the asking one's:
+// the popped-out readable pane needs a new port too (deferred/phase-04). A
+// request while the backend is running (a second click) changes nothing: a new
+// port remounts the page and drops what it was showing.
+ipcMain.on('backend-restart', () => {
+  if (backend) return;
+  backend = startBackend();
+  for (const win of BrowserWindow.getAllWindows()) connect(win);
 });
 
 app.whenReady().then(() => {

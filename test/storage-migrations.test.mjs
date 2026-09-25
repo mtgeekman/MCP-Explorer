@@ -72,6 +72,7 @@ test('a new workspace is at the newest schema, with the pinned schema and its se
     assert.deepEqual({ ...ws.db.prepare('SELECT * FROM workspace_meta').get() }, {
       id: 1, name: 'migration test', created_at: 42, persist_results: 1,
       retention_max_bytes: 524_288_000, retention_max_age_days: 90,
+      ask_before_calls: 1, mrtr_soft_cap: 5,
     });
   } finally {
     ws.close();

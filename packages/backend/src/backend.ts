@@ -3,13 +3,14 @@
 // testable without Electron (D17); the utility-process entry only wires ports.
 import { randomUUID } from 'node:crypto';
 import {
-  deleteServer, listServers, loadServer, readDetectedEra, saveServer,
+  compact, deleteServer, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
   type ServerDefinition, type SecretStore,
 } from '../../storage/dist/index.js';
 import type { ServerRoot } from '../../platform/dist/index.js';
 import { ConnectionManager } from './connections.js';
 import { WorkspaceManager, type OpenWorkspace } from './workspaces.js';
 import { logPage, logUnit } from './log.js';
+import { listConfigLocations, readConfigs, saveImported } from './importer.js';
 import type { ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow } from './api.js';
 
 export interface BackendOptions {
@@ -75,6 +76,20 @@ export class Backend {
       'connections.disconnect': ({ serverId }) => this.conns().disconnect(serverId),
       'log.units': ({ serverId, before, limit }) => logPage(this.ws().db, serverId, before, limit ?? DEFAULT_PAGE),
       'log.get': ({ id, reserialized }) => logUnit(this.ws().db, id, reserialized),
+      'settings.get': () => readSettings(this.ws()),
+      'settings.update': ({ changes }) => updateSettings(this.ws(), changes),
+      'history.size': () => ({ fileBytes: fileBytes(this.ws().db), usedBytes: usedBytes(this.ws().db) }),
+      'history.previewPurge': () => previewPurge(this.ws(), this.opts.now),
+      'history.purge': () => purgeHistory(this.ws(), this.opts.now),
+      'history.compact': () => compact(this.ws()),
+      'import.locations': ({ projectRoots }) => listConfigLocations(projectRoots),
+      'import.read': ({ locations }) => readConfigs(locations),
+      'import.save': ({ servers }) => {
+        const ids = saveImported(this.ws(), servers, this.opts.now);
+        // A replaced server may have been connected with secrets it no longer names.
+        for (const id of ids) this.conns().forgetSecrets(id);
+        return ids.map((id) => this.row(id));
+      },
     };
   }
 

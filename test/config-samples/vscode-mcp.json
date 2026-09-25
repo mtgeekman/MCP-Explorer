@@ -1,0 +1,23 @@
+// VS Code allows comments and trailing commas here.
+{
+  "inputs": [
+    { "type": "promptString", "id": "gh-token", "description": "GitHub token", "password": true },
+  ],
+  "servers": {
+    /* a local server */
+    "memory": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory", "${workspaceFolder}${/}memory.json"],
+      "envFile": "${workspaceFolder}/.env",
+      "env": { "GITHUB_TOKEN": "${input:gh-token}", "DEBUG": "1" },
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "X-Client": "vscode" },
+    },
+    "inferred": { "url": "https://example.com/mcp" },
+    "configured": { "command": "node", "args": ["${config:mcp.serverPath}"] },
+  },
+}

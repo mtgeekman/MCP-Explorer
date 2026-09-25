@@ -60,6 +60,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .app { display: flex; flex-direction: column; height: 100%; }
 .app-header { display: flex; align-items: center; gap: 16px; height: 44px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .app-title { font-weight: 600; }
+.header-spacer { flex: 1; }
 .app-body { flex: 1; display: flex; min-height: 0; }
 .app-main { flex: 1; overflow: auto; }
 
@@ -69,7 +70,9 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .field > span { font-size: 12px; color: var(--muted); }
 .row { display: flex; gap: 12px; }
 .row .field { flex: 1; }
-.actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.actions { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 12px; }
+.actions.start { justify-content: flex-start; margin-top: 0; }
+.settings .attest { margin-top: 4px; }
 .actions.left { justify-content: flex-start; }
 .error { color: var(--bad); margin: 8px 0; }
 .hint { color: var(--muted); margin: 0 0 8px; font-size: 13px; }
@@ -136,6 +139,20 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .secrets { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin: 0 0 12px; }
 .secrets legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
 .secret-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.server-list-actions { display: flex; gap: 6px; }
+.import-file { margin: 0 0 16px; }
+.import-file h3 { margin: 0; font-size: 14px; }
+.import-entry { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin: 8px 0; background: var(--panel); }
+.import-entry.disabled { opacity: .75; }
+.import-entry-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.import-entry-head .attest { margin-top: 0; }
+.import-entry ul { margin: 4px 0 0; padding-left: 20px; }
+.import-values { border-collapse: collapse; margin: 0 0 8px; font-size: 13px; }
+.import-values th, .import-values td { text-align: left; padding: 2px 12px 2px 0; }
+.import-values th { font-weight: 500; color: var(--muted); font-size: 12px; }
+.raw-entry { max-height: 200px; overflow: auto; padding: 8px; margin: 4px 0 0; border-radius: 4px; background: var(--bg); white-space: pre-wrap; }
+.looked-in { margin: 12px 0; color: var(--muted); font-size: 13px; }
+.looked-in ul { list-style: none; padding: 0; }
 .secret-row input { flex: 1; }
 
 .muted { color: var(--muted); }

@@ -42,7 +42,8 @@ export function logPage(db: Database, serverId: string, before: LogCursor | unde
     ORDER BY at DESC, reserialized DESC, id DESC
     LIMIT @limit
   `).all({ server: serverId, at: cursor[0], reserialized: cursor[1], id: cursor[2], limit }) as { id: number; reserialized: number }[];
-  const rows = keys.reverse().map((k) => db.prepare(`SELECT * FROM (${UNION}) WHERE id = ? AND reserialized = ?`).get(k.id, k.reserialized) as Row);
+  const byKey = db.prepare(`SELECT * FROM (${UNION}) WHERE id = ? AND reserialized = ?`);
+  const rows = keys.reverse().map((k) => byKey.get(k.id, k.reserialized) as Row);
   return withFrames(db, rows);
 }
 

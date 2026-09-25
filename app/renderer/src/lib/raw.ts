@@ -163,11 +163,20 @@ export class RawDocument {
   }
 }
 
+/**
+ * The current match, kept inside the matches that exist: the list shrinks
+ * under it when Match case is ticked or the query changes.
+ */
+export function currentMatch(found: { offsets: number[] }, current: number): number {
+  return Math.min(Math.max(current, 0), Math.max(found.offsets.length - 1, 0));
+}
+
 /** The find box's status line: which match is current, of how many, and where. */
 export function matchLabel(query: string, found: { offsets: number[]; truncated: boolean }, current: number): string {
   if (!query) return '';
   if (!found.offsets.length) return 'No match';
-  return `${current + 1} of ${found.offsets.length.toLocaleString()}${found.truncated ? '+' : ''} at byte ${found.offsets[current].toLocaleString()}`;
+  const at = currentMatch(found, current);
+  return `${at + 1} of ${found.offsets.length.toLocaleString()}${found.truncated ? '+' : ''} at byte ${found.offsets[at].toLocaleString()}`;
 }
 
 /** A byte count as a person reads it. */

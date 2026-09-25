@@ -52,8 +52,8 @@ function preview(u: LogUnit): string {
 
 /**
  * Rows for a run of units, oldest first. A reply's elapsed time is measured
- * from the request with the same id and method going the other way, in
- * either direction, since a legacy server sends requests too.
+ * from the request on the same connection with the same id and method going
+ * the other way, in either direction, since a legacy server sends requests too.
  */
 export function logRows(units: LogUnit[]): LogRow[] {
   const sent = new Map<string, number>();
@@ -66,8 +66,9 @@ export function logRows(units: LogUnit[]): LogRow[] {
       row.label = u.frames.map((f) => [f.method ?? 'reply to an unknown request', f.jsonrpcId === null ? '' : `#${f.jsonrpcId}`].join(' ').trim()).join(', ');
       for (const f of u.frames) {
         if (f.jsonrpcId === null || f.method === null) continue;
-        const key = `${u.direction}\u0000${f.jsonrpcId}\u0000${f.method}`;
-        const other = `${u.direction === 'out' ? 'in' : 'out'}\u0000${f.jsonrpcId}\u0000${f.method}`;
+        // Ids restart with every connection, and the log spans them all.
+        const key = `${u.connectionId}\u0000${u.direction}\u0000${f.jsonrpcId}\u0000${f.method}`;
+        const other = `${u.connectionId}\u0000${u.direction === 'out' ? 'in' : 'out'}\u0000${f.jsonrpcId}\u0000${f.method}`;
         const asked = sent.get(other);
         if (asked !== undefined) {
           row.elapsedMs = u.at - asked;

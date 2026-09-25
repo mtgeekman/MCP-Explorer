@@ -10,6 +10,11 @@
 //                    is a legacy signal just as much as -32601 is
 //   DIE_ON_LIST      exit instead of answering tools/list, so a session ends
 //                    in the middle of a capture
+//   HANG_ON_LIST     never answer tools/list, so a capture is still running
+//                    when the user acts
+//   HANG_ONCE_FILE   hang on tools/list only if this file does not exist yet,
+//                    creating it: the first process hangs, a later one answers
+//   FAIL_LIST_AFTER  answer tools/list this many times, then with an error
 //   LIST_CHANGED     after answering the first tools/list, announce
 //                    notifications/tools/list_changed; every later tools/list
 //                    carries a second tool. Counted per process, which is per
@@ -18,6 +23,8 @@
 // Returns a JSON-RPC response, `undefined` when the frame warrants none, or
 // one of the two markers below; each front decides what dying or hanging
 // means on its own transport.
+import { existsSync, writeFileSync } from 'node:fs';
+
 export const DIE = Symbol('die');
 export const SILENT = Symbol('silent');
 
@@ -41,7 +48,16 @@ export function handleLegacy(msg) {
 
   if (msg.method === 'tools/list') {
     if (process.env.DIE_ON_LIST) return DIE;
-    const changed = process.env.LIST_CHANGED && toolsListed++ > 0;
+    if (process.env.HANG_ON_LIST) return SILENT;
+    if (process.env.HANG_ONCE_FILE && !existsSync(process.env.HANG_ONCE_FILE)) {
+      writeFileSync(process.env.HANG_ONCE_FILE, String(process.pid));
+      return SILENT;
+    }
+    if (process.env.FAIL_LIST_AFTER && toolsListed >= Number(process.env.FAIL_LIST_AFTER)) {
+      return err(msg.id, -32603, 'tools/list failed on purpose (FAIL_LIST_AFTER)');
+    }
+    const changed = process.env.LIST_CHANGED && toolsListed > 0;
+    toolsListed++;
     return ok(msg.id, {
       tools: [{
         name: 'echo',

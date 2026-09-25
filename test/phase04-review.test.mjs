@@ -1,5 +1,7 @@
-// Regression tests for the phase 04 code review, one per finding (R04-1 to
-// R04-9). Each was written, and watched failing, before its fix.
+// Regression tests for the phase 04 code review, one per finding: R04-1 to
+// R04-9 from the review, RR-1 to RR-5 from the re-review of those fixes.
+// Each was watched failing before its fix, or, where the test was rewritten
+// after it, with the fix removed.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -191,4 +193,66 @@ test('R04-9: a reply is timed against the request of its own connection', () => 
   const rows = logRows([unit(1, 'out', 0), unit(2, 'in', 1050)]);
   assert.equal(rows[1].elapsedMs, undefined);
   assert.equal(logRows([unit(1, 'out', 0), unit(1, 'in', 30)])[1].elapsedMs, 30, 'old valid input');
+});
+
+// --- round 3: the re-review of the fix chain (RR-1 to RR-6) ---------------------------------
+
+test('RR-1: a size purge still goes oldest first: a finished call older than a unit goes before it', () => {
+  const ws = workspace();
+  const s = { id: randomUUID(), name: 'mixed', transport: 'stdio', command: 'x' };
+  saveServer(ws, s);
+  const base = Date.now() - 60_000;
+  let t = base;
+  const rec = HistoryRecorder.open(ws, s.id, () => t);
+  const kb = Buffer.alloc(1024, 0x63);
+  rec.unit({ direction: 'in', kind: 'stderr', bytes: kb });            // oldest: a loose unit at base
+  t = base + 10;
+  // then a finished call big enough (1.5 MB of arguments) that deleting it
+  // alone clears the excess below
+  const call = rec.beginCall('tool', 'echo');
+  rec.beginRound(call, { text: 'y'.repeat(1_500_000) });
+  rec.finishCall(call, 'abandoned');
+  t = base + 20;
+  ws.db.transaction(() => { for (let i = 0; i < 2000; i++) rec.unit({ direction: 'in', kind: 'stderr', bytes: kb }); })();
+  updateSettings(ws, { retentionMaxBytes: liveBytes(ws.db) - 1_200_000 });
+  purgeHistory(ws, () => Date.now());
+  assert.equal(ws.db.prepare('SELECT count(*) AS n FROM call WHERE id = ?').get(call).n, 0, 'the older call was kept');
+  // Oldest first: the unit at base, then the call, and the excess is gone.
+  // Every unit newer than the call must survive.
+  assert.equal(ws.db.prepare('SELECT count(*) AS n FROM wire_unit WHERE at >= ?').get(base + 20).n, 2000, 'units newer than the call were purged before it');
+});
+
+test('RR-3: a session that fails to close does not stop the rest from closing, and says so', async () => {
+  const ws = workspace();
+  const manager = new ConnectionManager(ws, { events: {} });
+  let closedOther = false;
+  manager['slots'].set('bad', { state: { status: 'connected', connectionId: 1 }, conn: { close: () => Promise.reject(new Error('close failed')) } });
+  manager['slots'].set('good', { state: { status: 'connected', connectionId: 2 }, conn: { close: async () => { closedOther = true; } } });
+  const warnings = [];
+  const onWarning = (w) => warnings.push(w.message);
+  process.on('warning', onWarning);
+  try {
+    await manager.closeAll();
+  } catch (e) {
+    assert.fail(`closeAll rejected (${e.message}): a switch that ends sessions first would fail with it`);
+  } finally {
+    await new Promise((r) => setImmediate(r));
+    process.off('warning', onWarning);
+  }
+  assert.ok(closedOther);
+  assert.ok(warnings.some((m) => m.includes('close failed')), 'a session that did not close must be reported');
+});
+
+test('RR-5: a failed connect whose launcher root exited leaves nothing it started running', { skip: !win && 'a dead root is searched for its children on Windows only (D36)' }, async () => {
+  const spawns = spawnLog();
+  const ws = workspace();
+  // The launcher starts the server detached and exits at once: the root is
+  // gone before the handshake, and what it started is not.
+  const s = { id: randomUUID(), name: 'detached', transport: 'stdio', command: process.execPath, args: [join(fixtures, 'detach.mjs')], env: { STUBBORN: '1', SPAWN_LOG: spawns } };
+  saveServer(ws, s);
+  const manager = new ConnectionManager(ws, { probeTimeoutMs: 800, events: {} });
+  const failed = await manager.connect(s.id);
+  assert.equal(failed.status, 'failed', JSON.stringify(failed));
+  const [server] = await waitFor(() => { const p = pidsIn(spawns); return p.length ? p : null; });
+  await waitFor(() => !isAlive(server), 8000).catch(() => { process.kill(server, 'SIGKILL'); assert.fail(`the server ${server} started by the exited launcher outlived the failed connect`); });
 });

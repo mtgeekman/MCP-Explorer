@@ -9,7 +9,7 @@ import {
   HistoryRecorder, loadServer, pinEra, clearEra, readDetectedEra,
   type ServerDefinition, type SecretNames, type Workspace,
 } from '../../storage/dist/index.js';
-import { killProcessTree, isAlive, type ServerRoot } from '../../platform/dist/index.js';
+import { killProcessTree, killServerTree, isAlive, type ServerRoot } from '../../platform/dist/index.js';
 
 /**
  * What the app offers after a stdio failure that a second spawn could get
@@ -226,8 +226,16 @@ export class ConnectionManager {
     } catch (e) {
       recorder.close();
       slot.recorder = undefined;
-      // The adapter has ended whatever it spawned (terminate, above).
-      slot.starting = undefined;
+      // The adapter ended a live root's tree (terminate, above), but not what a
+      // root that already exited left behind; on Windows that is still findable
+      // (D36). A root still alive after this stays reported to the main process.
+      const spawned = slot.starting;
+      if (spawned) {
+        await killServerTree(spawned).catch((err: unknown) => {
+          process.emitWarning(`could not end the processes of server ${serverId} after its failed connect: ${err instanceof Error ? err.message : String(err)}`, 'MCPExplorerProcessWarning');
+        });
+        if (!isAlive(spawned.pid)) slot.starting = undefined;
+      }
       this.announceProcesses();
       if (!(e instanceof ConnectError)) {
         return this.set(serverId, { status: 'failed', failure: { kind: 'protocol' }, message: e instanceof Error ? e.message : String(e), stderr: '', at: this.now(), connectionId });

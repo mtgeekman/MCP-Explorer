@@ -56,10 +56,12 @@ export {
   surfaceHistory,
   listObservations,
   diffSnapshots,
+  latestCapture,
   SnapshotNotFoundError,
   type RecordedCapture,
   type SnapshotSummary,
   type Observation,
+  type LatestCapture,
 } from './snapshots.js';
 export {
   purgeHistory,

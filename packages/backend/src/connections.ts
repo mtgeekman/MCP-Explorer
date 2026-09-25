@@ -2,11 +2,11 @@
 // honest state per server, every unit of traffic recorded, the era pinned,
 // and nothing started that the user did not ask for (P2).
 import {
-  connectHttp, connectStdio, ConnectError,
-  type CloseInfo, type ConnectFailure, type Connection, type EraPreference, type ProcessExit, type WireUnit,
+  captureSurface, connectHttp, connectStdio, ConnectError,
+  type ChangedList, type CloseInfo, type ConnectFailure, type Connection, type EraPreference, type ProcessExit, type WireUnit,
 } from '../../protocol/dist/index.js';
 import {
-  HistoryRecorder, loadServer, pinEra, clearEra, readDetectedEra,
+  HistoryRecorder, loadServer, pinEra, clearEra, readDetectedEra, recordCapture,
   type ServerDefinition, type SecretNames, type Workspace,
 } from '../../storage/dist/index.js';
 import { killServerTree, type ServerRoot } from '../../platform/dist/index.js';
@@ -45,6 +45,17 @@ export interface ConnectionEvents {
   unit(serverId: string, connectionId: number, unitId: number, unit: WireUnit): void;
   /** Every live stdio server's root process, whenever the set changes: the main process kills these trees if the backend dies (D36). */
   processes(roots: ServerRoot[]): void;
+  /** A server's capture status changed, or a capture was recorded. */
+  surface(serverId: string): void;
+}
+
+/** Where a server's surface capture stands in this session. */
+export interface CaptureStatus {
+  capturing: boolean;
+  /** Lists the server said changed since the last capture; the app does not re-list on its own (P2). */
+  changed: ChangedList[];
+  /** Why this session's last capture recorded nothing. */
+  error?: string;
 }
 
 export interface ConnectionManagerOptions {
@@ -68,6 +79,9 @@ interface Slot {
   busy?: Promise<unknown>;
   /** The stdio process this slot's current connect or session spawned. */
   root?: ServerRoot;
+  capturing?: Promise<void>;
+  changed: Set<ChangedList>;
+  captureError?: string;
 }
 
 /**
@@ -159,6 +173,52 @@ export class ConnectionManager {
     await Promise.all([...this.owned.values()].map((root) => this.endTree(root)));
   }
 
+  captureStatus(serverId: string): CaptureStatus {
+    const slot = this.slots.get(serverId);
+    return {
+      capturing: Boolean(slot?.capturing),
+      changed: slot ? [...slot.changed].sort() : [],
+      ...(slot?.captureError ? { error: slot.captureError } : {}),
+    };
+  }
+
+  /**
+   * Lists the connected server's whole surface and records it (D8). Done on
+   * connect and when the user presses Refresh (phase 06 decision 3); a
+   * capture already running is shared, not doubled.
+   */
+  capture(serverId: string): Promise<void> {
+    const slot = this.slots.get(serverId);
+    const conn = slot?.conn;
+    const state = slot?.state;
+    if (!slot || !conn || state?.status !== 'connected') return Promise.reject(new Error(`server ${serverId} is not connected`));
+    if (slot.capturing) return slot.capturing;
+    const connectionId = state.connectionId;
+    const run = (async () => {
+      slot.captureError = undefined;
+      // Cleared as the capture starts, not when it ends: a notice arriving
+      // mid-capture may postdate a list already read, and must survive it.
+      const noticed = [...slot.changed];
+      slot.changed.clear();
+      this.opts.events.surface?.(serverId);
+      try {
+        const surface = await captureSurface(conn.source);
+        // A session that ended mid-capture fails every list, and recording
+        // that would store an empty surface as a new version.
+        if (slot.conn !== conn) throw new Error('the session ended during the capture; nothing was recorded');
+        recordCapture(this.ws, serverId, surface, { connectionId, now: this.now });
+      } catch (e) {
+        for (const list of noticed) slot.changed.add(list);
+        slot.captureError = e instanceof Error ? e.message : String(e);
+      } finally {
+        slot.capturing = undefined;
+        this.opts.events.surface?.(serverId);
+      }
+    })();
+    slot.capturing = run;
+    return run;
+  }
+
   /** Session secrets are forgotten with the manager; this forgets one server's early, as when its definition changes. */
   forgetSecrets(serverId: string): void {
     this.sessionSecrets.delete(serverId);
@@ -179,7 +239,7 @@ export class ConnectionManager {
   private slot(serverId: string): Slot {
     let s = this.slots.get(serverId);
     if (!s) {
-      s = { state: { status: 'idle' } };
+      s = { state: { status: 'idle' }, changed: new Set() };
       this.slots.set(serverId, s);
     }
     return s;
@@ -254,6 +314,11 @@ export class ConnectionManager {
       }
     };
     const onClose = (info: CloseInfo) => this.sessionEnded(serverId, connectionId, info);
+    const onListChanged = (list: ChangedList) => {
+      if (slot.recorder !== recorder) return;
+      slot.changed.add(list);
+      this.opts.events.surface?.(serverId);
+    };
 
     let conn: Connection;
     try {
@@ -261,7 +326,7 @@ export class ConnectionManager {
         ? await connectStdio({
           command: def.command!, args: def.args, cwd: def.cwd,
           env: { ...inheritedEnv(), ...def.env, ...def.secretEnv, ...session?.env },
-          era, onUnit, onClose, probeTimeoutMs: this.opts.probeTimeoutMs,
+          era, onUnit, onClose, onListChanged, probeTimeoutMs: this.opts.probeTimeoutMs,
           // A failed connect ends the whole tree, not just its root (D36),
           // before the SDK's own close signals the root alone.
           terminate: (pid) => { const root = this.owned.get(pid); return root ? this.endTree(root) : Promise.resolve(); },
@@ -269,7 +334,7 @@ export class ConnectionManager {
         : await connectHttp({
           url: def.url!, kind: def.transport, era,
           headers: def.headers, secretHeaders: { ...def.secretHeaders, ...session?.headers },
-          onUnit, probeTimeoutMs: this.opts.probeTimeoutMs,
+          onUnit, onListChanged, probeTimeoutMs: this.opts.probeTimeoutMs,
         });
     } catch (e) {
       recorder.close();
@@ -287,7 +352,14 @@ export class ConnectionManager {
     slot.conn = conn;
     recorder.negotiated(conn.revision, conn.era);
     if (pinned?.era !== conn.era || pinned.revision !== conn.revision) pinEra(this.ws, serverId, conn.era, conn.revision, this.now);
-    return this.set(serverId, { status: 'connected', era: conn.era, revision: conn.revision, pid: conn.pid, connectionId, connectedAt: this.now() });
+    slot.changed.clear();
+    slot.captureError = undefined;
+    const connected = this.set(serverId, { status: 'connected', era: conn.era, revision: conn.revision, pid: conn.pid, connectionId, connectedAt: this.now() });
+    // Connecting includes listing what the server offers (decision 3). Not
+    // awaited: a server slow to list must not hold the connect, or a
+    // disconnect queued behind it.
+    void this.capture(serverId);
+    return connected;
   }
 
   /**
@@ -311,6 +383,7 @@ export class ConnectionManager {
     if (!slot || !slot.conn) return;
     const byUser = slot.state.status === 'closing';
     slot.conn = undefined;
+    slot.changed.clear();
     slot.recorder?.close();
     slot.recorder = undefined;
     // A server that exited on its own may have left processes behind; this

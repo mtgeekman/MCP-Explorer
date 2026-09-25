@@ -90,8 +90,20 @@ export async function killServerTree(root: ServerRoot, opts: { listProcesses?: (
   return orphans;
 }
 
-/** Whether the process now holding the root's PID was created after the root: a stranger. */
+/**
+ * Whether the process now holding the root's PID was created after the root:
+ * a stranger. If the process list cannot be read, the live holder is taken to
+ * be the root and the tree is killed from it, as it was before orphans could
+ * be looked for; the warning says what was not checked.
+ */
 async function rootWasReused(root: ServerRoot, list: () => Promise<ProcessInfo[]>): Promise<boolean> {
-  const holder = (await list()).find((p) => p.pid === root.pid);
+  let processes: ProcessInfo[];
+  try {
+    processes = await list();
+  } catch (e) {
+    process.emitWarning(`killing process tree ${root.pid} without checking its PID was not reused: ${e instanceof Error ? e.message : String(e)}`, 'MCPExplorerProcessWarning');
+    return false;
+  }
+  const holder = processes.find((p) => p.pid === root.pid);
   return holder !== undefined && holder.created > root.startedAt + START_SLACK_MS;
 }

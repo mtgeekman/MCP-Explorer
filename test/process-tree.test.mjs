@@ -130,3 +130,33 @@ test('a server under a cmd.exe root that died alone is still ended, found by its
   assert.deepEqual(killed.sort(), [...pids].sort());
   await waitFor(() => !pids.some(isAlive), 'the orphans to exit');
 });
+
+// The D36 disconnect race: the root is alive when the tree kill starts, then
+// the SDK's own SIGTERM ends it before taskkill has walked the tree. taskkill
+// reports "not found" (code 128), which reads as success, and the server under
+// the root is left running. The kill here stands in for that taskkill: it
+// resolves and ends nothing, as a kill that found no root does.
+test('a root that dies while its tree is being killed still has its orphans found and ended', { skip: process.platform !== 'win32' && 'orphans are found by parent on Windows only' }, async () => {
+  const startedAt = Date.now();
+  // A live PID this test owns, so the root reads as alive and not reused.
+  const root = { pid: process.pid, startedAt };
+  const listing = [
+    { pid: process.pid, ppid: 1, created: startedAt },
+    { pid: 999_991, ppid: process.pid, created: startedAt + 5 },
+  ];
+  const killed = [];
+  const orphans = await killServerTree(root, { listProcesses: async () => listing, kill: async (pid) => { killed.push(pid); } });
+  assert.deepEqual(killed, [process.pid, 999_991]);
+  assert.deepEqual(orphans, [999_991]);
+});
+
+test('a root whose tree kill left nothing behind reports no orphans', { skip: process.platform !== 'win32' && 'orphans are found by parent on Windows only' }, async () => {
+  const startedAt = Date.now();
+  const killed = [];
+  const orphans = await killServerTree({ pid: process.pid, startedAt }, {
+    listProcesses: async () => [{ pid: process.pid, ppid: 1, created: startedAt }],
+    kill: async (pid) => { killed.push(pid); },
+  });
+  assert.deepEqual(killed, [process.pid]);
+  assert.deepEqual(orphans, []);
+});

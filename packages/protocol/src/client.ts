@@ -173,6 +173,8 @@ export interface Connection {
   source: SurfaceSource;
   /** stdio only: the process the app spawned, the root of its tree (D36). */
   pid?: number;
+  /** stdio only: when that process was seen to spawn, milliseconds since the epoch. */
+  startedAt?: number;
   close(): Promise<void>;
 }
 
@@ -662,7 +664,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   }
 
   client.onclose = () => opts.onClose?.({ exit: watch.exit });
-  return { ...(await describe(client)), pid: watch.pid };
+  return { ...(await describe(client)), pid: watch.pid, startedAt: watch.spawnedAt };
 }
 
 function classifyStdio(e: unknown, watch: ProcessWatch): ConnectFailure {

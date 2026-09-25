@@ -14,7 +14,7 @@ const backend = new Backend({
   dataDir,
   secrets: keychainStore(),
   // D36: the main process kills these trees if this process dies.
-  onProcesses: (pids) => process.parentPort.postMessage({ kind: 'processes', pids }),
+  onProcesses: (roots) => process.parentPort.postMessage({ kind: 'processes', roots }),
 });
 
 process.parentPort.on('message', (e) => {

@@ -6,6 +6,7 @@ import {
   deleteServer, listServers, loadServer, readDetectedEra, saveServer,
   type ServerDefinition, type SecretStore,
 } from '../../storage/dist/index.js';
+import type { ServerRoot } from '../../platform/dist/index.js';
 import { ConnectionManager } from './connections.js';
 import { WorkspaceManager, type OpenWorkspace } from './workspaces.js';
 import { logPage, logUnit } from './log.js';
@@ -14,8 +15,8 @@ import type { ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Req
 export interface BackendOptions {
   dataDir: string;
   secrets: SecretStore;
-  /** The live stdio server PIDs, whenever they change (D36). */
-  onProcesses?: (pids: number[]) => void;
+  /** The live stdio servers' root processes, whenever they change (D36). */
+  onProcesses?: (roots: ServerRoot[]) => void;
   now?: () => number;
   probeTimeoutMs?: number;
   closeGraceMs?: number;
@@ -118,7 +119,7 @@ export class Backend {
       events: {
         state: (serverId, state) => this.emit('connection.state', { serverId, state }),
         unit: (_serverId, _connectionId, unitId) => this.emit('log.unit', this.liveUnit(unitId)),
-        processes: (pids) => this.opts.onProcesses?.(pids),
+        processes: (roots) => this.opts.onProcesses?.(roots),
       },
     });
   }

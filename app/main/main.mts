@@ -3,15 +3,15 @@
 import { app, BrowserWindow, ipcMain, MessageChannelMain, utilityProcess, type UtilityProcess } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { killProcessTree } from '../../packages/platform/dist/index.js';
+import { killServerTree, type ServerRoot } from '../../packages/platform/dist/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** How long the backend gets to close its connections on quit before the trees are killed anyway. */
 const SHUTDOWN_GRACE_MS = 10_000;
 
 let backend: UtilityProcess | undefined;
-/** The live stdio server PIDs, as the backend last reported them. */
-let serverPids: number[] = [];
+/** The live stdio servers' root processes, as the backend last reported them. */
+let serverRoots: ServerRoot[] = [];
 let quitting = false;
 let shutDown = false;
 
@@ -21,13 +21,14 @@ function startBackend(): UtilityProcess {
     stdio: 'inherit',
     env: { ...process.env, MCPX_DATA_DIR: process.env.MCPX_DATA_DIR ?? app.getPath('userData') },
   });
-  child.on('message', (m: { kind: string; pids?: number[] }) => {
-    if (m.kind === 'processes' && m.pids) serverPids = m.pids;
+  child.on('message', (m: { kind: string; roots?: ServerRoot[] }) => {
+    if (m.kind === 'processes' && m.roots) serverRoots = m.roots;
   });
   child.on('exit', (code) => {
     if (backend === child) backend = undefined;
-    // D36: the backend died, so nothing will close its servers. Their roots
-    // are still alive, which is what a tree kill needs.
+    // D36: the backend died, so nothing will close its servers. On Linux
+    // their roots are still alive; on Windows the roots died with the backend
+    // and what they started is found by its recorded parent (platform/orphans).
     void killServerTrees();
     if (!quitting) for (const w of BrowserWindow.getAllWindows()) w.webContents.send('backend-exit', code);
   });
@@ -35,9 +36,9 @@ function startBackend(): UtilityProcess {
 }
 
 async function killServerTrees(): Promise<void> {
-  const pids = serverPids;
-  serverPids = [];
-  await Promise.all(pids.map((pid) => killProcessTree(pid).catch(() => undefined)));
+  const roots = serverRoots;
+  serverRoots = [];
+  await Promise.all(roots.map((root) => killServerTree(root).catch(() => undefined)));
 }
 
 /** Gives a window its own port to the backend. */

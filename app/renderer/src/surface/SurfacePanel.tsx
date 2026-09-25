@@ -26,17 +26,18 @@ export function SurfacePanel({ client, server, selected, onSelect }: {
   // the newest reply is shown (R06-5).
   const latest = useMemo(() => latestOnly(), [server.id]);
   const failed = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
+  const shown = (v: SurfaceView) => { setView(v); setError(null); };
 
   const load = useCallback(() => {
-    latest(client.request('surface.get', { serverId: server.id }), setView).catch(failed);
+    void latest(client.request('surface.get', { serverId: server.id }), shown, failed);
   }, [client, server.id, latest]);
 
   // A new capture replaces the definition the pane shows, as the raw view's
   // fetch does (R06-4).
   useEffect(() => {
     if (!view || !selected || selected.serverId !== server.id) return;
-    const next = reselect(selected, view.capture?.surface);
-    if (next?.item !== selected.item) onSelect(next);
+    const next = reselect(selected, (view.partial ?? view.capture)?.surface);
+    if (next !== selected) onSelect(next);
     // Only a new view re-reads the selection; a new selection is already current.
   }, [view]);
 
@@ -48,14 +49,16 @@ export function SurfacePanel({ client, server, selected, onSelect }: {
   }, [client, server.id, load]);
 
   const refresh = async () => {
-    setError(null);
-    await latest(client.request('surface.refresh', { serverId: server.id }), setView).catch(failed);
+    await latest(client.request('surface.refresh', { serverId: server.id }), shown, failed);
   };
 
   const live = server.state.status === 'connected';
-  const capture = view?.capture ?? null;
+  // A partial capture from this session is newer than the last whole one (R06-11).
+  const partial = view?.partial ?? null;
+  const capture = partial ?? view?.capture ?? null;
   const status = view?.status;
   const surface = capture?.surface;
+  const failedLists = partial ? partial.surface.problems.filter((p) => p.kind === 'list-failed').map((p) => p.endpoint) : [];
 
   return (
     <section className="surface">
@@ -69,7 +72,12 @@ export function SurfacePanel({ client, server, selected, onSelect }: {
         {live && <button disabled={status?.capturing} onClick={refresh} title="List the server's tools, prompts and resources again">Refresh</button>}
       </div>
       {error && <p className="error">{error}</p>}
-      {status?.error && <p className="error">The last capture recorded nothing: {status.error}</p>}
+      {status?.error && <p className="error">The last capture failed: {status.error}</p>}
+      {partial && (
+        <p className="warn">
+          Partial: {failedLists.join(', ')} failed. What the server did list is shown for this session only; version history and the context preview keep {view?.capture ? 'the last whole capture' : 'nothing until a whole capture'}.
+        </p>
+      )}
       {status && status.changed.length > 0 && (
         <div className="banner">
           <span>The server says its {status.changed.map((c) => LIST_NOUN[c]).join(', ')} changed. Nothing has been listed again.</span>

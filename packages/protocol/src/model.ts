@@ -114,6 +114,12 @@ export interface NormalizedResourceTemplate {
  */
 export interface CaptureProblem {
   endpoint: string;
+  /**
+   * `list-failed`: the list was not read, so the capture is not the whole
+   * surface. `duplicate-keys`: it was read and repeats an identity key.
+   * Absent on problems stored before phase 06.
+   */
+  kind?: 'list-failed' | 'duplicate-keys';
   message: string;
 }
 

@@ -78,6 +78,7 @@ test('the readable pane reads an SSE event by its data', () => {
 
 test('the readable pane says what it cannot render, and why', () => {
   assert.deepEqual(readable(unit({ bytes: null, byteLength: 10 })), { kind: 'withheld' });
+  assert.equal(READABLE_LIMIT, 10 * 1024 * 1024, 'phase 06 decision 5: the SDK stdio line cap');
   assert.equal(readable(unit({ bytes: new Uint8Array(READABLE_LIMIT + 1) })).kind, 'too-large');
   assert.equal(readable(unit({ text: '' })).kind, 'empty');
   assert.deepEqual(readable(unit({ text: '<html>' })), { kind: 'text', text: '<html>', why: 'Not JSON, so not JSON-RPC.' });

@@ -13,10 +13,12 @@ import { ServerEditor } from './servers/ServerEditor';
 import { ImportServers } from './servers/ImportServers';
 import { Notices } from './Notices';
 import { WireLog } from './log/WireLog';
-import { ReadablePane } from './log/ReadablePane';
+import { ReadablePane, type ReadableContent } from './log/ReadablePane';
+import type { SelectedItem } from './surface/SurfacePanel';
 import { Settings } from './settings/Settings';
+import { ContextScreen } from './context/ContextScreen';
 
-type Main = { kind: 'server'; id: string } | { kind: 'add' } | { kind: 'edit'; id: string } | { kind: 'settings' } | { kind: 'import' } | { kind: 'none' };
+type Main = { kind: 'server'; id: string } | { kind: 'add' } | { kind: 'edit'; id: string } | { kind: 'settings' } | { kind: 'import' } | { kind: 'context' } | { kind: 'none' };
 
 export function App({ client }: { client: BackendClient }) {
   const [workspace, setWorkspace] = useState<OpenedWorkspace | null | undefined>(undefined);
@@ -26,12 +28,17 @@ export function App({ client }: { client: BackendClient }) {
   const [notices, setNotices] = useState<WorkspaceNotice[]>([]);
   const [backendDown, setBackendDown] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
-  const [selectedUnit, setSelectedUnit] = useState<LogUnit | null>(null);
+  const [readable, setReadable] = useState<ReadableContent | null>(null);
   const [poppedOut, setPoppedOut] = useState(false);
 
   const selectUnit = useCallback((u: LogUnit | null) => {
-    setSelectedUnit(u);
+    setReadable(u ? { kind: 'unit', unit: u } : null);
     window.mcpxShell?.selectReadable(u ? { id: u.id, reserialized: Boolean(u.reserialized) } : null);
+  }, []);
+
+  const selectItem = useCallback((item: SelectedItem | null) => {
+    setReadable(item ? { kind: 'item', item } : null);
+    window.mcpxShell?.selectReadable(item ? { serverId: item.serverId, list: item.list, key: item.key } : null);
   }, []);
 
   const refreshWorkspaces = useCallback(async () => {
@@ -103,6 +110,7 @@ export function App({ client }: { client: BackendClient }) {
         <span className="app-title">MCP Explorer</span>
         <WorkspaceSwitcher client={client} current={workspace} workspaces={workspaces} onOpened={opened} onCreate={() => setCreating(true)} onClosed={async () => { setWorkspace(null); await refreshWorkspaces(); }} />
         <span className="header-spacer" />
+        <button onClick={() => { selectUnit(null); setMain({ kind: 'context' }); }} title="What a model would be handed from this workspace, and what it costs">Context</button>
         <button onClick={() => { selectUnit(null); setMain({ kind: 'settings' }); }}>Settings</button>
       </header>
       <Notices notices={notices} onDismiss={(i) => setNotices((n) => n.filter((_, j) => j !== i))} />
@@ -116,6 +124,7 @@ export function App({ client }: { client: BackendClient }) {
           {main.kind === 'settings' && (
             <Settings client={client} workspaceName={workspace.name} onClose={() => setMain({ kind: 'none' })} />
           )}
+          {main.kind === 'context' && <ContextScreen client={client} onClose={() => setMain({ kind: 'none' })} />}
           {main.kind === 'import' && (
             <ImportServers client={client} encrypted={workspace.encrypted} servers={servers} onImported={refreshServers} onClose={() => setMain({ kind: 'none' })} />
           )}
@@ -133,14 +142,16 @@ export function App({ client }: { client: BackendClient }) {
               onEdit={() => setMain({ kind: 'edit', id: selected.id })}
               onDeleted={async () => { await refreshServers(); setMain({ kind: 'none' }); }}
               onChanged={refreshServers}
+              selectedItem={readable?.kind === 'item' ? readable.item : null}
+              onSelectItem={selectItem}
             />
           )}
         </main>
         {main.kind === 'server' && selected && (
-          <WireLog key={selected.id} client={client} serverId={selected.id} selected={selectedUnit} onSelect={selectUnit} />
+          <WireLog key={selected.id} client={client} serverId={selected.id} selected={readable?.kind === 'unit' ? readable.unit : null} onSelect={selectUnit} />
         )}
         </div>
-        <ReadablePane unit={selectedUnit} poppedOut={poppedOut} onPopOut={() => { setPoppedOut(true); window.mcpxShell?.popOutReadable(); }} />
+        <ReadablePane content={readable} poppedOut={poppedOut} onPopOut={() => { setPoppedOut(true); window.mcpxShell?.popOutReadable(); }} />
       </div>
     </div>
   );

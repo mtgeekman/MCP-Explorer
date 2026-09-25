@@ -138,10 +138,14 @@ export function purgeHistory(ws: Workspace, now: () => number = Date.now): Purge
       } else if (oldestLoose === oldestUnit) {
         // Sized by the bytes still to free, not by a row count: small units
         // at 25 a scan took thousands of scans; many at once overshot the cap.
-        // length() is answered from the record header, without the BLOB.
+        // length() is answered from the record header, without the BLOB. The
+        // batch stops at the oldest call or frame, which goes before anything
+        // newer than it; rows are read only as far as the batch needs.
+        const bound = Math.min(oldestCall?.at ?? Infinity, oldestFrame?.at ?? Infinity);
         const ids: number[] = [];
         let freed = 0;
-        for (const u of db.prepare('SELECT id, coalesce(length(bytes), 0) AS n FROM wire_unit WHERE call_id IS NULL ORDER BY at, id').all() as { id: number; n: number }[]) {
+        const oldestFirst = db.prepare('SELECT id, coalesce(length(bytes), 0) AS n FROM wire_unit WHERE call_id IS NULL AND at <= ? ORDER BY at, id');
+        for (const u of oldestFirst.iterate(Number.isFinite(bound) ? bound : Number.MAX_SAFE_INTEGER) as Iterable<{ id: number; n: number }>) {
           ids.push(u.id);
           freed += u.n + UNIT_ROW_OVERHEAD;
           if (freed >= over) break;

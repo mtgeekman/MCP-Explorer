@@ -73,7 +73,8 @@ test('a modern server connects through honest states, is recorded, and has its e
   assert.deepEqual({ ...readDetectedEra(ws, s.id), detectedAt: 0 }, { era: 'modern', revision: '2026-07-28', detectedAt: 0 });
   const stored = ws.db.prepare('SELECT count(*) AS n FROM wire_unit WHERE connection_id = ?').get(state.connectionId).n;
   assert.equal(stored, log.units.length, 'every unit the UI was told about is stored');
-  assert.deepEqual(log.processes.at(-1), [state.pid]);
+  assert.deepEqual(log.processes.at(-1).map((r) => r.pid), [state.pid]);
+  assert.ok(log.processes.at(-1)[0].startedAt <= Date.now());
   await manager.disconnect(s.id);
   assert.deepEqual(log.processes.at(-1), []);
 });

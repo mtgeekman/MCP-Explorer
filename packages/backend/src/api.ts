@@ -105,11 +105,6 @@ export interface Events {
   notice: WorkspaceNotice;
 }
 
-/** What the main process needs to hear: the stdio process trees to kill if the backend dies (D36). */
-export interface ProcessReport {
-  pids: number[];
-}
-
 export type Message =
   | { kind: 'request'; id: number; method: Method; params: unknown }
   | { kind: 'response'; id: number; ok: true; result: unknown }

@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { killProcessTree, isAlive } from '../packages/platform/dist/index.js';
+import { killProcessTree, isAlive, findOrphans, killServerTree } from '../packages/platform/dist/index.js';
 import { fixtures } from './support/fixture-servers.mjs';
 
 const work = mkdtempSync(join(tmpdir(), 'mcpx-tree-'));
@@ -74,4 +74,47 @@ test('a PID that cannot be a process is refused rather than signalled', async ()
   // process.kill(0) and process.kill(-1) signal a whole process group or every
   // process the user owns; neither may ever reach here.
   for (const pid of [0, -1, 1.5, Number.NaN]) await assert.rejects(killProcessTree(pid), RangeError);
+});
+
+// --- a tree whose root is already gone (D36, Windows) ---------------------------------------
+
+test('orphans are found by their recorded parent, created no earlier than the root', () => {
+  const t = 1_000_000;
+  const procs = [
+    { pid: 10, ppid: 1, created: t },              // the dead root's PID, still held by nobody
+    { pid: 20, ppid: 10, created: t + 50 },        // its node child: ours
+    { pid: 30, ppid: 20, created: t + 60 },        // a grandchild: ours
+    { pid: 40, ppid: 10, created: t - 60_000 },    // older than the root: a child of some earlier holder of PID 10
+    { pid: 50, ppid: 99, created: t + 70 },        // unrelated
+  ].filter((p) => p.pid !== 10);
+  assert.deepEqual(findOrphans(procs, { pid: 10, startedAt: t }).sort(), [20, 30]);
+});
+
+test('a stranger that reused the root PID is not ours, and neither are its children', () => {
+  const t = 1_000_000;
+  const procs = [
+    { pid: 10, ppid: 1, created: t + 30_000 },     // PID 10 reused after the root died
+    { pid: 20, ppid: 10, created: t + 50 },        // ours: made before the reuse
+    { pid: 60, ppid: 10, created: t + 31_000 },    // the stranger's child
+  ];
+  assert.deepEqual(findOrphans(procs, { pid: 10, startedAt: t }), [20]);
+});
+
+test('a descendant created before its own parent is a reused PID and is not followed', () => {
+  const t = 1_000_000;
+  const procs = [{ pid: 20, ppid: 10, created: t + 50 }, { pid: 30, ppid: 20, created: t - 5_000 }];
+  assert.deepEqual(findOrphans(procs, { pid: 10, startedAt: t }), [20]);
+});
+
+test('a server under a cmd.exe root that died alone is still ended, found by its parent', { skip: process.platform !== 'win32' && 'orphans are found by parent on Windows only' }, async () => {
+  const cmd = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe');
+  const startedAt = Date.now();
+  const { root, pids } = await startTree(cmd, ['/d', '/s', '/c', `""${process.execPath}" "${tree}""`], 2, { windowsVerbatimArguments: true });
+  // End the root alone, as the backend's death does: its children break away.
+  process.kill(root, 'SIGKILL');
+  await waitFor(() => !isAlive(root), 'the root to exit');
+  assert.ok(pids.every(isAlive), 'the children died with the root; this test would prove nothing');
+  const killed = await killServerTree({ pid: root, startedAt });
+  assert.deepEqual(killed.sort(), [...pids].sort());
+  await waitFor(() => !pids.some(isAlive), 'the orphans to exit');
 });

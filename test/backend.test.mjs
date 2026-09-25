@@ -153,7 +153,7 @@ test('a connect is announced as states and units, and the log reads back the sam
   const up = await call('connections.connect', { serverId: s.id });
   assert.equal(up.status, 'connected');
   assert.deepEqual(seen.states.map((x) => x.state.status), ['connecting', 'connecting', 'connected']);
-  assert.deepEqual(seen.processes.at(-1), [up.pid]);
+  assert.deepEqual(seen.processes.at(-1).map((r) => r.pid), [up.pid]);
   const row = (await call('servers.list'))[0];
   assert.deepEqual(row.era, { era: 'modern', revision: '2026-07-28' });
   await call('connections.disconnect', { serverId: s.id });

@@ -9,7 +9,7 @@ import {
   HistoryRecorder, loadServer, pinEra, clearEra, readDetectedEra,
   type ServerDefinition, type SecretNames, type Workspace,
 } from '../../storage/dist/index.js';
-import { killProcessTree, isAlive } from '../../platform/dist/index.js';
+import { killProcessTree, isAlive, type ServerRoot } from '../../platform/dist/index.js';
 
 /**
  * What the app offers after a stdio failure that a second spawn could get
@@ -43,8 +43,8 @@ export interface ConnectionEvents {
   state(serverId: string, state: ConnectionState): void;
   /** Every recorded unit, with the id it was stored under. */
   unit(serverId: string, connectionId: number, unitId: number, unit: WireUnit): void;
-  /** The PIDs of every live stdio server, whenever the set changes: the main process kills these trees if the backend dies (D36). */
-  processes(pids: number[]): void;
+  /** Every live stdio server's root process, whenever the set changes: the main process kills these trees if the backend dies (D36). */
+  processes(roots: ServerRoot[]): void;
 }
 
 export interface ConnectionManagerOptions {
@@ -161,8 +161,8 @@ export class ConnectionManager {
   }
 
   private announceProcesses(): void {
-    const pids = [...this.slots.values()].map((s) => s.conn?.pid).filter((p): p is number => p !== undefined);
-    this.opts.events.processes?.(pids);
+    const roots = [...this.slots.values()].flatMap((s) => (s.conn?.pid !== undefined ? [{ pid: s.conn.pid, startedAt: s.conn.startedAt ?? this.now() }] : []));
+    this.opts.events.processes?.(roots);
   }
 
   private async doConnect(serverId: string, given?: SecretValues): Promise<ConnectionState> {

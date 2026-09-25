@@ -117,6 +117,27 @@ export function plan(files: ReadConfig[], state: ReviewState, existing: Pick<Ser
   return out;
 }
 
+/**
+ * The files ticked after the list of locations changes (a project folder was
+ * added). A file the user unticked stays unticked; only a found file not
+ * listed before is ticked, as every found file is on the first listing.
+ */
+export function mergePicked(picked: Set<string>, before: { path: string; found: boolean }[] | null, after: { path: string; found: boolean }[]): Set<string> {
+  const known = new Set((before ?? []).filter((l) => l.found).map((l) => l.path));
+  return new Set(after.filter((l) => l.found && (picked.has(l.path) || !known.has(l.path))).map((l) => l.path));
+}
+
+/** The entry as written, with every value the user marked secret replaced, so the raw view hides what the table hides. */
+export function redactRaw(raw: string, values: Record<string, string>, marked: string[]): string {
+  let out = raw;
+  for (const name of marked) {
+    const value = values[name];
+    if (value === undefined || value === '') continue;
+    out = out.split(JSON.stringify(value)).join('"(hidden)"');
+  }
+  return out;
+}
+
 /** Toggles one name in a list, keeping order. */
 export function toggle(list: string[], name: string, on: boolean): string[] {
   return on ? (list.includes(name) ? list : [...list, name]) : list.filter((n) => n !== name);

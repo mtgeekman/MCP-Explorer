@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { FoundLocation, ReadConfig, ServerRow } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
 import { commandLine } from '../lib/describe';
-import { entryKey, initialState, outcomes, OUT_OF_REACH, plan, toggle, type EntryState, type OnClash, type ReviewState } from '../lib/importReview';
+import { entryKey, initialState, mergePicked, outcomes, OUT_OF_REACH, plan, redactRaw, toggle, type EntryState, type OnClash, type ReviewState } from '../lib/importReview';
 
 type Step =
   | { kind: 'pick' }
@@ -31,9 +31,10 @@ export function ImportServers({ client, encrypted, servers, onImported, onClose 
     void (async () => {
       try {
         const found = await client.request('import.locations', { projectRoots });
+        // Found files start ticked; one the user unticked stays unticked when a
+        // folder is added. Reading still waits for the button.
+        setPicked((picked) => mergePicked(picked, locations, found));
         setLocations(found);
-        // Every found file starts picked; reading still waits for the button.
-        setPicked(new Set(found.filter((l) => l.found).map((l) => l.path)));
       } catch (e) {
         setError(message(e));
       }
@@ -197,7 +198,7 @@ function Review({ files, state, encrypted, servers, busy, error, onChange, onBac
                 {e.dropped.length > 0 && (
                   <div className="hint">Left out:<ul>{e.dropped.map((d) => <li key={d}>{d}</li>)}</ul></div>
                 )}
-                <details><summary>As written in the file</summary><pre className="mono raw-entry">{e.raw}</pre></details>
+                <details><summary>As written in the file</summary><pre className="mono raw-entry">{e.server && s ? redactRaw(e.raw, { ...e.server.env, ...e.server.headers }, [...s.secretEnv, ...s.secretHeaders]) : e.raw}</pre></details>
               </div>
             );
           })}

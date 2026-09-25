@@ -270,7 +270,11 @@ function transportOf(value: Record<string, unknown>, client: ImportClient): { tr
  */
 function substitute(text: string, ctx: ConfigSource): { value: string } | { unresolved: string } {
   if (ctx.client === 'claude-desktop') return { value: text };
-  const pattern = ctx.client === 'claude-code' ? /\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}/g : /\$\{([^}]*)\}/g;
+  // One pattern for every client that has variables: a project .mcp.json is
+  // shared by Claude Code and VS Code, so a Claude Code file can carry
+  // ${workspaceFolder} or ${input:id}. Whatever is not known is reported,
+  // never passed through as literal text.
+  const pattern = /\$\{([^}]*)\}/g;
   let unresolved: string | undefined;
   const value = text.replace(pattern, (whole: string, name: string) => {
     const filled = known(name, ctx);

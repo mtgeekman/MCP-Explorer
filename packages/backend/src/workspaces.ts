@@ -88,7 +88,7 @@ export class WorkspaceManager {
    * the recovery key for a keychain workspace: shown once, to be copied,
    * never saved to a file (round 2).
    */
-  create(name: string, protection: Protection): { workspace: OpenWorkspace; recoveryKey: string | null } {
+  async create(name: string, protection: Protection, beforeSwitch?: () => Promise<void>): Promise<{ workspace: OpenWorkspace; recoveryKey: string | null }> {
     const id = randomUUID();
     const dir = join(this.opts.dataDir, 'workspaces');
     mkdirSync(dir, { recursive: true });
@@ -106,9 +106,25 @@ export class WorkspaceManager {
       ws.close();
       throw e;
     }
+    const workspace = await this.switchTo({ id, name, custody: protection.kind, encrypted: ws.encrypted, ws }, beforeSwitch);
+    return { workspace, recoveryKey: ws.recoveryKey };
+  }
+
+  /**
+   * Makes an already-open workspace the current one. `beforeSwitch` runs only
+   * now, once nothing can fail any more, so a failed open or create leaves
+   * the current workspace and its sessions exactly as they were.
+   */
+  private async switchTo(next: OpenWorkspace, beforeSwitch?: () => Promise<void>): Promise<OpenWorkspace> {
+    try {
+      await beforeSwitch?.();
+    } catch (e) {
+      next.ws.close();
+      throw e;
+    }
     this.close();
-    this.current = { id, name, custody: protection.kind, encrypted: ws.encrypted, ws };
-    return { workspace: this.current, recoveryKey: ws.recoveryKey };
+    this.current = next;
+    return next;
   }
 
   /**
@@ -117,7 +133,7 @@ export class WorkspaceManager {
    * with its recovery key instead, its entry is then restored and the user
    * told (D28 self-repair).
    */
-  openWorkspace(id: string, unlock: Unlock): OpenWorkspace {
+  async openWorkspace(id: string, unlock: Unlock, beforeSwitch?: () => Promise<void>): Promise<OpenWorkspace> {
     const entry = readRegistry(this.registry).find((e) => e.id === id);
     if (!entry) throw new InvalidWorkspaceRequestError(`workspace ${id} is not registered`);
     const allowed: Record<RegistryCustody, Unlock['kind'][]> = { none: ['none'], keychain: ['keychain', 'recovery'], passphrase: ['passphrase'] };
@@ -132,10 +148,9 @@ export class WorkspaceManager {
       throw e;
     }
     const name = (ws.db.prepare('SELECT name FROM workspace_meta WHERE id = 1').get() as { name: string }).name;
-    this.close();
-    this.current = { id, name, custody: entry.custody, encrypted: ws.encrypted, ws };
+    const opened = await this.switchTo({ id, name, custody: entry.custody, encrypted: ws.encrypted, ws }, beforeSwitch);
     this.checkKeychainEntry();
-    return this.current;
+    return opened;
   }
 
   /** Closes the open workspace, checking its keychain entry first (D28). Connections must already be closed. */

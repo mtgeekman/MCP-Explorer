@@ -10,7 +10,7 @@
 # npmRebuild=false. Windows is built on Windows by choice, not by necessity.
 #
 # The check job runs `npm test`, which is what guards pillar P1. Electron-level
-# checks are NOT in CI: they need a display server the node image does not have.
+# checks run in the smoke jobs below, under xvfb on Linux.
 # That split is deliberate and is recorded in the spec's verifier section.
 #
 # `npm ci --ignore-scripts` is load-bearing, not hygiene. The SQLite package
@@ -71,6 +71,41 @@ check:windows:
     - npm ci --ignore-scripts
     - npm run build
     - npm test
+
+# Phase 04 acceptance through the real app (test/smoke, playwright-core
+# driving Electron). Separate from `check` because it needs a display and the
+# Electron binary, which `npm ci --ignore-scripts` does not download: the
+# electron package fetches it in a postinstall script, run here by hand.
+# Electron refuses to run as root without --no-sandbox; the tests pass it when
+# they see uid 0, which is how this container runs.
+smoke:linux:
+  <<: *node_container
+  stage: check
+  script:
+    - |
+      podman run --rm -v "$CI_PROJECT_DIR:/w:Z" -w /w -e ELECTRON_CACHE "$NODE_IMAGE" bash -euo pipefail -c '
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+          xvfb xauth dbus libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libgtk-3-0 \
+          libgbm1 libasound2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxss1 libx11-xcb1
+        npm ci --ignore-scripts
+        node node_modules/electron/install.js
+        npm run build
+        xvfb-run -a npm run test:smoke
+      '
+
+# The same on Windows. UNPROVEN: the runner is a LocalSystem service, and
+# whether Electron can open a window in its session has never been tested. If
+# it cannot, this job's failure says so, and the Windows smoke tests become a
+# manual checklist item (plan, phase 04) rather than being skipped.
+smoke:windows:
+  stage: check
+  tags: [miniserver, windows]
+  script:
+    - npm ci --ignore-scripts
+    - node node_modules/electron/install.js
+    - npm run build
+    - npm run test:smoke
 
 package:linux:
   <<: *node_container

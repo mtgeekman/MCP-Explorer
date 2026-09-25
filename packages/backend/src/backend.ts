@@ -196,7 +196,7 @@ export class Backend {
       .map((r) => ({ id: r.server.id, name: r.server.name, surface: r.latest!.surface }));
     return {
       servers: rows.map((r) => ({
-        id: r.server.id, name: r.server.name, included: !excluded.has(r.server.id),
+        id: r.server.id, name: r.server.name,
         capturedAt: r.latest?.observedAt ?? null,
         ...(r.latest ? { revision: r.latest.surface.revision } : {}),
       })),

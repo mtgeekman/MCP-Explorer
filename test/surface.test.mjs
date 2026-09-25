@@ -120,14 +120,15 @@ test('the workspace union: each latest capture, connected or not, an exclusion, 
   await call('connections.disconnect', { serverId: legacy.id });
 
   const all = await call('context.get', {});
-  assert.deepEqual(all.servers.map((s) => [s.name, s.included, s.capturedAt !== null]), [['a modern', true, true], ['b legacy', true, true], ['c never', true, false]]);
+  assert.deepEqual(all.servers.map((s) => [s.name, s.capturedAt !== null]), [['a modern', true], ['b legacy', true], ['c never', false]]);
   assert.deepEqual(all.cost.collisions, [{ name: 'echo', serverIds: [modern.id, legacy.id] }]);
   assert.equal(all.cost.tokenizer.id, 'o200k_base');
   assert.deepEqual(JSON.parse(all.text).tools.map((t) => t.name), ['echo', 'needs_input', 'echo']);
   assert.equal(all.cost.servers.length, 2, 'a server with no capture adds nothing');
 
   const some = await call('context.get', { excluded: [modern.id] });
-  assert.equal(some.servers.find((s) => s.id === modern.id).included, false);
+  assert.equal(some.servers.length, 3, 'a server left out is still listed, so it can be put back');
+  assert.deepEqual(some.cost.servers.map((s) => s.serverId), [legacy.id]);
   assert.deepEqual(JSON.parse(some.text).tools.map((t) => t.name), ['echo']);
   assert.deepEqual(some.cost.collisions, []);
   assert.equal(none.state.status, 'idle');

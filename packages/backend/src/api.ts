@@ -99,11 +99,10 @@ export type RawEntry =
   | { found: true; bytes: Uint8Array; unitId: number; offset: number }
   | { found: false; reason: string };
 
-/** A server as the context preview lists it: included or not, and how old its surface is. */
+/** A server as the context preview lists it, and how old its surface is. Which are left out is the caller's own list. */
 export interface ContextServerRow {
   id: string;
   name: string;
-  included: boolean;
   /** When its latest surface was captured; null when it has none, so it adds nothing. */
   capturedAt: number | null;
   revision?: string;

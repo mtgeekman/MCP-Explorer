@@ -17,4 +17,14 @@ export {
   type Unlock,
 } from './workspaces.js';
 export { Backend, NoWorkspaceError, serve, type BackendOptions } from './backend.js';
+export {
+  parseConfig,
+  looksSecret,
+  type ImportClient,
+  type ConfigFormat,
+  type ConfigSource,
+  type DraftServer,
+  type ImportEntry,
+  type ParsedConfig,
+} from './config-import.js';
 export type * from './api.js';

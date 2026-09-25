@@ -1,0 +1,4 @@
+{
+  "name": "dev",
+  "customizations": { "vscode": { "mcp": { "servers": { "in-container": { "command": "node", "args": ["server.js"], "cwd": "${workspaceFolder}" } } } } }
+}

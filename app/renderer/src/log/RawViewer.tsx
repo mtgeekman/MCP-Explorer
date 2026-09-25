@@ -1,7 +1,7 @@
 // A unit's exact bytes, whole, with byte offsets and find (board 4.2B). Never
 // cut short, never folded: the rows are virtual, not the bytes.
 import { useLayoutEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { RawDocument, formatBytes, type Segment } from '../lib/raw';
+import { RawDocument, formatBytes, matchLabel, type Segment } from '../lib/raw';
 import { VirtualList, type VirtualListHandle } from './VirtualList';
 
 const ROW = 18;
@@ -85,7 +85,7 @@ export function RawViewer({ bytes, height }: { bytes: Uint8Array; height: number
           onKeyDown={(e) => { if (e.key === 'Enter') go(current + (e.shiftKey ? -1 : 1)); }} />
         <label className="inline"><input type="checkbox" checked={caseSensitive} onChange={(e) => setCaseSensitive(e.target.checked)} /> Match case</label>
         <span className="muted">
-          {query ? (found.offsets.length ? `${current + 1} of ${found.offsets.length.toLocaleString()}${found.truncated ? '+' : ''} at byte ${found.offsets[current].toLocaleString()}` : 'No match') : ''}
+          {matchLabel(query, found, current)}
         </span>
         <button disabled={!found.offsets.length} onClick={() => go(current - 1)}>Previous</button>
         <button disabled={!found.offsets.length} onClick={() => go(current + 1)}>Next</button>

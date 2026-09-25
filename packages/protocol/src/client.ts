@@ -365,7 +365,7 @@ async function requestBytes(input: string | URL | Request, init: RequestInit | u
  * finishes it reaches the SDK: nothing the SDK acts on is ever missing from the
  * log, and cancelling the stream still cancels the connection underneath.
  */
-function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>, base: typeof fetch = fetch): typeof fetch {
+export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>, base: typeof fetch = fetch): typeof fetch {
   const secretNames = new Set([...secretHeaders].map((n) => n.toLowerCase()));
   let exchanges = 0;
   return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {

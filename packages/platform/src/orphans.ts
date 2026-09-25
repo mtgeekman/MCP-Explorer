@@ -78,19 +78,20 @@ function windowsProcesses(): Promise<ProcessInfo[]> {
  * the root alive when the backend dies, so the first path applies there).
  * Returns the PIDs killed as orphans.
  */
-export async function killServerTree(root: ServerRoot): Promise<number[]> {
-  if (isAlive(root.pid) && !(process.platform === 'win32' && (await rootWasReused(root)))) {
+export async function killServerTree(root: ServerRoot, opts: { listProcesses?: () => Promise<ProcessInfo[]> } = {}): Promise<number[]> {
+  const list = opts.listProcesses ?? windowsProcesses;
+  if (isAlive(root.pid) && !(process.platform === 'win32' && (await rootWasReused(root, list)))) {
     await killProcessTree(root.pid);
     return [];
   }
   if (process.platform !== 'win32') return [];
-  const orphans = findOrphans(await windowsProcesses(), root);
+  const orphans = findOrphans(await list(), root);
   await Promise.all(orphans.map((pid) => killProcessTree(pid).catch(() => undefined)));
   return orphans;
 }
 
 /** Whether the process now holding the root's PID was created after the root: a stranger. */
-async function rootWasReused(root: ServerRoot): Promise<boolean> {
-  const holder = (await windowsProcesses()).find((p) => p.pid === root.pid);
+async function rootWasReused(root: ServerRoot, list: () => Promise<ProcessInfo[]>): Promise<boolean> {
+  const holder = (await list()).find((p) => p.pid === root.pid);
   return holder !== undefined && holder.created > root.startedAt + START_SLACK_MS;
 }

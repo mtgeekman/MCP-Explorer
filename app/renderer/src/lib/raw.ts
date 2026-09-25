@@ -163,6 +163,13 @@ export class RawDocument {
   }
 }
 
+/** The find box's status line: which match is current, of how many, and where. */
+export function matchLabel(query: string, found: { offsets: number[]; truncated: boolean }, current: number): string {
+  if (!query) return '';
+  if (!found.offsets.length) return 'No match';
+  return `${current + 1} of ${found.offsets.length.toLocaleString()}${found.truncated ? '+' : ''} at byte ${found.offsets[current].toLocaleString()}`;
+}
+
 /** A byte count as a person reads it. */
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;

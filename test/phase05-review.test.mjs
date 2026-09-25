@@ -32,11 +32,36 @@ test('R05-3: adding a project folder keeps what the user unticked, and ticks onl
 
 test('R05-4: the entry as written hides every value the user marked secret', () => {
   const raw = JSON.stringify({ command: 'node', env: { API_KEY: 'sk-live-1', MODE: 'dev' } }, null, 2);
-  const shown = redactRaw(raw, { API_KEY: 'sk-live-1', MODE: 'dev' }, ['API_KEY']);
+  const shown = redactRaw(raw, ['sk-live-1']);
   assert.ok(!shown.includes('sk-live-1'), shown);
   assert.ok(shown.includes('"MODE": "dev"'));
-  assert.equal(redactRaw(raw, { API_KEY: 'sk-live-1' }, []), raw, 'nothing marked, nothing changed');
-  // A value that needs escaping in JSON is still found.
-  const quoted = JSON.stringify({ env: { K: 'a"b\c' } }, null, 2);
-  assert.ok(!redactRaw(quoted, { K: 'a"b\c' }, ['K']).includes('a\\"b'));
+  assert.equal(redactRaw(raw, []), raw, 'nothing marked, nothing changed');
+});
+
+// --- round 2: the re-review of the fix chain ---------------------------------------------
+
+test('R05-11: Claude Code\'s ${CLAUDE_PROJECT_DIR:-default} is still filled from the project', () => {
+  const text = JSON.stringify({ mcpServers: { s: { command: 'node', args: ['${CLAUDE_PROJECT_DIR:-.}/s.js'] } } });
+  const [entry] = parseConfig(text, cc('/src/app')).entries;
+  assert.equal(entry.disabled, undefined, entry.disabled);
+  assert.deepEqual(entry.server.args, ['/src/app/s.js']);
+  // With no project there is nothing certain to fill it with; the default is not assumed.
+  assert.match(parseConfig(text, cc(undefined)).entries[0].disabled, /CLAUDE_PROJECT_DIR/);
+  // Other clients have no such variable: a VS Code file with it is refused, not filled.
+  assert.match(parseConfig(text, { ...cc('/src/app'), client: 'cursor' }).entries[0].disabled, /CLAUDE_PROJECT_DIR/);
+});
+
+test('R05-12: a disabled entry reports its credential-looking values, so its raw view can hide them', () => {
+  const text = JSON.stringify({ mcpServers: { s: { command: 'node', args: ['${workspaceFolder}/x.js'], env: { API_KEY: 'sk-live-9', MODE: 'dev' }, headers: { Authorization: 'Bearer z' } } } });
+  const [entry] = parseConfig(text, cc(undefined)).entries;
+  assert.ok(entry.disabled);
+  assert.deepEqual(entry.sensitive, ['sk-live-9', 'Bearer z']);
+  assert.ok(!redactRaw(entry.raw, entry.sensitive).includes('sk-live-9'));
+});
+
+test('R05-13: redaction finds a value with a backslash and a quote', () => {
+  const value = String.raw`a"b\c`;
+  const raw = JSON.stringify({ env: { K: value } }, null, 2);
+  assert.ok(raw.includes(String.raw`a\"b\\c`), 'the sample must hold both escapes');
+  assert.ok(!redactRaw(raw, [value]).includes(String.raw`a\"b\\c`));
 });

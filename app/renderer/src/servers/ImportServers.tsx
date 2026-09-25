@@ -2,11 +2,11 @@
 // plan decisions 1-3 and 9-12). Two steps, each one the user takes: pick which
 // found files to read, then review every entry before saving. Full command
 // lines are shown, and nothing runs until the user connects.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FoundLocation, ReadConfig, ServerRow } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
 import { commandLine } from '../lib/describe';
-import { entryKey, initialState, mergePicked, outcomes, OUT_OF_REACH, plan, redactRaw, toggle, type EntryState, type OnClash, type ReviewState } from '../lib/importReview';
+import { entryKey, hiddenValues, initialState, mergePicked, outcomes, OUT_OF_REACH, plan, redactRaw, toggle, type EntryState, type OnClash, type ReviewState } from '../lib/importReview';
 
 type Step =
   | { kind: 'pick' }
@@ -26,14 +26,22 @@ export function ImportServers({ client, encrypted, servers, onImported, onClose 
   const [step, setStep] = useState<Step>({ kind: 'pick' });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The list last applied, and the newest listing asked for: a reply to an
+  // older request (two folders added quickly) is dropped, not applied last.
+  const applied = useRef<FoundLocation[] | null>(null);
+  const latest = useRef(0);
 
   useEffect(() => {
+    const request = ++latest.current;
     void (async () => {
       try {
         const found = await client.request('import.locations', { projectRoots });
+        if (request !== latest.current) return;
         // Found files start ticked; one the user unticked stays unticked when a
         // folder is added. Reading still waits for the button.
-        setPicked((picked) => mergePicked(picked, locations, found));
+        const before = applied.current;
+        applied.current = found;
+        setPicked((picked) => mergePicked(picked, before, found));
         setLocations(found);
       } catch (e) {
         setError(message(e));
@@ -198,7 +206,7 @@ function Review({ files, state, encrypted, servers, busy, error, onChange, onBac
                 {e.dropped.length > 0 && (
                   <div className="hint">Left out:<ul>{e.dropped.map((d) => <li key={d}>{d}</li>)}</ul></div>
                 )}
-                <details><summary>As written in the file</summary><pre className="mono raw-entry">{e.server && s ? redactRaw(e.raw, { ...e.server.env, ...e.server.headers }, [...s.secretEnv, ...s.secretHeaders]) : e.raw}</pre></details>
+                <details><summary>As written in the file</summary><pre className="mono raw-entry">{redactRaw(e.raw, hiddenValues(e, s))}</pre></details>
               </div>
             );
           })}

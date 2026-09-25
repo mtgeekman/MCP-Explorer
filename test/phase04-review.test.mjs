@@ -1,6 +1,7 @@
 // Regression tests for the phase 04 code review, one per finding: R04-1 to
-// R04-9 from the review, RR-1 to RR-5 from the re-review of those fixes.
-// Each was watched failing before its fix, or, where the test was rewritten
+// R04-9 from the review, RR-1 to RR-5 from the re-review of those fixes,
+// RS-1 to RS-4 pin the registry restructure. Each was watched failing
+// before its fix, or, where the test was rewritten
 // after it, with the fix removed.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -255,4 +256,103 @@ test('RR-5: a failed connect whose launcher root exited leaves nothing it starte
   assert.equal(failed.status, 'failed', JSON.stringify(failed));
   const [server] = await waitFor(() => { const p = pidsIn(spawns); return p.length ? p : null; });
   await waitFor(() => !isAlive(server), 8000).catch(() => { process.kill(server, 'SIGKILL'); assert.fail(`the server ${server} started by the exited launcher outlived the failed connect`); });
+});
+
+// --- round 4: one owner for server process roots (RS-1 to RS-4) ------------------------------
+
+test('RS-1: a server tree that could not be killed is reported as a failure, not resolved', async () => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e6)'], { stdio: 'ignore' });
+  cleanups.push(() => { try { process.kill(child.pid, 'SIGKILL'); } catch { /* gone */ } });
+  await assert.rejects(
+    killServerTree({ pid: child.pid, startedAt: Date.now() }, { kill: () => Promise.reject(new Error('access denied')), listProcesses: async () => [] }),
+    (e) => { assert.match(e.message, new RegExp(`${child.pid}.*access denied`)); return true; },
+  );
+  assert.ok(isAlive(child.pid), 'the injected kill did nothing; the process is still there to be reported');
+});
+
+test('RS-1b: an orphan that could not be killed makes the dead-root search fail too', { skip: !win && 'the dead-root search runs on Windows only' }, async () => {
+  const startedAt = Date.now();
+  const orphans = [{ pid: 999_991, ppid: 999_990, created: startedAt + 10 }];
+  await assert.rejects(
+    killServerTree({ pid: 999_990, startedAt }, { listProcesses: async () => orphans, kill: () => Promise.reject(new Error('access denied')) }),
+    /999991.*access denied/,
+  );
+});
+
+test('RS-2: a root whose tree could not be ended stays reported, survives the next connect, and is retried by closeAll', async () => {
+  const ws = workspace();
+  const s = { id: randomUUID(), name: 'm', transport: 'stdio', command: process.execPath, args: [modern] };
+  saveServer(ws, s);
+  const reports = [];
+  // Every end fails until the switch is thrown; a disconnect tries twice.
+  let failing = true;
+  const manager = new ConnectionManager(ws, {
+    closeGraceMs: 200,
+    events: { processes: (roots) => reports.push(roots.map((r) => r.pid)) },
+    killTree: async (root) => { if (failing) throw new Error('taskkill failed'); await killServerTree(root); },
+  });
+  const warnings = [];
+  const onWarning = (w) => warnings.push(w.message);
+  process.on('warning', onWarning);
+  try {
+    const first = await manager.connect(s.id);
+    await manager.disconnect(s.id);
+    assert.deepEqual(reports.at(-1), [first.pid], 'a root whose end failed left the report');
+    const second = await manager.connect(s.id);
+    assert.deepEqual([...reports.at(-1)].sort(), [first.pid, second.pid].sort(), 'the next connect dropped the survivor');
+    failing = false;
+    await manager.closeAll();
+    assert.deepEqual(reports.at(-1), [], 'closeAll left roots unended');
+  } finally {
+    await new Promise((r) => setImmediate(r));
+    process.off('warning', onWarning);
+  }
+  assert.ok(warnings.some((m) => m.includes('taskkill failed')));
+});
+
+test('RS-3: a session whose close throws is still ended, its tree killed, and the failure reported', async () => {
+  const spawns = spawnLog();
+  const ws = workspace();
+  const s = { id: randomUUID(), name: 'w', transport: 'stdio', ...wrapped(modern, { STUBBORN: '1', SPAWN_LOG: spawns }) };
+  saveServer(ws, s);
+  const reports = [];
+  const manager = new ConnectionManager(ws, { closeGraceMs: 200, events: { processes: (r) => reports.push(r.length) } });
+  const up = await manager.connect(s.id);
+  const conn = manager['slots'].get(s.id).conn;
+  const close = conn.close;
+  conn.close = async () => { await close(); throw new Error('close failed'); };
+  const warnings = [];
+  const onWarning = (w) => warnings.push(w.message);
+  process.on('warning', onWarning);
+  try {
+    const ended = await manager.disconnect(s.id).catch((e) => assert.fail(`disconnect rejected: ${e.message}`));
+    assert.equal(ended.status, 'ended');
+  } finally {
+    await new Promise((r) => setImmediate(r));
+    process.off('warning', onWarning);
+  }
+  const [server] = pidsIn(spawns);
+  await waitFor(() => !isAlive(up.pid) && !isAlive(server), 8000);
+  assert.equal(reports.at(-1), 0);
+  assert.ok(warnings.some((m) => m.includes('close failed')));
+});
+
+test('RS-4: a size purge takes calls oldest first too: calls newer than a unit wait for it', () => {
+  const ws = workspace();
+  const s = { id: randomUUID(), name: 'calls', transport: 'stdio', command: 'x' };
+  saveServer(ws, s);
+  const base = Date.now() - 60_000;
+  let t = base;
+  const rec = HistoryRecorder.open(ws, s.id, () => t);
+  const finished = (arg) => { const c = rec.beginCall('tool', 'echo'); rec.beginRound(c, { text: arg }); rec.finishCall(c, 'abandoned'); return c; };
+  const oldest = finished('');                                               // a small call at base
+  t = base + 10;
+  rec.unit({ direction: 'in', kind: 'stderr', bytes: Buffer.alloc(1_500_000, 0x64) }); // then a 1.5 MB unit
+  t = base + 20;
+  for (let i = 0; i < 30; i++) finished('z'.repeat(1000));                   // then 30 newer calls
+  updateSettings(ws, { retentionMaxBytes: liveBytes(ws.db) - 1_200_000 });
+  purgeHistory(ws, () => Date.now());
+  assert.equal(ws.db.prepare('SELECT count(*) AS n FROM call WHERE id = ?').get(oldest).n, 0);
+  assert.equal(ws.db.prepare('SELECT count(*) AS n FROM wire_unit').get().n, 0, 'the unit older than the newer calls was kept');
+  assert.equal(ws.db.prepare('SELECT count(*) AS n FROM call WHERE started_at >= ?').get(base + 20).n, 30, 'calls newer than the unit went before it');
 });

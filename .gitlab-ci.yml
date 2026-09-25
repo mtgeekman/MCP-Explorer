@@ -103,7 +103,15 @@ smoke:linux:
         step "renderer tsc" npx tsc -p app/renderer/tsconfig.json
         step "renderer vite" npx vite build -c app/renderer/vite.config.mts --logLevel info
         echo "== build done ($(date +%T))"
-        xvfb-run -a npm run test:smoke
+        # Xvfb is started directly, not through xvfb-run: pipeline 566 hung
+        # for an hour inside xvfb-run before npm printed a line, on llama
+        # only (the same image passes elsewhere). This names a display that
+        # fails to start, and bounds the run; pw:browser logs Electron itself.
+        Xvfb :99 -screen 0 1400x900x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+        for i in $(seq 1 50); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
+        if [ ! -S /tmp/.X11-unix/X99 ]; then echo "== Xvfb did not start"; cat /tmp/xvfb.log; exit 1; fi
+        echo "== Xvfb up ($(date +%T))"
+        DISPLAY=:99 DEBUG=pw:browser timeout 900 npm run test:smoke
       '
 
 # The same on Windows. The runner is a LocalSystem service, and Electron opens

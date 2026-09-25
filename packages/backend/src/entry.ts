@@ -32,15 +32,19 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
  */
 export function rawEntry(db: Database, capture: { connectionId: number | null; observedAt: number }, list: EntryList, key: string): RawEntry {
   if (capture.connectionId === null) return { found: false, reason: 'This capture was recorded without a connection, so there is no reply to cut it from.' };
-  // Newest first, one row at a time: the newest reply usually holds the
-  // entry, and every older reply's bytes need not be read (R06-7).
-  const units = db.prepare(`
-    SELECT DISTINCT u.id, u.bytes, u.http_json FROM frame f JOIN wire_unit u ON u.id = f.unit_id
+  // The replies' ids first, then each one's bytes newest first: the newest
+  // reply usually holds the entry, and older replies' bytes are then never
+  // read. Selecting the bytes in the same query made SQLite copy every one
+  // into its DISTINCT and ORDER BY sort before the first row (R06-7).
+  const ids = (db.prepare(`
+    SELECT DISTINCT u.id FROM frame f JOIN wire_unit u ON u.id = f.unit_id
     WHERE f.connection_id = ? AND f.direction = 'in' AND f.method = ? AND u.at <= ?
     ORDER BY u.id DESC
-  `).iterate(capture.connectionId, METHOD[list], capture.observedAt) as Iterable<{ id: number; bytes: Uint8Array | null; http_json: string | null }>;
+  `).all(capture.connectionId, METHOD[list], capture.observedAt) as { id: number }[]).map((r) => r.id);
+  const read = db.prepare('SELECT id, bytes, http_json FROM wire_unit WHERE id = ?');
   let withheld = false;
-  for (const unit of units) {
+  for (const id of ids) {
+    const unit = read.get(id) as { id: number; bytes: Uint8Array | null; http_json: string | null };
     if (unit.bytes === null) { withheld = true; continue; }
     const bytes = new Uint8Array(unit.bytes);
     const range = findEntry(bytes, unit.http_json, list, key);

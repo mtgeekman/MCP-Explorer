@@ -2,12 +2,22 @@
 // pop-out. The main view stays raw; this is where a person reads.
 import { Fragment } from 'react';
 import type { LogUnit } from '../../../../packages/backend/dist/index.js';
+import { ItemReadable } from '../surface/ItemReadable';
+import type { SelectedItem } from '../surface/SurfacePanel';
 import { readable } from '../lib/readable';
 import { clock } from '../lib/logrows';
 import { formatBytes } from '../lib/raw';
 
-export function ReadableBody({ unit }: { unit: LogUnit | null }) {
-  if (!unit) return <p className="muted">Select a row in the wire log to read it here.</p>;
+/** What the pane shows: a wire log unit, or a surface entry (board 5.1A). */
+export type ReadableContent = { kind: 'unit'; unit: LogUnit } | { kind: 'item'; item: SelectedItem };
+
+export function ReadableBody({ content }: { content: ReadableContent | null }) {
+  if (!content) return <p className="muted pad">Select a row in the wire log, or a surface entry, to read it here.</p>;
+  if (content.kind === 'item') return <ItemReadable selected={content.item} />;
+  return <UnitReadable unit={content.unit} />;
+}
+
+function UnitReadable({ unit }: { unit: LogUnit }) {
   const r = readable(unit);
   const http = unit.http;
   return (
@@ -50,14 +60,14 @@ export function ReadableBody({ unit }: { unit: LogUnit | null }) {
   );
 }
 
-export function ReadablePane({ unit, poppedOut, onPopOut }: { unit: LogUnit | null; poppedOut: boolean; onPopOut: () => void }) {
+export function ReadablePane({ content, poppedOut, onPopOut }: { content: ReadableContent | null; poppedOut: boolean; onPopOut: () => void }) {
   return (
     <aside className="readable-pane">
       <div className="pane-head">
         <span>Readable</span>
         {!poppedOut && <button onClick={onPopOut} title="Open this pane in its own window">Pop out</button>}
       </div>
-      {poppedOut ? <p className="muted pad">Shown in its own window. Close that window to bring it back here.</p> : <ReadableBody unit={unit} />}
+      {poppedOut ? <p className="muted pad">Shown in its own window. Close that window to bring it back here.</p> : <ReadableBody content={content} />}
     </aside>
   );
 }

@@ -1,26 +1,37 @@
 // The readable pane in its own window (board 1A). It has its own port to the
-// backend and reads the unit the main window has selected.
+// backend and reads what the main window has selected: a wire log unit, or a
+// surface entry from that server's latest capture.
 import { useEffect, useState } from 'react';
-import type { LogUnit } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
-import { ReadableBody } from './ReadablePane';
+import { entryKey } from '../lib/surface';
+import { ReadableBody, type ReadableContent } from './ReadablePane';
 
 export function ReadableWindow({ client }: { client: BackendClient }) {
-  const [unit, setUnit] = useState<LogUnit | null>(null);
+  const [content, setContent] = useState<ReadableContent | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     // After a backend restart this window gets a new client; the old one's
     // listener is removed so only the live port is asked.
     return window.mcpxShell?.onReadableSelect((selection) => {
       setError(null);
-      if (!selection) return setUnit(null);
-      client.request('log.get', selection).then(setUnit, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+      if (!selection) return setContent(null);
+      const failed = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
+      if ('id' in selection) {
+        client.request('log.get', selection).then((unit) => setContent(unit ? { kind: 'unit', unit } : null), failed);
+        return;
+      }
+      client.request('surface.get', { serverId: selection.serverId }).then((view) => {
+        const surface = view.capture?.surface;
+        const item = (surface?.[selection.list] as unknown as Record<string, unknown>[] | undefined)?.find((i) => entryKey(selection.list, i) === selection.key);
+        if (!surface || !item) return setError('That entry is no longer in the latest capture.');
+        setContent({ kind: 'item', item: { serverId: selection.serverId, list: selection.list, key: selection.key, item, revision: surface.revision } });
+      }, failed);
     });
   }, [client]);
   return (
     <div className="readable-window">
       <div className="pane-head"><span>Readable</span></div>
-      {error ? <p className="error pad">{error}</p> : <ReadableBody unit={unit} />}
+      {error ? <p className="error pad">{error}</p> : <ReadableBody content={content} />}
     </div>
   );
 }

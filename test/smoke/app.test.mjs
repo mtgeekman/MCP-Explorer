@@ -1,4 +1,4 @@
-// Phase 04 and 05 acceptance, driven through the real app with playwright-core. Run
+// Phase 04, 05 and 06 acceptance, driven through the real app with playwright-core. Run
 // with `npm run test:smoke` after `npm run build`; it needs a display (CI
 // runs it under xvfb on Linux). Set MCPX_APP_EXE to drive a packaged build
 // instead of the built tree.
@@ -309,6 +309,78 @@ test('R05-7: a restart request while the backend is running does not reset the p
     await page.evaluate(() => window.mcpxShell.restartBackend());
     await new Promise((r) => setTimeout(r, 1500));
     assert.ok(await page.getByRole('button', { name: 'Connect', exact: true }).isVisible(), 'the page was remounted and lost the selected server');
+  } finally {
+    await app.close();
+  }
+});
+
+// --- Phase 06: surface views and the context preview ---------------------------------------
+
+/** Connects and waits for the capture that connecting starts, shown as the tools tab's count. */
+async function connectAndCapture(page, name, tools) {
+  await connect(page, name);
+  await page.getByRole('tab', { name: `Tools ${tools}` }).waitFor({ timeout: 20_000 });
+}
+
+test('surface: connecting captures it; a tool opens on its exact bytes and the pane reads it (board 5.1A)', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'surface', transport: 'stdio', command: process.execPath, args: [modern] }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connectAndCapture(page, 'surface', 2);
+    assert.ok(await page.getByRole('tab', { name: 'Prompts 1' }).isVisible());
+    await page.locator('.surface-items .item', { hasText: 'echo' }).click();
+    await page.locator('.entry-source', { hasText: 'Exact bytes from wire log unit' }).waitFor();
+    assert.ok(await page.locator('.surface-entry .raw-viewer').isVisible());
+    const pane = page.locator('.readable-pane');
+    await pane.getByText('Hints the server declares about itself').waitFor();
+    assert.ok(await pane.locator('table.fields td', { hasText: 'What to echo.' }).first().isVisible(), 'the parameter description');
+    await page.getByRole('tab', { name: 'Instructions' }).click();
+    assert.equal(await page.locator('pre.instructions').innerText(), 'Phase 01 fixture. Modern era.');
+    assert.ok(await page.getByText('does not open. Refresh to see changes.').isVisible(), 'modern change notices are said to need a subscription');
+  } finally {
+    await app.close();
+  }
+});
+
+test('surface: a legacy change notice shows a banner, nothing is re-listed until Refresh (P2)', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'changing', transport: 'stdio', command: process.execPath, args: [legacy], env: { LIST_CHANGED: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connectAndCapture(page, 'changing', 1);
+    const banner = page.locator('.banner', { hasText: 'The server says its tools changed' });
+    await banner.waitFor({ timeout: 10_000 });
+    await new Promise((r) => setTimeout(r, 500));
+    assert.ok(await page.getByRole('tab', { name: 'Tools 1' }).isVisible(), 'still the first capture');
+    await banner.getByRole('button', { name: 'Refresh' }).click();
+    await page.getByRole('tab', { name: 'Tools 2' }).waitFor({ timeout: 10_000 });
+    assert.equal(await page.locator('.banner').count(), 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test('context: two servers sharing a tool name show the collision, and leaving one out removes it', async () => {
+  const { dataDir } = seed([
+    { id: randomUUID(), name: 'one modern', transport: 'stdio', command: process.execPath, args: [modern] },
+    { id: randomUUID(), name: 'two legacy', transport: 'stdio', command: process.execPath, args: [legacy] },
+  ]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connectAndCapture(page, 'one modern', 2);
+    await disconnect(page);
+    await connectAndCapture(page, 'two legacy', 1);
+    await disconnect(page);
+    await page.getByRole('button', { name: 'Context', exact: true }).click();
+    const collisions = page.locator('.collisions');
+    await collisions.waitFor();
+    assert.match(await collisions.innerText(), /echo from one modern, two legacy/);
+    assert.match(await page.locator('.context-total').innerText(), /^\d+ tokens/);
+    assert.match(await page.locator('.tokenizer-label').innerText(), /o200k_base tokens/);
+    await page.getByRole('checkbox', { name: 'Include two legacy' }).uncheck();
+    await page.getByText('None. Every tool name in the block is unique.').waitFor();
   } finally {
     await app.close();
   }

@@ -127,7 +127,15 @@ export class ConnectionManager {
 
   /** Ends every session: the app is quitting, or the workspace is closing. */
   async closeAll(): Promise<void> {
-    await Promise.all([...this.slots.keys()].map((id) => this.disconnect(id)));
+    // One session that fails to close must not stop the others, nor fail the
+    // quit or workspace switch that asked (R04-1); it is reported instead.
+    const ids = [...this.slots.keys()];
+    const results = await Promise.allSettled(ids.map((id) => this.disconnect(id)));
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        process.emitWarning(`server ${ids[i]} did not close cleanly: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`, 'MCPExplorerConnectionWarning');
+      }
+    });
   }
 
   /** Session secrets are forgotten with the manager; this forgets one server's early, as when its definition changes. */

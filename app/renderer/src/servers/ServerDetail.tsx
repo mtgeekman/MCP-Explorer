@@ -5,9 +5,11 @@ import { useEffect, useState } from 'react';
 import type { ServerForm, ServerRow } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
 import { commandLine, describeState } from '../lib/describe';
+import { SurfacePanel, type SelectedItem } from '../surface/SurfacePanel';
 
-export function ServerDetail({ client, server, onEdit, onDeleted, onChanged }: {
+export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, selectedItem, onSelectItem }: {
   client: BackendClient; server: ServerRow; onEdit: () => void; onDeleted: () => void; onChanged: () => void;
+  selectedItem: SelectedItem | null; onSelectItem: (item: SelectedItem | null) => void;
 }) {
   const [form, setForm] = useState<ServerForm | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -92,6 +94,7 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged }: {
         )}
       </div>
       {error && <p className="error">{error}</p>}
+      <SurfacePanel client={client} server={server} selected={selectedItem} onSelect={onSelectItem} />
     </section>
   );
 }

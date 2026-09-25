@@ -9,7 +9,8 @@ ipcRenderer.on('backend-port', (event) => {
 
 // The popped-out pane is told its selection as soon as it loads, which can be
 // before the page has mounted a listener. The last one is kept and replayed.
-type Selection = { id: number; reserialized: boolean } | null;
+// A wire log unit, or a surface entry (board 5.1A), which the window fetches itself.
+type Selection = { id: number; reserialized: boolean } | { serverId: string; list: string; key: string } | null;
 let lastSelection: Selection | undefined;
 const selectionListeners = new Set<(s: Selection) => void>();
 ipcRenderer.on('readable-select', (_e, selection: Selection) => {
@@ -25,7 +26,7 @@ contextBridge.exposeInMainWorld('mcpxShell', {
   restartBackend: () => ipcRenderer.send('backend-restart'),
   /** Opens the readable pane in its own window (board 1A). */
   popOutReadable: () => ipcRenderer.send('readable-pop-out'),
-  /** Tells the popped-out pane which unit to show. */
+  /** Tells the popped-out pane which unit or surface entry to show. */
   selectReadable: (selection: Selection) => ipcRenderer.send('readable-select', selection),
   /** Returns a function that stops listening: a page given a new backend port listens again with its new client. */
   onReadableSelect: (listener: (selection: Selection) => void) => {

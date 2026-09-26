@@ -166,6 +166,11 @@ export class Backend {
     const unitId = call.roundRecords[0]?.requestUnitId ?? null;
     const unit = unitId === null ? null : logUnit(this.ws().db, unitId);
     if (!unit || unit.bytes === null) return { bytes: null, reason: unitId === null ? 'The request never reached the wire.' : 'The request was purged from the wire log.' };
+    // Over HTTP+SSE the answer arrives on the event stream, not in the POST's
+    // response, so a curl of the POST would show only its 202 (R07-9).
+    if (this.server(call.serverId).transport === 'sse') {
+      return { bytes: unit.bytes, reason: 'No curl command: over HTTP+SSE the answer arrives on the event stream, not in the response to this POST.' };
+    }
     const curl = curlFor(unit);
     return { bytes: unit.bytes, ...(curl ?? {}) };
   }

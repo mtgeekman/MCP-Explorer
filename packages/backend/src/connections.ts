@@ -191,6 +191,14 @@ export class ConnectionManager {
     };
   }
 
+  /** The live session a call runs on, or undefined when the server is not connected. */
+  session(serverId: string): { conn: Connection; recorder: HistoryRecorder; connectionId: number; era: 'legacy' | 'modern' } | undefined {
+    const slot = this.slots.get(serverId);
+    const state = slot?.state;
+    if (!slot?.conn || !slot.recorder || state?.status !== 'connected') return undefined;
+    return { conn: slot.conn, recorder: slot.recorder, connectionId: state.connectionId, era: state.era };
+  }
+
   partialCapture(serverId: string): PartialCapture | undefined {
     return this.slots.get(serverId)?.partial;
   }

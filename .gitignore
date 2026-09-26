@@ -8,6 +8,12 @@ dist/
 dist-electron/
 out/
 build/
+# The root build/ is electron-builder's resources folder; its icon source is kept.
+!/build/
+/build/*
+!/build/icon.svg
+!/build/icon.ico
+!/build/icon.png
 release/
 *.tsbuildinfo
 

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createWorkspaceDb, saveServer, recordCapture, versionTimeline, latestCapture } from '../packages/storage/dist/index.js';
-import { span } from '../app/renderer/src/lib/versions.ts';
+import { span, instructionsTokenCells } from '../app/renderer/src/lib/versions.ts';
 import { memoryStore } from './support/memory-store.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'mcpx-p09r-'));
@@ -61,6 +61,14 @@ test('R09-5: a span just under a unit boundary reads as the next unit', () => {
   assert.equal(span(59.6 * 60_000), '1 hour');
   assert.equal(span(23.6 * 3_600_000), '1 day');
   assert.equal(span(59_400), '59 seconds', 'still seconds below the rounding edge');
+});
+
+test('R09-6: a change in the instructions cost is a row of the token table; no change, no row', () => {
+  const t = (before, after) => ({ tokenizer: { id: 'o200k_base', label: 'L' }, before: 0, after: 0, delta: 0, instructions: { before, after }, tools: [] });
+  assert.deepEqual(instructionsTokenCells(t(15, 20)), ['(instructions)', '15 to 20', '+5']);
+  assert.deepEqual(instructionsTokenCells(t(0, 12)), ['(instructions)', 'added, 12', '+12']);
+  assert.deepEqual(instructionsTokenCells(t(12, 0)), ['(instructions)', 'removed, was 12', '-12']);
+  assert.equal(instructionsTokenCells(t(15, 15)), null);
 });
 
 test('R09-2 twin: the latest capture is the last one recorded, not the latest by the clock', () => {

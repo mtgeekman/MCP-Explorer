@@ -163,6 +163,17 @@ export function tokenLine(t: TokenDelta): string {
     : `${signed(t.delta)} tokens (${t.before} to ${t.after}, ${t.tokenizer.id})`;
 }
 
+/**
+ * The instructions section's row of the token table, heading included, so the
+ * table accounts for a change the tool rows cannot (R09-6); null when its cost
+ * did not change.
+ */
+export function instructionsTokenCells(t: TokenDelta): [string, string, string] | null {
+  const { before, after } = t.instructions;
+  if (before === after) return null;
+  return ['(instructions)', before === 0 ? `added, ${after}` : after === 0 ? `removed, was ${before}` : `${before} to ${after}`, signed(after - before)];
+}
+
 /** One row of the per-tool token table: name, what happened, the signed change. */
 export function toolTokenCells(t: TokenDelta['tools'][number]): [string, string, string] {
   return [t.name, t.before === undefined ? `added, ${t.after}` : t.after === undefined ? `removed, was ${t.before}` : `${t.before} to ${t.after}`, signed(t.delta)];

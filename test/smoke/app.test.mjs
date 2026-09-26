@@ -1193,3 +1193,38 @@ test('readable JSON: colored and pretty by default, Compact switches every block
     }
   }
 });
+
+test('readable JSON: text that is JSON is shown decoded in Pretty, marked, and as the plain string in Compact', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'embedded', transport: 'stdio', command: process.execPath, args: [legacy] }]);
+  const { app, page } = await launch(dataDir);
+  const pane = page.locator('.readable-pane');
+  try {
+    await openWorkspace(page);
+    await connect(page, 'embedded');
+    await openCall(page, 'echo');
+    const input = page.locator('.call-form label.field', { has: page.locator('span.mono', { hasText: /^text$/ }) }).locator('input');
+    await input.fill('[{"page":"claude/projects/x","score":0.4}]');
+    await callConfirmed(page);
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+
+    // The call's result: the text part is JSON, so Pretty shows it decoded.
+    const part = pane.locator('.json-embed-part');
+    await part.waitFor();
+    assert.equal(await part.locator('.json-badge').innerText(), 'JSON in the text');
+    assert.ok(await part.locator('.j-key', { hasText: '"page"' }).count() > 0, 'decoded keys are colored as keys');
+    await shot(page, 'json-in-text');
+
+    // The response unit in the wire log: its text field is a string holding JSON.
+    await page.locator('.log-line', { hasText: 'tools/call' }).last().click();
+    const unit = pane.locator('.json-view').first();
+    await unit.locator('.json-embed .json-badge', { hasText: 'JSON in a string' }).waitFor();
+    assert.ok((await unit.innerText()).includes('"page": "claude/projects/x"'), 'decoded and indented');
+    await shot(page, 'json-in-string');
+
+    await pane.getByRole('button', { name: 'Compact' }).click();
+    assert.equal(await unit.locator('.json-embed').count(), 0, 'Compact decodes nothing');
+    assert.ok((await unit.innerText()).includes('\\"page\\"'), 'the string as it is, escapes and all');
+  } finally {
+    await app.close();
+  }
+});

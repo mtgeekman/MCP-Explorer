@@ -183,6 +183,8 @@ export const PROBE_TIMEOUT_MS = 5000;
 export interface Connection {
   era: Era;
   revision: string;
+  /** How the session travels: Mcp-Param-* headers exist on Streamable HTTP only. */
+  transport: 'stdio' | HttpTransportKind;
   source: SurfaceSource;
   /**
    * Sends one tools/call, prompts/get or resources/read as the user asked, and
@@ -888,7 +890,7 @@ async function taskOn(session: Session, req: TaskRequest): Promise<CallOutcome> 
 }
 
 /** Everything after the transport is connected is identical across transports. */
-async function describe(client: any, calls: CallTracker): Promise<Connection> {
+async function describe(client: any, calls: CallTracker, transport: 'stdio' | HttpTransportKind): Promise<Connection> {
   const revision: string = client.getNegotiatedProtocolVersion?.() ?? '2025-06-18';
   const session: Session = { client, calls, era: eraOf(revision), revision, framed: 0 };
   // The tasks extension is declared on the modern era only: a legacy server
@@ -914,7 +916,7 @@ async function describe(client: any, calls: CallTracker): Promise<Connection> {
     listResourceTemplates: lister(session, 'resources/templates/list', 'resourceTemplates', caps.resources !== undefined),
   };
   return {
-    era: source.era, revision, source,
+    era: source.era, revision, source, transport,
     call: (req) => callOn(session, req),
     request: (req) => utilityOn(session, req),
     get logLevel() { return session.logLevel; },
@@ -1218,7 +1220,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   } catch (e) {
     throw classifyHttp(e);
   }
-  return describe(client, calls);
+  return describe(client, calls, opts.kind ?? 'streamable-http');
 }
 
 function classifyHttp(e: unknown): ConnectError {
@@ -1370,7 +1372,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   client.onclose = () => opts.onClose?.({ exit: watch.exit });
   // Assigned, not spread: a spread would read the logLevel getter once and
   // keep that value forever.
-  return Object.assign(await describe(client, calls), { pid: watch.pid, startedAt: watch.spawnedAt });
+  return Object.assign(await describe(client, calls, 'stdio'), { pid: watch.pid, startedAt: watch.spawnedAt });
 }
 
 function classifyStdio(e: unknown, watch: ProcessWatch): ConnectFailure {

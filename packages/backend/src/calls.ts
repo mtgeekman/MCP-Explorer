@@ -11,7 +11,7 @@
 // round, sent only on the user's word; nothing polls, and pollInterval is
 // shown, never acted on.
 import {
-  CALL_METHOD, callParams, validateAgainst,
+  CALL_METHOD, callParams, mcpParamHeaders, scanHeaderDeclarations, validateAgainst,
   type CallKind, type CallOutcome, type CallProgress, type Connection, type NormalizedSurface, type TaskMethod, type Verdict,
 } from '../../protocol/dist/index.js';
 import {
@@ -41,6 +41,8 @@ export interface ConfirmPrompt {
   why: string;
   /** The arguments against the tool's inputSchema; advisory (decision 4). */
   argumentsCheck?: Verdict;
+  /** Mcp-Param-* headers the request will carry (modern Streamable HTTP; phase 10 decision 11). */
+  headers?: Record<string, string>;
 }
 
 export type StartReply = { started: true; callId: number } | { started: false; confirm: ConfirmPrompt };
@@ -146,6 +148,8 @@ interface Running {
   capBase: number;
   /** Modern: the waiting input is the task's, answered with tasks/update, not a retry. */
   taskInput?: boolean;
+  /** Mcp-Param-* headers every round of this call carries. */
+  headers?: Record<string, string>;
 }
 
 /** A person's answers could not be sent as given. */
@@ -181,6 +185,7 @@ export class CallPipeline {
     if (!s) throw new Error(`server ${req.serverId} is not connected`);
     const tool = req.kind === 'tool' ? this.tool(req.serverId, req.target) : undefined;
     const policy = confirmPolicy(req.kind, tool, readSettings(this.ws).askBeforeCalls);
+    const headers = paramHeaders(s.conn, req.kind, tool, req.args);
     if (policy.confirm && !req.confirmed) {
       return {
         started: false,
@@ -190,6 +195,7 @@ export class CallPipeline {
           ...(tool?.annotations === undefined ? {} : { annotations: tool.annotations }),
           why: policy.why,
           ...(tool ? { argumentsCheck: await validateAgainst(tool.inputSchema, req.args ?? {}) } : {}),
+          ...(headers ? { headers } : {}),
         },
       };
     }
@@ -198,6 +204,7 @@ export class CallPipeline {
     const run: Running = {
       serverId: req.serverId, recorder: s.recorder, conn: s.conn, abort: new AbortController(), live: { status: 'running' },
       kind: req.kind, target: req.target, ...(req.args === undefined ? {} : { args: req.args }), capBase: 0,
+      ...(headers ? { headers } : {}),
     };
     this.running.set(callId, run);
     this.send(callId, run, s.recorder.beginRound(callId, run.args), undefined, req.kind === 'tool' ? req.asTask : undefined);
@@ -214,6 +221,7 @@ export class CallPipeline {
     const outcome = run.conn.call({
       kind: run.kind, target: run.target, args: run.args, signal: run.abort.signal,
       ...(task ? { task } : {}),
+      ...(run.headers ? { headers: run.headers } : {}),
       ...(retry?.inputResponses === undefined ? {} : { inputResponses: retry.inputResponses }),
       ...(retry?.requestState === undefined ? {} : { requestState: retry.requestState }),
       onProgress: (progress) => { run.live.progress = progress; this.events.changed?.(run.serverId, callId, 'progress'); },
@@ -536,6 +544,20 @@ export class CallPipeline {
     this.session.set(callId, entry);
     while (this.session.size > SESSION_RESULTS) this.session.delete(this.session.keys().next().value!);
   }
+}
+
+/**
+ * The Mcp-Param-* headers a tool call carries: modern era, Streamable HTTP,
+ * from the tool's x-mcp-header declarations in the latest capture and the
+ * call's arguments. A tool whose declarations are invalid gets none (the
+ * health check says why); undefined when there are none to send.
+ */
+function paramHeaders(conn: Connection, kind: CallKind, tool: Tool | undefined, args: Record<string, unknown> | undefined): Record<string, string> | undefined {
+  if (kind !== 'tool' || !tool || conn.era !== 'modern' || conn.transport !== 'streamable-http') return undefined;
+  const scan = scanHeaderDeclarations(tool.inputSchema);
+  if (!scan.valid || scan.declarations.length === 0) return undefined;
+  const headers = mcpParamHeaders(scan.declarations, args ?? {});
+  return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
 /**

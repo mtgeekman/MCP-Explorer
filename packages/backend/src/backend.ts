@@ -16,6 +16,7 @@ import { CallPipeline, curlFor, type CallExport } from './calls.js';
 import { ServerRequests } from './server-requests.js';
 import { SessionControls } from './session-controls.js';
 import { notificationPage } from './notifications.js';
+import { healthReport } from './health.js';
 import { listConfigLocations, readConfigs, saveImported } from './importer.js';
 import type { ContextView, ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow, SurfaceView } from './api.js';
 
@@ -139,6 +140,7 @@ export class Backend {
       },
       'session.subscribe': ({ serverId, uri, on }) => this.sessions().subscribe(serverId, uri, on),
       'session.listen': ({ serverId, filter }) => { this.sessions().listen(serverId, filter); return null; },
+      'health.check': ({ serverId }) => this.health(serverId),
       'notifications.list': ({ serverId, before, limit }) => { this.server(serverId); return notificationPage(this.ws().db, serverId, before, limit ?? DEFAULT_PAGE); },
       'resources.template': async ({ uriTemplate: template, values }) => {
         const t = await uriTemplate(template);
@@ -189,6 +191,25 @@ export class Backend {
   private desk(): ServerRequests {
     if (!this.requests) throw new NoWorkspaceError('no workspace is open');
     return this.requests;
+  }
+
+  /** The user pressed Health check: connect if needed, capture, ping, report. */
+  private async health(serverId: string) {
+    this.server(serverId);
+    const conns = this.conns();
+    const now = (this.opts.now ?? Date.now)();
+    let state = conns.state(serverId);
+    if (state.status !== 'connected') state = await conns.connect(serverId);
+    const session = conns.session(serverId);
+    if (state.status !== 'connected' || !session) {
+      const message = state.status === 'failed' ? state.message : state.status === 'needs-secrets' ? 'The server needs secrets this session has not been given.' : `The server is ${state.status}.`;
+      return { at: now, connection: { status: 'not-connected' as const, state: state.status, message }, capabilities: [], extensions: [], lists: [], malformed: [], schemas: [], ping: { status: 'unavailable' as const, reason: 'not connected' }, unavailable: [] };
+    }
+    await conns.capture(serverId);
+    const status = conns.captureStatus(serverId);
+    const shown = conns.partialCapture(serverId) ?? latestCapture(this.ws(), serverId);
+    if (!shown) throw new Error(status.error ?? 'nothing was captured');
+    return healthReport(session.conn, shown.surface, now, status.error);
   }
 
   private sessions(): SessionControls {

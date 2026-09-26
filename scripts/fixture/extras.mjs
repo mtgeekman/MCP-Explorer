@@ -29,6 +29,10 @@
 //   end_listen     a tool that closes every open listen with its result
 //   cancel_listen  a tool that ends every open listen with notifications/cancelled
 //   tasks          (tasks.mjs) on modern, and on legacy at LEGACY_REVISION=2025-11-25
+//   routed         a tool whose `region` argument declares x-mcp-header Region,
+//                  answering with the arguments it got
+//   MALFORMED_SURFACE  adds one deliberately malformed element of each kind the
+//                  health check must flag
 //                  instead, the other ending the spec describes
 //
 // Notices sent outside a request go through setBroadcast's writer: stdout on
@@ -62,6 +66,21 @@ const EXTRA_TOOLS = [
   { name: 'cancel_listen', description: 'Ends every open listen with notifications/cancelled.', inputSchema: { type: 'object', properties: {} } },
 ];
 const MUTATED_TOOL = { name: 'mutated', description: 'Listed after mutate.', inputSchema: { type: 'object', properties: {} } };
+const ROUTED_TOOL = { name: 'routed', description: 'Takes a region its server routes on.', inputSchema: { type: 'object', properties: { region: { type: 'string', 'x-mcp-header': 'Region' }, text: { type: 'string' } }, required: ['region'] }, annotations: { readOnlyHint: true } };
+
+/** One malformed element of each kind the health check flags (MALFORMED_SURFACE). */
+export const MALFORMED = {
+  tools: [
+    { name: 42, inputSchema: { type: 'object' } },
+    { name: 'no_schema', description: 'Has no inputSchema.' },
+    { name: 'bad_hint', inputSchema: { type: 'object' }, annotations: { readOnlyHint: 'yes' } },
+    { name: 'bad_header', inputSchema: { type: 'object', properties: { a: { type: 'object', 'x-mcp-header': 'A' } } } },
+    { name: 'bad_schema', inputSchema: { type: 'object', properties: { n: { type: 'nonsense' } } } },
+  ],
+  prompts: [{ name: 'bad_args', arguments: 'not a list' }],
+  resources: [{ uri: 'fixture://nameless' }],
+  resourceTemplates: [{ uriTemplate: 'fixture://{open', name: 'unbalanced' }],
+};
 const EXTRA_PROMPTS = [{ name: 'pick', description: 'A prompt whose argument completes.', arguments: [{ name: 'language', required: true }] }];
 const EXTRA_RESOURCES = [{ uri: 'fixture://sized', name: 'sized', mimeType: 'text/plain', size: 42, annotations: { audience: ['user'], priority: 0.5 } }];
 const EXTRA_TEMPLATES = [{ uriTemplate: 'fixture://langs/{lang}', name: 'langs', annotations: { audience: ['assistant'] } }];
@@ -159,6 +178,7 @@ export function withExtras(handle, era, extra = () => ({})) {
       listens.clear();
       return ok({ content: [{ type: 'text', text: `cancelled ${count}` }] });
     }
+    if (method === 'tools/call' && params.name === 'routed') return ok({ content: [{ type: 'text', text: JSON.stringify(params.arguments ?? {}) }] });
     if (method === 'prompts/get' && params.name === 'pick') {
       return ok({ messages: [{ role: 'user', content: { type: 'text', text: `Pick ${params.arguments?.language}.` } }] });
     }
@@ -200,7 +220,8 @@ function decorate(method, response, era) {
   }
   const list = LIST_EXTRAS[method];
   if (list && Array.isArray(result[list[0]]) && result.nextCursor === undefined) {
-    const added = method === 'tools/list' ? [...list[1], ...(mutated ? [MUTATED_TOOL] : []), ...(tasksOn(era) ? taskTools(era) : [])] : list[1];
+    const broken = process.env.MALFORMED_SURFACE ? MALFORMED[list[0]] : [];
+    const added = [...(method === 'tools/list' ? [...list[1], ROUTED_TOOL, ...(mutated ? [MUTATED_TOOL] : []), ...(tasksOn(era) ? taskTools(era) : [])] : list[1]), ...broken];
     return { ...response, result: { ...result, [list[0]]: [...result[list[0]], ...added] } };
   }
   return response;

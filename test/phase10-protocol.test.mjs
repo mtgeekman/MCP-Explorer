@@ -54,11 +54,11 @@ test('allowlist: an item without the new fields hashes exactly as before phase 1
   assert.equal(hashResourceTemplate(template), oldHash(template, ['uriTemplate', 'name', 'title', 'description', 'mimeType', 'icons']));
 });
 
-test('allowlist: Tool.execution, Resource.size and both annotations are hashed', () => {
+test('allowlist: Tool.execution and both annotations are hashed; Resource.size is not (R10-3)', () => {
   const tool = { name: 'echo', inputSchema: { type: 'object' } };
   assert.notEqual(hashTool({ ...tool, execution: { taskSupport: 'optional' } }), hashTool(tool));
   const resource = { uri: 'file:///a' };
-  assert.notEqual(hashResource({ ...resource, size: 12 }), hashResource(resource));
+  assert.equal(hashResource({ ...resource, size: 12 }), hashResource(resource));
   assert.notEqual(hashResource({ ...resource, annotations: { priority: 1 } }), hashResource(resource));
   const template = { uriTemplate: 'file:///{x}' };
   assert.notEqual(hashResourceTemplate({ ...template, annotations: { audience: ['user'] } }), hashResourceTemplate(template));

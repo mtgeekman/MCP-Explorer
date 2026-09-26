@@ -12,6 +12,7 @@ import { VersionsPanel } from '../versions/VersionsPanel';
 import { HealthView, SessionPanel } from './SessionPanel';
 import { NotificationsPanel } from './NotificationsPanel';
 import { AuthPanel } from './AuthPanel';
+import { signInParams } from '../lib/auth';
 
 export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, selectedItem, onSelectItem, onReadCall }: {
   client: BackendClient; server: ServerRow; onEdit: () => void; onDeleted: () => void; onChanged: () => void;
@@ -23,13 +24,14 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [signedInAt, setSignedInAt] = useState<number | undefined>(undefined);
+  const [grantedScope, setGrantedScope] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     void client.request('servers.get', { id: server.id }).then(setForm);
   }, [client, server.id]);
   useEffect(() => {
     if (server.transport === 'stdio') return;
-    const load = () => void client.request('auth.get', { serverId: server.id }).then((r) => setSignedInAt(r.signedIn ? r.obtainedAt : undefined), () => undefined);
+    const load = () => void client.request('auth.get', { serverId: server.id }).then((r) => { setSignedInAt(r.signedIn ? r.obtainedAt : undefined); setGrantedScope(r.signedIn ? r.scope : undefined); }, () => undefined);
     load();
     return client.on((name, data) => {
       if (name === 'auth.changed' && (data as { serverId: string }).serverId === server.id) load();
@@ -62,11 +64,7 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
   const live = state.status === 'connected';
   // Sign in from a failed connect's challenge (phase 11 decision 5): the
   // Sign-in panel below shows the page to open.
-  const signIn = () => run(() => client.request('auth.signIn', {
-    serverId: server.id,
-    ...(state.status === 'failed' && state.failure.kind === 'unauthorized' ? { challenge: state.failure.challenge } : {}),
-    ...(state.status === 'failed' && state.failure.kind === 'unauthorized' && state.failure.challenge.status === 403 && state.failure.challenge.scope ? { scope: state.failure.challenge.scope } : {}),
-  }));
+  const signIn = () => run(() => client.request('auth.signIn', signInParams(server.id, state, grantedScope ? { scope: grantedScope } : null)));
   const moving = state.status === 'connecting' || state.status === 'closing';
 
   return (

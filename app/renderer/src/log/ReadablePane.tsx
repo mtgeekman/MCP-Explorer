@@ -1,19 +1,21 @@
 // The readable view of the selected unit (board 1A): a right-hand pane with a
 // pop-out. The main view stays raw; this is where a person reads.
 import { Fragment } from 'react';
-import type { LogUnit } from '../../../../packages/backend/dist/index.js';
+import type { CallView, LogUnit } from '../../../../packages/backend/dist/index.js';
+import { ResultReadable } from '../calls/ResultReadable';
 import { ItemReadable } from '../surface/ItemReadable';
 import type { SelectedItem } from '../surface/SurfacePanel';
 import { readable } from '../lib/readable';
 import { clock } from '../lib/logrows';
 import { formatBytes } from '../lib/raw';
 
-/** What the pane shows: a wire log unit, or a surface entry (board 5.1A). */
-export type ReadableContent = { kind: 'unit'; unit: LogUnit } | { kind: 'item'; item: SelectedItem };
+/** What the pane shows: a wire log unit, a surface entry (board 5.1A), or a call's result. */
+export type ReadableContent = { kind: 'unit'; unit: LogUnit } | { kind: 'item'; item: SelectedItem } | { kind: 'call'; view: CallView };
 
 export function ReadableBody({ content }: { content: ReadableContent | null }) {
-  if (!content) return <p className="muted pad">Select a row in the wire log, or a surface entry, to read it here.</p>;
+  if (!content) return <p className="muted pad">Select a row in the wire log, a surface entry, or a call, to read it here.</p>;
   if (content.kind === 'item') return <ItemReadable selected={content.item} />;
+  if (content.kind === 'call') return <ResultReadable view={content.view} />;
   return <UnitReadable unit={content.unit} />;
 }
 

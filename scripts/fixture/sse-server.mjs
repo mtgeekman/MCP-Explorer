@@ -14,10 +14,12 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { handleModern } from './modern-handler.mjs';
 import { handleLegacy, DIE, SILENT } from './legacy-handler.mjs';
+import { answerer } from './call-handler.mjs';
+import { serverMeta } from './modern-handler.mjs';
 
 // LEGACY: serve the legacy-era handler. HTTP+SSE is itself the transport of
 // the legacy revisions, so this is the pairing real servers deployed.
-const handle = process.env.LEGACY ? handleLegacy : handleModern;
+const handle = answerer(process.env.LEGACY ? handleLegacy : handleModern, () => (process.env.LEGACY ? {} : { resultType: 'complete', ...serverMeta() }));
 
 const streams = new Map();
 
@@ -46,7 +48,7 @@ const server = createServer((req, res) => {
     let body = '';
     req.setEncoding('utf8');
     req.on('data', (c) => { body += c; });
-    req.on('end', () => {
+    req.on('end', async () => {
       if (process.env.FRAME_LOG) appendFileSync(process.env.FRAME_LOG, `IN  ${body}\n`);
       let msg;
       try {
@@ -58,8 +60,12 @@ const server = createServer((req, res) => {
       // The POST is only an acknowledgement; the answer travels on the stream.
       res.writeHead(202);
       res.end();
+      const write = (m) => stream.write(`event: message
+data: ${JSON.stringify(m)}
+
+`);
       for (const frame of Array.isArray(msg) ? msg : [msg]) {
-        const response = handle(frame);
+        const response = await handle(frame, write);
         if (response === DIE) return stream.destroy();
         if (response === SILENT || response === undefined) continue;
         stream.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);

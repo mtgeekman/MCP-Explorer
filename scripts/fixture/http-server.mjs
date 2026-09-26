@@ -4,6 +4,8 @@
 // it without guessing a port.
 //
 // Modes, for the wire log's byte-exact tests (D34, D35):
+//   SSE_CUT      answer a tools/call with an event stream, then drop the
+//                connection halfway through the event, as a crashing server does
 //   SSE_REPLIES  answer each POST with an event stream instead of a JSON body:
 //                a comment, then the response as one event with CRLF line
 //                endings, written a few bytes at a time.
@@ -17,8 +19,12 @@ import { createServer } from 'node:http';
 import { appendFileSync } from 'node:fs';
 import { handleModern } from './modern-handler.mjs';
 import { handleLegacy, DIE, SILENT } from './legacy-handler.mjs';
+import { answerer } from './call-handler.mjs';
+import { serverMeta } from './modern-handler.mjs';
 
-const handle = process.env.LEGACY ? handleLegacy : handleModern;
+// CALL_TOOLS calls are answered here too; a progress notification is dropped,
+// since a JSON body carries one message. Progress is exercised over stdio.
+const handle = answerer(process.env.LEGACY ? handleLegacy : handleModern, () => (process.env.LEGACY ? {} : { resultType: 'complete', ...serverMeta() }));
 
 const endpoint = '/mcp';
 
@@ -39,7 +45,7 @@ const server = createServer((req, res) => {
   let body = '';
   req.setEncoding('utf8');
   req.on('data', (c) => { body += c; });
-  req.on('end', () => {
+  req.on('end', async () => {
     if (process.env.FRAME_LOG) appendFileSync(process.env.FRAME_LOG, `IN  ${body}\n`);
     if (process.env.HTML_REPLY) {
       res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
@@ -54,7 +60,7 @@ const server = createServer((req, res) => {
     }
 
     const frames = Array.isArray(msg) ? msg : [msg];
-    const results = frames.map(handle);
+    const results = await Promise.all(frames.map((f) => handle(f, () => {})));
     if (results.includes(DIE)) return req.socket.destroy();
     if (results.includes(SILENT)) return;
     const responses = results.filter((r) => r !== undefined);
@@ -63,6 +69,11 @@ const server = createServer((req, res) => {
     if (responses.length === 0) {
       res.writeHead(202);
       return res.end();
+    }
+    if (process.env.SSE_CUT && frames.some((f) => f.method === 'tools/call')) {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      res.write('event: message\ndata: {"jsonrpc":"2.0"');
+      return setTimeout(() => req.socket.destroy(), 50);
     }
     if (process.env.SSE_REPLIES) {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });

@@ -104,8 +104,9 @@ export function readableResult(kind: 'tool' | 'prompt' | 'resource', result: unk
 export type CallStatusLabel = { text: string; tone: 'ok' | 'bad' | 'neutral' | 'busy' };
 
 /** A call's state in words. `live` wins: storage says in_progress for both running and waiting. */
-export function statusLabel(status: string, live?: { status: 'running' | 'awaiting-input' }): CallStatusLabel {
+export function statusLabel(status: string, live?: { status: 'running' | 'awaiting-input'; paused?: unknown }): CallStatusLabel {
   if (live?.status === 'running') return { text: 'Running', tone: 'busy' };
+  if (live?.status === 'awaiting-input' && live.paused) return { text: 'Paused at the round limit', tone: 'busy' };
   if (live?.status === 'awaiting-input') return { text: 'Waiting for input', tone: 'busy' };
   switch (status) {
     case 'completed': return { text: 'Completed', tone: 'ok' };
@@ -123,4 +124,16 @@ export function statusLabel(status: string, live?: { status: 'running' | 'awaiti
 export function progressText(p: { progress: number; total?: number; message?: string }): string {
   const count = p.total !== undefined && p.total > 0 ? `${p.progress} of ${p.total} (${Math.min(100, Math.round((p.progress / p.total) * 100))}%)` : String(p.progress);
   return p.message ? `${count}: ${p.message}` : count;
+}
+
+/** How a server's request to the client stands, in words (phase 08). */
+export function serverRequestStatus(status: string): CallStatusLabel {
+  switch (status) {
+    case 'pending': return { text: 'Waiting for your answer', tone: 'busy' };
+    case 'answered': return { text: 'Answered', tone: 'ok' };
+    case 'refused': return { text: 'Refused', tone: 'neutral' };
+    case 'cancelled': return { text: 'Cancelled by the server', tone: 'neutral' };
+    case 'interrupted': return { text: 'Interrupted: the session ended first', tone: 'bad' };
+    default: return { text: status, tone: 'neutral' };
+  }
 }

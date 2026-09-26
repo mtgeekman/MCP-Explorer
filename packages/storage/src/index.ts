@@ -65,6 +65,7 @@ export {
 export {
   recordCapture,
   loadSnapshot,
+  loadServerSnapshot,
   surfaceHistory,
   listObservations,
   diffSnapshots,

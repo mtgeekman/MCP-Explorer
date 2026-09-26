@@ -134,6 +134,13 @@ export function loadSnapshot(ws: Workspace, snapshotId: number): NormalizedSurfa
   return surface;
 }
 
+/** A snapshot, refused unless it is the given server's: the version views ask by server. */
+export function loadServerSnapshot(ws: Workspace, serverId: string, snapshotId: number): NormalizedSurface {
+  const owner = ws.db.prepare('SELECT server_id FROM surface_snapshot WHERE id = ?').get(snapshotId) as { server_id: string } | undefined;
+  if (owner?.server_id !== serverId) throw new SnapshotNotFoundError(`no snapshot ${snapshotId} for this server`);
+  return loadSnapshot(ws, snapshotId);
+}
+
 /** One entry per distinct surface, oldest first. */
 export function surfaceHistory(ws: Workspace, serverId: string): SnapshotSummary[] {
   const rows = ws.db.prepare(`

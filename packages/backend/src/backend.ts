@@ -202,7 +202,7 @@ export class Backend {
     this.calls = new CallPipeline(open.ws, {
       session: (id) => conns.session(id),
       partialCapture: (id) => conns.partialCapture(id),
-    }, { changed: (serverId, callId) => this.emit('call.changed', { serverId, callId }), purged: (result) => void this.purged(result) });
+    }, { changed: (serverId, callId, reason) => this.emit('call.changed', { serverId, callId, reason }), purged: (result) => void this.purged(result) });
   }
 
   private async closeConnections(): Promise<void> {

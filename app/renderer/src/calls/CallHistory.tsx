@@ -24,7 +24,9 @@ export function CallHistory({ client, serverId, onRead }: { client: BackendClien
   useEffect(() => {
     load();
     return client.on((name, data) => {
-      if ((name === 'call.changed' && (data as { serverId: string }).serverId === serverId) || name === 'log.purged') load();
+      // Progress leaves every row as it was; the transcript follows it (R07-5).
+      const change = data as { serverId?: string; reason?: string };
+      if ((name === 'call.changed' && change.serverId === serverId && change.reason !== 'progress') || name === 'log.purged') load();
     });
   }, [client, serverId, load]);
 

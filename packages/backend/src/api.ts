@@ -3,7 +3,7 @@
 // message (P1), and these are the app's own, not protocol traffic.
 import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface, Verdict, CallProgress } from '../../protocol/dist/index.js';
 import type { CallRecord, CallSummary, PurgeResult, RoundRecord, ServerSummary, Transport, WorkspaceSettings } from '../../storage/dist/index.js';
-import type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply } from './calls.js';
+import type { CallChange, CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply } from './calls.js';
 
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
 export type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply, CallRecord, CallSummary, RoundRecord, Verdict, CallProgress };
@@ -206,7 +206,7 @@ export interface Events {
   /** A capture started or finished, or the server said a list changed: read surface.get again. */
   'surface.changed': { serverId: string };
   /** A call started, reported progress, or ended: read calls.get again. */
-  'call.changed': { serverId: string; callId: number };
+  'call.changed': { serverId: string; callId: number; reason: CallChange };
   /** Retention deleted history: an open log or call list reloads (R05-9). */
   'log.purged': Record<string, never>;
   notice: WorkspaceNotice;

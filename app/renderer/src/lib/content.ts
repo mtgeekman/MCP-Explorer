@@ -104,8 +104,9 @@ export function readableResult(kind: 'tool' | 'prompt' | 'resource', result: unk
 export type CallStatusLabel = { text: string; tone: 'ok' | 'bad' | 'neutral' | 'busy' };
 
 /** A call's state in words. `live` wins: storage says in_progress for both running and waiting. */
-export function statusLabel(status: string, live?: { status: 'running' | 'awaiting-input'; paused?: unknown }): CallStatusLabel {
+export function statusLabel(status: string, live?: { status: 'running' | 'awaiting-input' | 'task'; paused?: unknown; task?: { status: string } }): CallStatusLabel {
   if (live?.status === 'running') return { text: 'Running', tone: 'busy' };
+  if (live?.status === 'task') return { text: `Task ${live.task?.status ?? 'working'}: nothing is checked until you ask`, tone: 'busy' };
   if (live?.status === 'awaiting-input' && live.paused) return { text: 'Paused at the round limit', tone: 'busy' };
   if (live?.status === 'awaiting-input') return { text: 'Waiting for input', tone: 'busy' };
   switch (status) {

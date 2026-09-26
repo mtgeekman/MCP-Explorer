@@ -5,9 +5,14 @@
 // for the person's answers, and only their "Send answers and retry" sends the
 // next round (phase 08 decision 6); after the workspace's soft cap of rounds
 // it pauses and asks whether to go on (D21, decision 8).
+//
+// Phase 10 decision 2: a call answered with a task handle stays open as a
+// task. Every request about it (get, result, update, cancel) is a further
+// round, sent only on the user's word; nothing polls, and pollInterval is
+// shown, never acted on.
 import {
   CALL_METHOD, callParams, validateAgainst,
-  type CallKind, type CallOutcome, type CallProgress, type Connection, type NormalizedSurface, type Verdict,
+  type CallKind, type CallOutcome, type CallProgress, type Connection, type NormalizedSurface, type TaskMethod, type Verdict,
 } from '../../protocol/dist/index.js';
 import {
   latestCapture, listCalls, listServerRequests, readCall, readSettings,
@@ -23,6 +28,8 @@ export interface CallStart {
   args?: Record<string, unknown>;
   /** The user has seen the confirm for this call and said go. */
   confirmed?: boolean;
+  /** Legacy (2025-11-25): run the tool call as a task (params.task). */
+  asTask?: { ttl?: number };
 }
 
 /** What the confirm shows (board 6.2B): the params call() will send, the hints, and why it asks. */
@@ -40,13 +47,31 @@ export type StartReply = { started: true; callId: number } | { started: false; c
 
 /** Where a call stands in this session, beyond what storage holds. */
 export interface LiveCall {
-  status: 'running' | 'awaiting-input';
+  /** `task`: the server answered with a task handle, and the call waits for the user to ask about it. */
+  status: 'running' | 'awaiting-input' | 'task';
   progress?: CallProgress;
   /** While awaiting input: what the server asked for, held here even when storage withholds it (D30). */
   input?: AwaitedInput;
   /** The soft cap stopped the call here (D21, board 6.4): Keep answering or Stop. */
   paused?: { rounds: number; cap: number };
+  /** A task call: the task as last reported, by a round or a notice. */
+  task?: LiveTask;
 }
+
+/** A task as the server last described it. Nothing here is acted on by the app. */
+export interface LiveTask {
+  taskId: string;
+  status: string;
+  statusMessage?: string;
+  /** The server's suggested polling interval, shown and never followed (P2). */
+  pollInterval?: number;
+  lastUpdatedAt?: string;
+  /** Which task surface it came from: 2025-11-25 core, or the modern extension. */
+  era: 'legacy' | 'modern';
+}
+
+/** A request the user makes about a task call; Cancel and answering go through calls.cancel and calls.answer. */
+export type TaskOp = 'get' | 'result';
 
 /** The last round's InputRequiredResult, as the person answers it. */
 export interface AwaitedInput {
@@ -119,6 +144,8 @@ interface Running {
   awaited?: { round: number; inputRequests?: Record<string, unknown>; requestState?: string };
   /** The round at which the call started, or was last continued past the cap. */
   capBase: number;
+  /** Modern: the waiting input is the task's, answered with tasks/update, not a retry. */
+  taskInput?: boolean;
 }
 
 /** A person's answers could not be sent as given. */
@@ -159,7 +186,7 @@ export class CallPipeline {
         started: false,
         confirm: {
           method: CALL_METHOD[req.kind],
-          params: callParams(req),
+          params: callParams({ ...req, ...(req.asTask ? { task: req.asTask } : {}) }),
           ...(tool?.annotations === undefined ? {} : { annotations: tool.annotations }),
           why: policy.why,
           ...(tool ? { argumentsCheck: await validateAgainst(tool.inputSchema, req.args ?? {}) } : {}),
@@ -173,7 +200,7 @@ export class CallPipeline {
       kind: req.kind, target: req.target, ...(req.args === undefined ? {} : { args: req.args }), capBase: 0,
     };
     this.running.set(callId, run);
-    this.send(callId, run, s.recorder.beginRound(callId, run.args));
+    this.send(callId, run, s.recorder.beginRound(callId, run.args), undefined, req.kind === 'tool' ? req.asTask : undefined);
     this.events.changed?.(req.serverId, callId, 'started');
     return { started: true, callId };
   }
@@ -183,9 +210,10 @@ export class CallPipeline {
    * the server's requestState exactly as it came (D16). The retry repeats the
    * call's own arguments; the SDK gives it a new id.
    */
-  private send(callId: number, run: Running, seq: number, retry?: { inputResponses?: Record<string, unknown>; requestState?: string }): void {
+  private send(callId: number, run: Running, seq: number, retry?: { inputResponses?: Record<string, unknown>; requestState?: string }, task?: { ttl?: number }): void {
     const outcome = run.conn.call({
       kind: run.kind, target: run.target, args: run.args, signal: run.abort.signal,
+      ...(task ? { task } : {}),
       ...(retry?.inputResponses === undefined ? {} : { inputResponses: retry.inputResponses }),
       ...(retry?.requestState === undefined ? {} : { requestState: retry.requestState }),
       onProgress: (progress) => { run.live.progress = progress; this.events.changed?.(run.serverId, callId, 'progress'); },
@@ -206,6 +234,19 @@ export class CallPipeline {
     if (run.live.input?.malformed) throw new AnswerError(`call ${callId} cannot be answered: ${run.live.input.malformed}`);
     if (this.sessions.session(run.serverId)?.conn !== run.conn) throw new AnswerError(`the session call ${callId} ran on has ended`);
     const asked = run.awaited.inputRequests;
+    if (run.taskInput && run.live.task) {
+      // Modern task input: the answers go to tasks/update, keyed as asked.
+      const given = inputResponses ?? {};
+      const missing = Object.keys(asked ?? {}).filter((k) => !Object.hasOwn(given, k));
+      const extra = Object.keys(given).filter((k) => !Object.hasOwn(asked ?? {}, k));
+      if (missing.length) throw new AnswerError(`no answer for ${missing.join(', ')}`);
+      if (extra.length) throw new AnswerError(`the server did not ask for ${extra.join(', ')}`);
+      run.recorder.answerRound(callId, run.awaited.round, given);
+      run.awaited = undefined;
+      run.taskInput = undefined;
+      this.taskRound(callId, run, 'tasks/update', { inputResponses: given });
+      return;
+    }
     if (asked === undefined) {
       if (inputResponses !== undefined && Object.keys(inputResponses).length > 0) throw new AnswerError('the server asked for no input; the retry carries its requestState alone');
     } else {
@@ -243,6 +284,12 @@ export class CallPipeline {
     this.events.changed?.(run.serverId, callId, 'waiting');
   }
 
+  /** The open task call on this connection whose task has this id. */
+  taskCall(connectionId: number, taskId: string): number | undefined {
+    for (const [id, r] of this.running) if (r.recorder.connectionId === connectionId && r.live.task?.taskId === taskId) return id;
+    return undefined;
+  }
+
   /** Calls running on this connection and not waiting for input: a server's request may belong to one of them. */
   runningOn(connectionId: number): number[] {
     return [...this.running].filter(([, r]) => r.recorder.connectionId === connectionId && r.live.status === 'running').map(([id]) => id);
@@ -251,13 +298,46 @@ export class CallPipeline {
   /** The user's Cancel: the era's cancellation goes out, and the server may still finish (board 6.5). */
   cancel(callId: number): void {
     const run = this.running.get(callId);
+    // A task call's Cancel is tasks/cancel: the call itself already answered.
+    if (run?.live.task && run.live.status !== 'running') {
+      this.taskRound(callId, run, 'tasks/cancel', {});
+      return;
+    }
     if (!run || run.live.status !== 'running') throw new Error(`call ${callId} is not running`);
     run.abort.abort('cancelled by the user');
+  }
+
+  /**
+   * The user asks about a task call: its status (tasks/get), or on legacy its
+   * result (tasks/result, which the server may hold until the task is done).
+   * One request, one round; nothing is repeated.
+   */
+  task(callId: number, op: TaskOp): void {
+    const run = this.running.get(callId);
+    if (!run?.live.task || run.live.status === 'running') throw new Error(`call ${callId} is not a task waiting for the user`);
+    if (op === 'result' && run.live.task.era !== 'legacy') throw new Error('tasks/result does not exist on the modern era: tasks/get carries the result');
+    this.taskRound(callId, run, op === 'get' ? 'tasks/get' : 'tasks/result', {});
+  }
+
+  /** A notice about a task (notifications/tasks/status, notifications/tasks): shown, never acted on. */
+  taskNotice(serverId: string, params: unknown): void {
+    const p = (params ?? {}) as Record<string, unknown>;
+    if (typeof p.taskId !== 'string') return;
+    for (const [callId, run] of this.running) {
+      if (run.serverId !== serverId || run.live.task?.taskId !== p.taskId) continue;
+      run.live.task = { ...run.live.task, ...taskFields(p) };
+      this.events.changed?.(serverId, callId, 'progress');
+    }
   }
 
   /** The user stops a call waiting for input: nothing is sent. At the soft cap it ends capped, elsewhere abandoned (decision 8). */
   stop(callId: number): void {
     const run = this.running.get(callId);
+    // A task call can be let go: the task stays on the server, and nothing is sent.
+    if (run && run.live.status === 'task') {
+      this.end(callId, run, 'abandoned');
+      return;
+    }
     if (!run || run.live.status !== 'awaiting-input') throw new Error(`call ${callId} is not waiting for input`);
     this.end(callId, run, run.live.paused ? 'capped' : 'abandoned');
   }
@@ -268,7 +348,7 @@ export class CallPipeline {
    */
   sessionEnded(serverId: string): void {
     for (const [callId, run] of this.running) {
-      if (run.serverId === serverId && run.live.status === 'awaiting-input') this.end(callId, run, 'interrupted');
+      if (run.serverId === serverId && run.live.status !== 'running') this.end(callId, run, 'interrupted');
     }
   }
 
@@ -310,9 +390,10 @@ export class CallPipeline {
       if (o.kind === 'result') {
         const r = o.result;
         const inputRequired = r.resultType === 'input_required';
+        const handle = taskHandle(r, run.conn.era);
         run.recorder.finishRound(callId, seq, {
           result: r,
-          ...(typeof r.resultType === 'string' ? { resultType: r.resultType } : {}),
+          ...(typeof r.resultType === 'string' ? { resultType: r.resultType } : handle ? { resultType: 'task' } : {}),
           ...(inputRequired && r.inputRequests !== undefined ? { inputRequests: r.inputRequests } : {}),
           ...(inputRequired && typeof r.requestState === 'string' ? { requestState: r.requestState } : {}),
         });
@@ -320,6 +401,12 @@ export class CallPipeline {
         // opt-out (D30), and the SDK's objection, which has no column (R07-3).
         const withheld = !readSettings(this.ws).persistResults;
         if (withheld || o.sdkRejected) this.keep(callId, { round: seq, ...(withheld ? { result: r } : {}), ...(o.sdkRejected ? { sdkRejected: o.sdkRejected } : {}) });
+        if (handle && this.sessions.session(run.serverId)?.conn === run.conn) {
+          // The call answered with a task: it waits for the user to ask about it.
+          run.live = { status: 'task', task: handle };
+          this.events.changed?.(run.serverId, callId, 'waiting');
+          return;
+        }
         if (inputRequired && this.sessions.session(run.serverId)?.conn === run.conn) {
           // The round is recorded and the call waits for the person (decision 6).
           this.await(callId, seq, run, r);
@@ -342,6 +429,72 @@ export class CallPipeline {
       // The workspace closed under the call; the next open marks it interrupted.
       this.running.delete(callId);
       process.emitWarning(`call ${callId} could not be recorded as finished: ${e instanceof Error ? e.message : String(e)}`, 'MCPExplorerCallWarning');
+    }
+  }
+
+/** Sends one request about a task as a new round of its call. */
+  private taskRound(callId: number, run: Running, method: TaskMethod, extra: Record<string, unknown>): void {
+    const task = run.live.task!;
+    if (this.sessions.session(run.serverId)?.conn !== run.conn) throw new AnswerError(`the session call ${callId} ran on has ended`);
+    const params = { taskId: task.taskId, ...extra };
+    const seq = run.recorder.beginRound(callId, params, { method, target: task.taskId });
+    run.live = { status: 'running', task };
+    this.events.changed?.(run.serverId, callId, 'started');
+    void run.conn.task({ method, params }).then((o) => this.settleTask(callId, seq, run, method, o));
+  }
+
+  private settleTask(callId: number, seq: number, run: Running, method: TaskMethod, o: CallOutcome): void {
+    const task = run.live.task!;
+    const waitAgain = (next: LiveTask) => {
+      run.live = { status: 'task', task: next };
+      this.events.changed?.(run.serverId, callId, 'waiting');
+    };
+    try {
+      if (o.kind === 'result') {
+        const r = o.result;
+        const inputRequired = method === 'tasks/get' && r.status === 'input_required';
+        run.recorder.finishRound(callId, seq, {
+          result: r,
+          ...(typeof r.resultType === 'string' ? { resultType: r.resultType } : {}),
+          ...(inputRequired && r.inputRequests !== undefined ? { inputRequests: r.inputRequests } : {}),
+        });
+        const withheld = !readSettings(this.ws).persistResults;
+        if (withheld) this.keep(callId, { round: seq, result: r });
+        // tasks/result answers with the call's own result: the call is done.
+        if (method === 'tasks/result') return this.end(callId, run, 'completed');
+        // tasks/update and a modern tasks/cancel answer empty: the task is as it was until asked again.
+        if (method === 'tasks/update' || (method === 'tasks/cancel' && task.era === 'modern')) return waitAgain({ ...task, ...(method === 'tasks/cancel' ? { statusMessage: 'Cancel sent; ask for its status to see whether it stopped.' } : {}) });
+        const next = { ...task, ...taskFields(r) };
+        if (next.status === 'failed') return this.end(callId, run, 'error');
+        if (next.status === 'cancelled') return this.end(callId, run, 'cancelled');
+        // A modern task that completed carries its result in this round.
+        if (next.status === 'completed' && task.era === 'modern') return this.end(callId, run, r.error !== undefined ? 'error' : 'completed');
+        if (inputRequired) {
+          const requests = r.inputRequests;
+          const input: AwaitedInput = { round: seq, inputRequests: null, hasRequestState: false };
+          if (requests && typeof requests === 'object' && !Array.isArray(requests)) input.inputRequests = requests as Record<string, unknown>;
+          else input.malformed = 'The task is waiting for input and names no inputRequests.';
+          run.awaited = { round: seq, ...(input.inputRequests ? { inputRequests: input.inputRequests } : {}) };
+          run.taskInput = true;
+          run.live = { status: 'awaiting-input', input, task: next };
+          this.events.changed?.(run.serverId, callId, 'waiting');
+          return;
+        }
+        return waitAgain(next);
+      }
+      if (o.kind === 'error') {
+        run.recorder.finishRound(callId, seq, { error: o.error });
+        // The call's own result was an error; any other refusal leaves the task as it was.
+        if (method === 'tasks/result') return this.end(callId, run, 'error');
+        return waitAgain(task);
+      }
+      const ended = this.sessions.session(run.serverId)?.conn !== run.conn;
+      run.recorder.finishRound(callId, seq, { error: { message: o.kind === 'failed' ? o.message : 'cancelled' } });
+      if (ended) return this.end(callId, run, 'interrupted');
+      return waitAgain(task);
+    } catch (e) {
+      this.running.delete(callId);
+      process.emitWarning(`call ${callId} could not record its task round: ${e instanceof Error ? e.message : String(e)}`, 'MCPExplorerCallWarning');
     }
   }
 
@@ -383,6 +536,29 @@ export class CallPipeline {
     this.session.set(callId, entry);
     while (this.session.size > SESSION_RESULTS) this.session.delete(this.session.keys().next().value!);
   }
+}
+
+/**
+ * A task handle in a call's result: modern resultType "task" with the task's
+ * fields beside it, or legacy CreateTaskResult's `task`. Undefined when the
+ * result is not one.
+ */
+export function taskHandle(r: Record<string, unknown>, era: 'legacy' | 'modern'): LiveTask | undefined {
+  if (era === 'modern' && r.resultType === 'task' && typeof r.taskId === 'string') return { era, taskId: r.taskId, status: 'working', ...taskFields(r) };
+  const t = r.task as Record<string, unknown> | undefined;
+  if (era === 'legacy' && t && typeof t === 'object' && typeof t.taskId === 'string') return { era, taskId: t.taskId, status: 'working', ...taskFields(t) };
+  return undefined;
+}
+
+/** The fields of a Task the app shows, from either era's shape. */
+function taskFields(t: Record<string, unknown>): Partial<LiveTask> {
+  const interval = t.pollIntervalMs ?? t.pollInterval;
+  return {
+    ...(typeof t.status === 'string' ? { status: t.status } : {}),
+    ...(typeof t.statusMessage === 'string' ? { statusMessage: t.statusMessage } : {}),
+    ...(typeof interval === 'number' ? { pollInterval: interval } : {}),
+    ...(typeof t.lastUpdatedAt === 'string' ? { lastUpdatedAt: t.lastUpdatedAt } : {}),
+  };
 }
 
 /** The request of a call's first round exactly as it was sent, and a curl command when it went over HTTP (decision 8). */

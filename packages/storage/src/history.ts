@@ -14,8 +14,12 @@ import type { Workspace } from './workspace-db.js';
  * it, first come first served. The response is then bound by JSON-RPC id.
  */
 
-/** The three methods whose responses are results, and the only three that can return InputRequiredResult (D16, D30). */
-export const RESULT_METHODS: readonly string[] = ['tools/call', 'prompts/get', 'resources/read'];
+/**
+ * The methods whose responses are results (D30): the three calls, the only
+ * three that can return InputRequiredResult (D16), and the two task requests
+ * that carry a call's result, legacy tasks/result and modern tasks/get.
+ */
+export const RESULT_METHODS: readonly string[] = ['tools/call', 'prompts/get', 'resources/read', 'tasks/result', 'tasks/get'];
 
 export type CallKind = 'tool' | 'prompt' | 'resource';
 export type CallStatus = 'completed' | 'error' | 'abandoned' | 'capped' | 'cancelled' | 'interrupted';
@@ -64,10 +68,12 @@ function messagesIn(u: RawUnit): JsonRpc[] {
   const members = Array.isArray(parsed) ? parsed : [parsed];
   return members.filter((m): m is JsonRpc => typeof m === 'object' && m !== null && !Array.isArray(m) && (m as { jsonrpc?: unknown }).jsonrpc === '2.0');
 }
-interface JsonRpc { id?: string | number | null; method?: string; params?: { name?: unknown; uri?: unknown } }
+interface JsonRpc { id?: string | number | null; method?: string; params?: { name?: unknown; uri?: unknown; taskId?: unknown } }
 
+/** What a request is about: a resource's uri, a task's id, or a tool's or prompt's name. */
 const targetOf = (method: string, params: JsonRpc['params']): string | undefined =>
   method === 'resources/read' ? (typeof params?.uri === 'string' ? params.uri : undefined)
+    : method.startsWith('tasks/') ? (typeof params?.taskId === 'string' ? params.taskId : undefined)
     : typeof params?.name === 'string' ? params.name : undefined;
 
 /** A JSON-RPC id as text that keeps its type: 7 is "7", "7" is "\"7\"". */
@@ -191,17 +197,18 @@ export class HistoryRecorder {
   /**
    * Starts the next round of a call and expects its request on the wire. The
    * first round carries the user's arguments; a retry repeats them with the
-   * human's answers attached (D16).
+   * human's answers attached (D16). A task's round (phase 10) names its own
+   * method and the task it is about, and records its params as its arguments.
    */
-  beginRound(callId: number, args: unknown): number {
+  beginRound(callId: number, args: unknown, own?: { method: string; target: string }): number {
     const call = this.requireOpen(callId);
     const seq = (this.ws.db.prepare('SELECT coalesce(max(seq), 0) + 1 AS next FROM call_round WHERE call_id = ?').get(callId) as { next: number }).next;
     const unfinished = this.ws.db.prepare('SELECT seq FROM call_round WHERE call_id = ? AND finished_at IS NULL').get(callId);
     if (unfinished) throw new HistoryStateError(`call ${callId} already has an unfinished round`);
-    this.ws.db.prepare('INSERT INTO call_round (call_id, seq, arguments_json, started_at) VALUES (?, ?, ?, ?)')
-      .run(callId, seq, args === undefined ? null : JSON.stringify(args), this.now());
-    const method = METHOD_FOR_KIND[call.kind];
-    const key = `${method}\u0000${call.target}`;
+    this.ws.db.prepare('INSERT INTO call_round (call_id, seq, arguments_json, started_at, method) VALUES (?, ?, ?, ?, ?)')
+      .run(callId, seq, args === undefined ? null : JSON.stringify(args), this.now(), own?.method ?? null);
+    const method = own?.method ?? METHOD_FOR_KIND[call.kind];
+    const key = `${method}\u0000${own?.target ?? call.target}`;
     this.pending.set(key, [...(this.pending.get(key) ?? []), { callId, seq, method }]);
     return seq;
   }

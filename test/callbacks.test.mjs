@@ -6,7 +6,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { connectStdio, CLIENT_CAPABILITIES } from '../packages/protocol/dist/index.js';
+import { connectStdio, CLIENT_CAPABILITIES, TASKS_EXTENSION } from '../packages/protocol/dist/index.js';
 import { BOTH_STATE } from '../scripts/fixture/call-handler.mjs';
 import { fixtures } from './support/fixture-servers.mjs';
 
@@ -158,7 +158,8 @@ test('both eras declare sampling with tools, elicitation in both modes, and root
   const modern = await stdio(MODERN);
   await modern.conn.call({ kind: 'tool', target: 'add', args: { a: 1, b: 1 } });
   const [call] = out(modern.frames, (m) => m.method === 'tools/call');
-  assert.deepEqual(call.frame.params._meta['io.modelcontextprotocol/clientCapabilities'], CLIENT_CAPABILITIES);
+  // Phase 10 decision 2: the modern era also declares the tasks extension.
+  assert.deepEqual(call.frame.params._meta['io.modelcontextprotocol/clientCapabilities'], { ...CLIENT_CAPABILITIES, extensions: { [TASKS_EXTENSION]: {} } });
 });
 
 test('modern: sampling and elicitation in one result come back as a set, and nothing retries them', { timeout: 15000 }, async () => {

@@ -123,6 +123,8 @@ export class Backend {
       'calls.stop': ({ callId }) => { this.pipeline().stop(callId); return null; },
       'calls.answer': ({ callId, inputResponses }) => { this.pipeline().answer(callId, inputResponses); return null; },
       'calls.continue': ({ callId }) => { this.pipeline().continue(callId); return null; },
+      'calls.task': ({ callId, op }) => { this.pipeline().task(callId, op); return null; },
+      'session.tasks': ({ serverId, cursor }) => this.sessions().tasks(serverId, cursor),
       'requests.list': ({ serverId, limit }) => { this.server(serverId); return this.desk().list(serverId, limit); },
       'requests.answer': ({ requestId, answer }) => { this.desk().answer(requestId, answer); return null; },
       'calls.list': ({ serverId, before, limit }) => { this.server(serverId); return this.pipeline().list(serverId, { before, limit }); },
@@ -234,7 +236,10 @@ export class Backend {
         unit: (_serverId, _connectionId, unitId) => this.emit('log.unit', this.liveUnit(unitId)),
         processes: (roots) => this.opts.onProcesses?.(roots),
         surface: (serverId) => this.emit('surface.changed', { serverId }),
-        notification: (serverId, n) => this.controls?.notification(serverId, n),
+        notification: (serverId, n) => {
+          this.controls?.notification(serverId, n);
+          if (n.method === 'notifications/tasks/status' || n.method === 'notifications/tasks') this.calls?.taskNotice(serverId, n.params);
+        },
       },
       onServerRequest: (serverId, recorder, request) => {
         if (!this.requests) return new Promise(() => undefined);
@@ -254,7 +259,7 @@ export class Backend {
         // The linked call's transcript lists its requests.
         if (callId !== null) this.emit('call.changed', { serverId, callId, reason: 'request' });
       },
-    });
+    }, (connectionId, taskId) => calls.taskCall(connectionId, taskId));
   }
 
   private async closeConnections(): Promise<void> {

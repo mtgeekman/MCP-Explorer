@@ -9,3 +9,5 @@ export * from './context.js';
 export * from './validate.js';
 export * from './textdiff.js';
 export * from './version.js';
+export * from './mcp-headers.js';
+export * from './errors.js';

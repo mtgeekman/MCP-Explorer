@@ -4,6 +4,7 @@ import { sql as wireUnits } from './0003-wire-units.js';
 import { sql as secretNames } from './0004-secret-names.js';
 import { sql as callSettings } from './0005-call-settings.js';
 import { sql as callEndings } from './0006-call-endings.js';
+import { sql as serverRequests } from './0007-server-requests.js';
 
 export interface Migration {
   /** The `user_version` a database has after this migration. Contiguous from 1. */
@@ -30,6 +31,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 4, name: 'secret-names', sql: secretNames },
   { version: 5, name: 'call-settings', sql: callSettings },
   { version: 6, name: 'call-endings', sql: callEndings, rebuildsParent: true },
+  { version: 7, name: 'server-requests', sql: serverRequests },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

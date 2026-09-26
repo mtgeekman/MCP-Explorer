@@ -47,6 +47,7 @@ export {
   RESULT_METHODS,
   type CallKind,
   type CallStatus,
+  type ServerRequestStatus,
   type RoundOutcome,
   type RawUnit,
 } from './history.js';
@@ -54,6 +55,9 @@ export {
   listCalls,
   readCall,
   repairInterrupted,
+  listServerRequests,
+  readServerRequest,
+  type ServerRequestRecord,
   type CallSummary,
   type CallRecord,
   type RoundRecord,

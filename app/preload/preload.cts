@@ -9,8 +9,8 @@ ipcRenderer.on('backend-port', (event) => {
 
 // The popped-out pane is told its selection as soon as it loads, which can be
 // before the page has mounted a listener. The last one is kept and replayed.
-// A wire log unit, or a surface entry (board 5.1A), which the window fetches itself.
-type Selection = { id: number; reserialized: boolean } | { serverId: string; list: string; key: string } | null;
+// A wire log unit, a surface entry (board 5.1A), or a call's result, which the window fetches itself.
+type Selection = { id: number; reserialized: boolean } | { serverId: string; list: string; key: string } | { callId: number } | null;
 let lastSelection: Selection | undefined;
 const selectionListeners = new Set<(s: Selection) => void>();
 ipcRenderer.on('readable-select', (_e, selection: Selection) => {

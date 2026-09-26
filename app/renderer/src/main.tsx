@@ -9,8 +9,8 @@ import { ReadableWindow } from './log/ReadableWindow';
 import { BackendClient } from './lib/client';
 import type { EntryList } from '../../../packages/backend/dist/index.js';
 
-/** What the popped-out pane is told to show: a wire log unit, or a surface entry. */
-type ReadableSelection = { id: number; reserialized: boolean } | { serverId: string; list: EntryList; key: string } | null;
+/** What the popped-out pane is told to show: a wire log unit, a surface entry, or a call's result. */
+type ReadableSelection = { id: number; reserialized: boolean } | { serverId: string; list: EntryList; key: string } | { callId: number } | null;
 
 /** The shell's preload bridge (app/preload/preload.cts). */
 declare global {

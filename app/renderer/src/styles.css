@@ -244,3 +244,46 @@ table.fields td:first-child { white-space: nowrap; overflow-wrap: normal; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .context-total { margin: 8px 0; }
 .collisions { margin: 0; padding-left: 20px; }
+
+/* Calling (round 6): form and editor side by side, the confirm, the transcript. */
+.tabs.small { margin: 0 0 8px; }
+.call-panel { display: flex; flex-direction: column; gap: 8px; }
+.call-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 900px) { .call-inputs { grid-template-columns: minmax(0, 1fr); } }
+.call-form, .call-editor { min-width: 0; }
+.call-form h4, .call-editor h4 { margin: 0 0 8px; }
+.call-editor textarea { width: 100%; min-height: 220px; resize: vertical; box-sizing: border-box; font-size: 12px; }
+.field-group { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px 0; margin: 0 0 12px; }
+.field-group legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+.field small { font-size: 12px; }
+.field .required { color: var(--bad); }
+.field code { font-size: 12px; overflow-wrap: anywhere; }
+.inline { display: flex; align-items: center; gap: 6px; }
+.ok-line { color: var(--ok); margin: 4px 0; }
+.hints { border-left: 3px solid var(--line); padding: 2px 10px; margin: 0 0 8px; }
+.hints p { margin: 2px 0; font-size: 12px; }
+.modal-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / 0.45); display: flex; align-items: center; justify-content: center; z-index: 20; }
+.modal { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto; }
+.modal h3 { margin: 0 0 8px; }
+.modal pre { max-height: 240px; overflow: auto; }
+.transcript { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+.transcript-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.call-status { font-weight: 500; }
+.call-status.ok { color: var(--ok); }
+.call-status.bad { color: var(--bad); }
+.call-status.busy { color: var(--busy); }
+.call-status.neutral { color: var(--muted); }
+.progress { color: var(--busy); margin: 6px 0; }
+.round h4 { margin: 12px 0 4px; }
+.export-box { border: 1px dashed var(--line); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+.export-box pre { max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.call-history { margin-top: 16px; }
+table.calls { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.calls td { padding: 4px 8px; border-bottom: 1px solid var(--line); cursor: pointer; }
+table.calls tr.on td, table.calls tr:hover td { background: var(--bg); }
+.result-section { margin: 0 0 8px; }
+.part-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.part-media { margin: 8px 0; }
+.part-media img { max-width: 100%; image-rendering: pixelated; border: 1px solid var(--line); min-width: 16px; min-height: 16px; }
+.part-unknown { border-left: 3px solid var(--busy); padding-left: 8px; }
+.input-required { border-left: 3px solid var(--busy); padding-left: 8px; }

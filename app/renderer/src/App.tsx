@@ -2,7 +2,7 @@
 // the left, the selected server in the main area. First run is workspace
 // first (board 2C, spec D3 revised 2026-09-24).
 import { useCallback, useEffect, useState } from 'react';
-import type { LogUnit, OpenedWorkspace, ServerRow, WorkspaceListing, WorkspaceNotice } from '../../../packages/backend/dist/index.js';
+import type { CallView, LogUnit, OpenedWorkspace, ServerRow, WorkspaceListing, WorkspaceNotice } from '../../../packages/backend/dist/index.js';
 import type { BackendClient } from './lib/client';
 import { CreateWorkspace } from './workspace/CreateWorkspace';
 import { WorkspacePicker } from './workspace/WorkspacePicker';
@@ -36,9 +36,19 @@ export function App({ client }: { client: BackendClient }) {
     window.mcpxShell?.selectReadable(u ? { id: u.id, reserialized: Boolean(u.reserialized) } : null);
   }, []);
 
+  // The surface entry chosen is its own state, not whatever the pane shows:
+  // reading a call's result or a log row must not close the entry's call view.
+  const [surfaceItem, setSurfaceItem] = useState<SelectedItem | null>(null);
+
   const selectItem = useCallback((item: SelectedItem | null) => {
+    setSurfaceItem(item);
     setReadable(item ? { kind: 'item', item } : null);
     window.mcpxShell?.selectReadable(item ? { serverId: item.serverId, list: item.list, key: item.key } : null);
+  }, []);
+
+  const readCall = useCallback((view: CallView) => {
+    setReadable({ kind: 'call', view });
+    window.mcpxShell?.selectReadable({ callId: view.call.id });
   }, []);
 
   const refreshWorkspaces = useCallback(async () => {
@@ -74,6 +84,7 @@ export function App({ client }: { client: BackendClient }) {
     else setServers([]);
     setMain({ kind: 'none' });
     selectUnit(null);
+    setSurfaceItem(null);
   }, [workspace, refreshServers, selectUnit]);
 
   const opened = async (w: OpenedWorkspace) => {
@@ -142,8 +153,9 @@ export function App({ client }: { client: BackendClient }) {
               onEdit={() => setMain({ kind: 'edit', id: selected.id })}
               onDeleted={async () => { await refreshServers(); setMain({ kind: 'none' }); }}
               onChanged={refreshServers}
-              selectedItem={readable?.kind === 'item' ? readable.item : null}
+              selectedItem={surfaceItem}
               onSelectItem={selectItem}
+              onReadCall={readCall}
             />
           )}
         </main>

@@ -9,6 +9,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 /** How long the backend gets to close its connections on quit before the trees are killed anyway. */
 const SHUTDOWN_GRACE_MS = 10_000;
 
+// A data directory given explicitly (the smoke tests, a portable run) also
+// holds the renderer's own storage, such as remembered pane sizes, so one
+// run cannot inherit another's. Unset, both stay in the default userData.
+if (process.env.MCPX_DATA_DIR) app.setPath('userData', process.env.MCPX_DATA_DIR);
+
 let backend: UtilityProcess | undefined;
 /** The live stdio servers' root processes, as the backend last reported them. */
 let serverRoots: ServerRoot[] = [];

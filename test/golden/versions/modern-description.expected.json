@@ -1,0 +1,192 @@
+{
+  "structured": {
+    "identical": false,
+    "instructionsChanged": false,
+    "capabilitiesChanged": false,
+    "tools": [
+      {
+        "key": "echo",
+        "kind": "changed",
+        "fields": [
+          {
+            "path": "/description",
+            "kind": "changed",
+            "before": "Echoes its input.",
+            "after": "Echoes its input back, unchanged."
+          }
+        ]
+      }
+    ],
+    "prompts": [],
+    "resources": [],
+    "resourceTemplates": []
+  },
+  "model": {
+    "before": "{\n  \"system\": \"# MCP server instructions\\n\\n## fixture\\n\\nPhase 01 fixture. Modern era.\",\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"description\": \"Echoes its input.\",\n      \"input_schema\": {\n        \"properties\": {\n          \"text\": {\n            \"description\": \"What to echo.\",\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ],\n        \"type\": \"object\"\n      }\n    },\n    {\n      \"name\": \"needs_input\",\n      \"description\": \"Always answers with an InputRequiredResult, to exercise MRTR.\",\n      \"input_schema\": {\n        \"additionalProperties\": false,\n        \"properties\": {},\n        \"type\": \"object\"\n      }\n    }\n  ]\n}",
+    "after": "{\n  \"system\": \"# MCP server instructions\\n\\n## fixture\\n\\nPhase 01 fixture. Modern era.\",\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"description\": \"Echoes its input back, unchanged.\",\n      \"input_schema\": {\n        \"properties\": {\n          \"text\": {\n            \"description\": \"What to echo.\",\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ],\n        \"type\": \"object\"\n      }\n    },\n    {\n      \"name\": \"needs_input\",\n      \"description\": \"Always answers with an InputRequiredResult, to exercise MRTR.\",\n      \"input_schema\": {\n        \"additionalProperties\": false,\n        \"properties\": {},\n        \"type\": \"object\"\n      }\n    }\n  ]\n}",
+    "diff": {
+      "complete": true,
+      "removed": 1,
+      "added": 1,
+      "hunks": [
+        {
+          "beforeStart": 3,
+          "beforeCount": 7,
+          "afterStart": 3,
+          "afterCount": 7,
+          "lines": [
+            {
+              "op": "same",
+              "text": "  \"tools\": [",
+              "before": 3,
+              "after": 3
+            },
+            {
+              "op": "same",
+              "text": "    {",
+              "before": 4,
+              "after": 4
+            },
+            {
+              "op": "same",
+              "text": "      \"name\": \"echo\",",
+              "before": 5,
+              "after": 5
+            },
+            {
+              "op": "removed",
+              "text": "      \"description\": \"Echoes its input.\",",
+              "before": 6,
+              "mark": [
+                38,
+                38
+              ]
+            },
+            {
+              "op": "added",
+              "text": "      \"description\": \"Echoes its input back, unchanged.\",",
+              "after": 6,
+              "mark": [
+                38,
+                54
+              ]
+            },
+            {
+              "op": "same",
+              "text": "      \"input_schema\": {",
+              "before": 7,
+              "after": 7
+            },
+            {
+              "op": "same",
+              "text": "        \"properties\": {",
+              "before": 8,
+              "after": 8
+            },
+            {
+              "op": "same",
+              "text": "          \"text\": {",
+              "before": 9,
+              "after": 9
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "tokens": {
+    "tokenizer": {
+      "id": "o200k_base",
+      "label": "o200k_base tokens (OpenAI GPT-4o and later); Claude and other model families count differently"
+    },
+    "before": 91,
+    "after": 94,
+    "delta": 3,
+    "instructions": {
+      "before": 15,
+      "after": 15
+    },
+    "tools": [
+      {
+        "name": "echo",
+        "kind": "changed",
+        "before": 39,
+        "after": 42,
+        "delta": 3
+      }
+    ]
+  },
+  "raw": {
+    "before": "{\n  \"capabilities\": {\n    \"prompts\": {},\n    \"resources\": {},\n    \"tools\": {}\n  },\n  \"instructions\": \"Phase 01 fixture. Modern era.\",\n  \"prompts\": [\n    {\n      \"arguments\": [\n        {\n          \"name\": \"who\",\n          \"required\": true\n        }\n      ],\n      \"description\": \"A greeting.\",\n      \"name\": \"greet\",\n      \"title\": \"Greet\"\n    }\n  ],\n  \"resourceTemplates\": [\n    {\n      \"mimeType\": \"text/markdown\",\n      \"name\": \"doc\",\n      \"uriTemplate\": \"file:///fixture/{name}.md\"\n    }\n  ],\n  \"resources\": [\n    {\n      \"mimeType\": \"text/markdown\",\n      \"name\": \"readme\",\n      \"title\": \"Readme\",\n      \"uri\": \"file:///fixture/readme.md\"\n    }\n  ],\n  \"revision\": \"2026-07-28\",\n  \"serverName\": \"phase01-modern-fixture\",\n  \"serverVersion\": \"0.0.0\",\n  \"tools\": [\n    {\n      \"annotations\": {\n        \"destructiveHint\": false,\n        \"idempotentHint\": true,\n        \"openWorldHint\": false,\n        \"readOnlyHint\": true\n      },\n      \"description\": \"Echoes its input.\",\n      \"inputSchema\": {\n        \"properties\": {\n          \"text\": {\n            \"description\": \"What to echo.\",\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ],\n        \"type\": \"object\"\n      },\n      \"name\": \"echo\",\n      \"outputSchema\": {\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"type\": \"object\"\n      },\n      \"title\": \"Echo\"\n    },\n    {\n      \"annotations\": {\n        \"readOnlyHint\": false\n      },\n      \"description\": \"Always answers with an InputRequiredResult, to exercise MRTR.\",\n      \"inputSchema\": {\n        \"additionalProperties\": false,\n        \"properties\": {},\n        \"type\": \"object\"\n      },\n      \"name\": \"needs_input\",\n      \"title\": \"Needs input\"\n    }\n  ]\n}",
+    "after": "{\n  \"capabilities\": {\n    \"prompts\": {},\n    \"resources\": {},\n    \"tools\": {}\n  },\n  \"instructions\": \"Phase 01 fixture. Modern era.\",\n  \"prompts\": [\n    {\n      \"arguments\": [\n        {\n          \"name\": \"who\",\n          \"required\": true\n        }\n      ],\n      \"description\": \"A greeting.\",\n      \"name\": \"greet\",\n      \"title\": \"Greet\"\n    }\n  ],\n  \"resourceTemplates\": [\n    {\n      \"mimeType\": \"text/markdown\",\n      \"name\": \"doc\",\n      \"uriTemplate\": \"file:///fixture/{name}.md\"\n    }\n  ],\n  \"resources\": [\n    {\n      \"mimeType\": \"text/markdown\",\n      \"name\": \"readme\",\n      \"title\": \"Readme\",\n      \"uri\": \"file:///fixture/readme.md\"\n    }\n  ],\n  \"revision\": \"2026-07-28\",\n  \"serverName\": \"phase01-modern-fixture\",\n  \"serverVersion\": \"0.0.0\",\n  \"tools\": [\n    {\n      \"annotations\": {\n        \"destructiveHint\": false,\n        \"idempotentHint\": true,\n        \"openWorldHint\": false,\n        \"readOnlyHint\": true\n      },\n      \"description\": \"Echoes its input back, unchanged.\",\n      \"inputSchema\": {\n        \"properties\": {\n          \"text\": {\n            \"description\": \"What to echo.\",\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ],\n        \"type\": \"object\"\n      },\n      \"name\": \"echo\",\n      \"outputSchema\": {\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"type\": \"object\"\n      },\n      \"title\": \"Echo\"\n    },\n    {\n      \"annotations\": {\n        \"readOnlyHint\": false\n      },\n      \"description\": \"Always answers with an InputRequiredResult, to exercise MRTR.\",\n      \"inputSchema\": {\n        \"additionalProperties\": false,\n        \"properties\": {},\n        \"type\": \"object\"\n      },\n      \"name\": \"needs_input\",\n      \"title\": \"Needs input\"\n    }\n  ]\n}",
+    "diff": {
+      "complete": true,
+      "removed": 1,
+      "added": 1,
+      "hunks": [
+        {
+          "beforeStart": 44,
+          "beforeCount": 7,
+          "afterStart": 44,
+          "afterCount": 7,
+          "lines": [
+            {
+              "op": "same",
+              "text": "        \"openWorldHint\": false,",
+              "before": 44,
+              "after": 44
+            },
+            {
+              "op": "same",
+              "text": "        \"readOnlyHint\": true",
+              "before": 45,
+              "after": 45
+            },
+            {
+              "op": "same",
+              "text": "      },",
+              "before": 46,
+              "after": 46
+            },
+            {
+              "op": "removed",
+              "text": "      \"description\": \"Echoes its input.\",",
+              "before": 47,
+              "mark": [
+                38,
+                38
+              ]
+            },
+            {
+              "op": "added",
+              "text": "      \"description\": \"Echoes its input back, unchanged.\",",
+              "after": 47,
+              "mark": [
+                38,
+                54
+              ]
+            },
+            {
+              "op": "same",
+              "text": "      \"inputSchema\": {",
+              "before": 48,
+              "after": 48
+            },
+            {
+              "op": "same",
+              "text": "        \"properties\": {",
+              "before": 49,
+              "after": 49
+            },
+            {
+              "op": "same",
+              "text": "          \"text\": {",
+              "before": 50,
+              "after": 50
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

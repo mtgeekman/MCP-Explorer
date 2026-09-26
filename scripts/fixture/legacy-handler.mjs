@@ -19,6 +19,8 @@
 //                    notifications/tools/list_changed; every later tools/list
 //                    carries a second tool, and echo a second argument. Counted per process, which is per
 //                    session on stdio, the only front that sends it.
+//   ECHO_DESCRIPTION  echo's description (phase 09, version history)
+//   SERVER_VERSION    serverInfo.version (phase 09)
 //
 // Returns a JSON-RPC response, `undefined` when the frame warrants none, or
 // one of the two markers below; each front decides what dying or hanging
@@ -42,7 +44,7 @@ export function handleLegacy(msg) {
     return ok(msg.id, {
       protocolVersion: '2025-06-18',
       capabilities: { tools: { listChanged: Boolean(process.env.LIST_CHANGED) }, ...(CALL_TOOLS_ON() ? { prompts: {}, resources: {} } : {}) },
-      serverInfo: { name: 'phase00-legacy-fixture', version: '0.0.0' },
+      serverInfo: { name: 'phase00-legacy-fixture', version: process.env.SERVER_VERSION ?? '0.0.0' },
       instructions: 'Phase 00 fixture. Legacy era.',
     });
   }
@@ -62,7 +64,7 @@ export function handleLegacy(msg) {
     return ok(msg.id, {
       tools: [{
         name: 'echo',
-        description: 'Echoes its input.',
+        description: process.env.ECHO_DESCRIPTION ?? 'Echoes its input.',
         // After the change notice echo takes a second argument too, so a form
         // open across a Refresh has a schema change to follow (R08-4).
         inputSchema: { type: 'object', properties: { text: { type: 'string' }, ...(changed ? { loud: { type: 'boolean' } } : {}) }, required: ['text'] },

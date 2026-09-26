@@ -197,8 +197,8 @@ test('diff: stored snapshots diff the way live surfaces do', () => {
     const a = recordCapture(ws, serverId, before, { now: tick });
     const b = recordCapture(ws, serverId, after, { now: tick });
     assert.deepEqual(diffSnapshots(ws, a.snapshotId, b.snapshotId), diffSurfaces(before, after));
-    assert.deepEqual(diffSnapshots(ws, a.snapshotId, b.snapshotId).tools, [
-      { key: 'a', kind: 'removed' }, { key: 'b', kind: 'changed' }, { key: 'c', kind: 'added' },
+    assert.deepEqual(diffSnapshots(ws, a.snapshotId, b.snapshotId).tools.map((t) => [t.key, t.kind, t.fields?.map((f) => f.path)]), [
+      ['a', 'removed', undefined], ['b', 'changed', ['/description']], ['c', 'added', undefined],
     ]);
   } finally {
     ws.close();

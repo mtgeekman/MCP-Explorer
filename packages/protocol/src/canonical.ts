@@ -33,12 +33,13 @@ function sha256(value: unknown): string {
 
 // One allowlist per item kind. Adding a field here changes every stored hash,
 // so it is a deliberate act, not a convenience.
-const TOOL_FIELDS = ['name', 'title', 'description', 'icons', 'inputSchema', 'outputSchema', 'annotations'] as const;
-const PROMPT_FIELDS = ['name', 'title', 'description', 'icons', 'arguments'] as const;
-const RESOURCE_FIELDS = ['uri', 'name', 'title', 'description', 'mimeType', 'icons'] as const;
-const TEMPLATE_FIELDS = ['uriTemplate', 'name', 'title', 'description', 'mimeType', 'icons'] as const;
+export const TOOL_FIELDS = ['name', 'title', 'description', 'icons', 'inputSchema', 'outputSchema', 'annotations'] as const;
+export const PROMPT_FIELDS = ['name', 'title', 'description', 'icons', 'arguments'] as const;
+export const RESOURCE_FIELDS = ['uri', 'name', 'title', 'description', 'mimeType', 'icons'] as const;
+export const TEMPLATE_FIELDS = ['uriTemplate', 'name', 'title', 'description', 'mimeType', 'icons'] as const;
 
-function pick<T extends object>(item: T, fields: readonly string[]): Record<string, unknown> {
+/** The allowlisted fields of an item: what is hashed, and what a field-level diff compares. */
+export function pick<T extends object>(item: T, fields: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const f of fields) {
     const v = (item as Record<string, unknown>)[f];

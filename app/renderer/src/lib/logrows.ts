@@ -37,6 +37,7 @@ function appEvent(u: LogUnit): string {
 }
 
 function describeEmpty(u: LogUnit): string {
+  if (u.omitted) return 'large: loaded when selected';
   if (u.bytes === null) return 'withheld (results are not kept in this workspace)';
   if (u.http?.method && u.byteLength === 0) return `${u.http.method} ${u.http.url ?? ''}`.trim();
   if (u.http?.status !== undefined && u.byteLength === 0) return `HTTP ${u.http.status}, no body`;
@@ -45,8 +46,9 @@ function describeEmpty(u: LogUnit): string {
 }
 
 function preview(u: LogUnit): string {
-  if (u.bytes === null) return '';
-  const doc = new RawDocument(u.bytes.subarray(0, PREVIEW_BYTES), PREVIEW_BYTES);
+  const bytes = u.bytes ?? u.omitted?.head ?? null;
+  if (bytes === null) return '';
+  const doc = new RawDocument(bytes.subarray(0, PREVIEW_BYTES), PREVIEW_BYTES);
   return doc.segments(0).map((s) => s.text).join('') + (u.byteLength > PREVIEW_BYTES ? ' ...' : '');
 }
 

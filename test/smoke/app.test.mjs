@@ -516,3 +516,29 @@ test('calls: a prompt is got from its argument form, and a template resource is 
     await app.close();
   }
 });
+
+test('calls: a 9.5 MB result is shown whole, raw in the transcript and readable in the pane (time printed)', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await openCall(page, 'big');
+    await page.locator('.call-form input').first().fill(String(Math.floor(9.5 * 1024 * 1024)));
+    const started = Date.now();
+    await callButton(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 60_000 });
+    await page.locator('.readable-pane .part-text').waitFor({ timeout: 60_000 });
+    const shownMs = Date.now() - started;
+    await page.locator('.call-panel .transcript .entry-source', { hasText: /^Response/ }).waitFor({ timeout: 60_000 });
+    const rawMs = Date.now() - started;
+    process.stdout.write(`# 9.5 MB result: readable pane ${shownMs} ms, raw response ${rawMs} ms after Call\n`);
+    await shot(page, '07-7-big');
+    // The wire log row for it arrived without its bytes, and selecting it loads them.
+    const row = page.locator('.log-line', { hasText: 'tools/call' }).last();
+    await row.click();
+    await page.locator('.log-row.selected .raw-viewer').waitFor({ timeout: 60_000 });
+  } finally {
+    await app.close();
+  }
+});

@@ -30,6 +30,30 @@ export interface ServerDefinition {
    * session (D31, amended 2026-09-24). Names only; a name is not a secret.
    */
   unstoredSecrets?: SecretNames;
+  /**
+   * streamable-http and sse only: a client registered with the server's
+   * authorization server by hand (plan phase 11 decision 6). Its secret is
+   * a secret: refused for an unencrypted workspace.
+   */
+  oauthClient?: OAuthClientConfig;
+}
+
+export interface OAuthClientConfig {
+  clientId: string;
+  /** A loopback redirect, http://127.0.0.1:<port>/..., exactly as registered. */
+  redirectUri: string;
+  clientSecret?: string;
+}
+
+/** A loopback redirect with an explicit port: RFC 8252 §7.3, and the MCP rule that allows plain http there. */
+function isLoopbackRedirect(uri: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(uri);
+  } catch {
+    return false;
+  }
+  return u.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(u.hostname) && u.port !== '';
 }
 
 export interface SecretNames {
@@ -66,6 +90,11 @@ function validate(def: ServerDefinition): void {
     throw bad(`unknown transport ${String(def.transport)}`);
   }
   if (def.transport === 'stdio' && hasNames(def.unstoredSecrets?.headers)) throw bad('a stdio server has no HTTP headers');
+  if (def.oauthClient !== undefined) {
+    if (def.transport === 'stdio') throw bad('a stdio server has no OAuth client');
+    if (!def.oauthClient.clientId) throw bad('an OAuth client needs a client id');
+    if (!isLoopbackRedirect(def.oauthClient.redirectUri)) throw bad('the OAuth client redirect URI must be http on 127.0.0.1, [::1] or localhost, with a port');
+  }
   const lists = [
     [def.env, def.secretEnv, def.unstoredSecrets?.env, 'environment variable'],
     [def.headers, def.secretHeaders, def.unstoredSecrets?.headers, 'header'],
@@ -92,7 +121,7 @@ const hasNames = (names?: string[]) => names !== undefined && names.length > 0;
  */
 export function saveServer(ws: Workspace, def: ServerDefinition, now: () => number = Date.now): void {
   validate(def);
-  if (!ws.encrypted && (hasEntries(def.secretEnv) || hasEntries(def.secretHeaders))) {
+  if (!ws.encrypted && (hasEntries(def.secretEnv) || hasEntries(def.secretHeaders) || def.oauthClient?.clientSecret)) {
     throw new SecretsRequireEncryptionError(`server ${def.id}: this workspace is not encrypted, so its secrets cannot be saved; enter them when connecting instead`);
   }
   const at = now();
@@ -118,6 +147,9 @@ export function saveServer(ws: Workspace, def: ServerDefinition, now: () => numb
     const insertName = ws.db.prepare('INSERT INTO server_secret_name (server_id, kind, name) VALUES (?, ?, ?)');
     for (const name of def.unstoredSecrets?.env ?? []) insertName.run(def.id, 'env', name);
     for (const name of def.unstoredSecrets?.headers ?? []) insertName.run(def.id, 'header', name);
+    ws.db.prepare('DELETE FROM server_oauth_client WHERE server_id = ?').run(def.id);
+    const c = def.oauthClient;
+    if (c) ws.db.prepare('INSERT INTO server_oauth_client (server_id, client_id, redirect_uri, client_secret) VALUES (?, ?, ?, ?)').run(def.id, c.clientId, c.redirectUri, c.clientSecret ?? null);
   })();
 }
 
@@ -147,6 +179,8 @@ export function loadServer(ws: Workspace, id: string): ServerDefinition | null {
     const unstored = (def.unstoredSecrets ??= {});
     (n.kind === 'env' ? (unstored.env ??= []) : (unstored.headers ??= [])).push(n.name);
   }
+  const client = ws.db.prepare('SELECT client_id, redirect_uri, client_secret FROM server_oauth_client WHERE server_id = ?').get(id) as { client_id: string; redirect_uri: string; client_secret: string | null } | undefined;
+  if (client) def.oauthClient = { clientId: client.client_id, redirectUri: client.redirect_uri, ...(client.client_secret !== null ? { clientSecret: client.client_secret } : {}) };
   return def;
 }
 

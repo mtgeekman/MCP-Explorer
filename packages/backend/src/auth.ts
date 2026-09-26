@@ -26,6 +26,8 @@ interface Grant {
   info: AuthServerInfo;
   client: ClientInfo;
   tokens?: TokenSet;
+  /** The server URL the tokens were obtained for: they go to that URL and no other. */
+  serverUrl?: string;
 }
 
 /** A sign-in waiting for the browser. */
@@ -157,7 +159,7 @@ export class AuthManager {
       const pending: Pending = { authorizationUrl: request.url, listener, startedAt: this.now() };
       this.pending.set(serverId, pending);
       this.host.changed(serverId);
-      const done = this.finish(serverId, pending, info, client, request, fetchFn, rec);
+      const done = this.finish(serverId, def.url, pending, info, client, request, fetchFn, rec);
       void done;
       listener = undefined;
       return { authorizationUrl: request.url };
@@ -171,13 +173,13 @@ export class AuthManager {
   }
 
   /** The browser came back, or the wait ended: check, exchange, store. */
-  private async finish(serverId: string, pending: Pending, info: AuthServerInfo, client: ClientInfo, request: Awaited<ReturnType<typeof authorizationRequest>>, fetchFn: typeof fetch, rec: { emit: UnitListener; close(): void }): Promise<void> {
+  private async finish(serverId: string, serverUrl: string, pending: Pending, info: AuthServerInfo, client: ClientInfo, request: Awaited<ReturnType<typeof authorizationRequest>>, fetchFn: typeof fetch, rec: { emit: UnitListener; close(): void }): Promise<void> {
     try {
       const cb = await pending.listener.wait(CALLBACK_TIMEOUT_MS);
       appEvent(rec.emit, { event: 'authorization-callback', url: cb.loggedUrl });
       const { code, iss } = await checkCallback(info, request, cb.params);
       const tokens = await exchangeCode(info, client, { code, ...(iss ? { iss } : {}), codeVerifier: request.codeVerifier, fetchFn, now: this.now });
-      this.store(serverId, { info, client, tokens });
+      this.store(serverId, { info, client, tokens, serverUrl });
       appEvent(rec.emit, { event: 'signed-in', issuer: info.issuer, ...(tokens.scope ? { scope: tokens.scope } : {}), ...(tokens.expiresAt !== undefined ? { expiresAt: tokens.expiresAt } : {}), refreshToken: Boolean(tokens.refreshToken) });
     } catch (e) {
       this.fail(serverId, e, rec.emit);
@@ -269,10 +271,15 @@ export class AuthManager {
     appEvent(emit, { event: 'auth-failed', failure: failure.kind, message });
   }
 
+  /**
+   * The grant for a server, its tokens held back when the server's URL is no
+   * longer the one they were obtained for: a token goes only to the resource
+   * it was issued for (R11-1; 2025-06-18 authorization, token audience).
+   */
   private grant(serverId: string): Grant | undefined {
-    if (!this.ws.encrypted) return this.sessionGrants.get(serverId);
-    const stored = loadGrant(this.ws, serverId);
-    return stored ? fromStored(stored) : undefined;
+    const g = this.ws.encrypted ? (() => { const stored = loadGrant(this.ws, serverId); return stored ? fromStored(stored) : undefined; })() : this.sessionGrants.get(serverId);
+    if (!g?.tokens || g.serverUrl === this.server(serverId).url) return g;
+    return { info: g.info, client: g.client };
   }
 
   private grantFor(serverId: string, issuer: string): Grant | undefined {
@@ -300,7 +307,7 @@ export class AuthManager {
     saveGrant(this.ws, serverId, {
       issuer: g.info.issuer, authServer: g.info.authorizationServerUrl,
       ...(g.info.resource ? { resource: g.info.resource } : {}),
-      client: { client: g.client, info: g.info },
+      client: { client: g.client, info: g.info, ...(g.serverUrl ? { serverUrl: g.serverUrl } : {}) },
       ...(g.tokens ? { tokens: g.tokens as unknown as Record<string, unknown> } : {}),
     }, this.now);
   }
@@ -313,8 +320,8 @@ export class AuthManager {
 }
 
 function fromStored(s: { client: Record<string, unknown>; tokens?: Record<string, unknown> }): Grant {
-  const kept = s.client as unknown as { client: ClientInfo; info: AuthServerInfo };
-  return { client: kept.client, info: kept.info, ...(s.tokens ? { tokens: s.tokens as unknown as TokenSet } : {}) };
+  const kept = s.client as unknown as { client: ClientInfo; info: AuthServerInfo; serverUrl?: string };
+  return { client: kept.client, info: kept.info, ...(kept.serverUrl ? { serverUrl: kept.serverUrl } : {}), ...(s.tokens ? { tokens: s.tokens as unknown as TokenSet } : {}) };
 }
 
 function appEvent(emit: UnitListener, event: Record<string, unknown>): void {

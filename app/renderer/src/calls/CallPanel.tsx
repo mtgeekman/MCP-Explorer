@@ -36,7 +36,12 @@ export function CallPanel({ client, serverId, connected, target, onRead }: {
   target: CallTarget;
   onRead: (view: CallView) => void;
 }) {
-  const schema = target.kind === 'tool' ? target.tool.inputSchema : target.kind === 'prompt' ? promptSchema(target.arguments) : undefined;
+  // A prompt's schema built inline was a new object on every render, and each
+  // verdict re-rendered, so validation re-ran without end (R07-1). Keyed on the
+  // entry's own values, since `target` is rebuilt whenever the parent renders.
+  const source = target.kind === 'tool' ? target.tool.inputSchema : target.kind === 'prompt' ? target.arguments : undefined;
+  const schema = useMemo(() => (target.kind === 'tool' ? source : target.kind === 'prompt' ? promptSchema(source) : undefined), [target.kind, source]);
+  const uriTemplate = target.kind === 'template' ? target.uriTemplate : undefined;
   const [args, setArgs] = useState<Args>({});
   const [text, setText] = useState(editorText({}));
   const [editorError, setEditorError] = useState<string | null>(null);
@@ -72,9 +77,9 @@ export function CallPanel({ client, serverId, connected, target, onRead }: {
   }, [client, schema, args]);
 
   useEffect(() => {
-    if (target.kind !== 'template') return;
-    client.request('resources.template', { uriTemplate: target.uriTemplate }).then((t) => setVariables(t.variables), (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, [client, target]);
+    if (uriTemplate === undefined) return;
+    client.request('resources.template', { uriTemplate }).then((t) => setVariables(t.variables), (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  }, [client, uriTemplate]);
 
   const send = async (confirmed: boolean) => {
     setBusy(true);

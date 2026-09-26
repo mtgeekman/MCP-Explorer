@@ -542,3 +542,58 @@ test('calls: a 9.5 MB result is shown whole, raw in the transcript and readable 
     await app.close();
   }
 });
+
+/** Counts the requests the page sends the backend, by method, from now on. */
+async function countRequests(page) {
+  await page.evaluate(() => {
+    const w = window;
+    w.__requests = [];
+    if (w.__hooked) return;
+    w.__hooked = true;
+    const post = MessagePort.prototype.postMessage;
+    MessagePort.prototype.postMessage = function (m, ...rest) {
+      if (m && m.kind === 'request') w.__requests.push(m.method);
+      return post.call(this, m, ...rest);
+    };
+  });
+  return async (method) => page.evaluate((m) => window.__requests.filter((x) => x === m).length, method);
+}
+
+test('R07-1: a prompt\'s argument form validates once after typing stops, not forever', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [legacy], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await page.getByRole('tab', { name: /^Prompts/ }).click();
+    await page.locator('.surface-items button', { hasText: 'review' }).click();
+    await page.getByRole('tab', { name: 'Get', exact: true }).click();
+    await page.locator('.call-form label', { hasText: 'language' }).locator('input').fill('rust');
+    await page.waitForTimeout(1000);
+    const count = await countRequests(page);
+    await page.waitForTimeout(2000);
+    assert.equal(await count('calls.validate'), 0, 'nothing changed, so nothing is validated again');
+  } finally {
+    await app.close();
+  }
+});
+
+test('R07-5: progress updates the transcript without re-listing the call history', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [legacy], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await openCall(page, 'slow');
+    await page.locator('.call-editor textarea').fill('{"steps": 40, "delayMs": 25}');
+    const count = await countRequests(page);
+    await callButton(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(300);
+    const lists = await count('calls.list');
+    assert.ok(lists <= 3, `the call list was fetched ${lists} times for one call with 40 progress notifications`);
+    assert.ok(await count('calls.get') >= 10, 'the transcript still follows progress');
+  } finally {
+    await app.close();
+  }
+});

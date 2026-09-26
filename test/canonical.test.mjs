@@ -114,7 +114,7 @@ test('normalization drops fields the model does not declare', async () => {
       return { items: [{ name: 'a', inputSchema: { type: 'object' }, ttlMs: 999, cacheScope: 'public' }] };
     },
   });
-  assert.deepEqual(Object.keys(surface.tools[0]).sort(), ['annotations', 'description', 'icons', 'inputSchema', 'name', 'outputSchema', 'title']);
+  assert.deepEqual(Object.keys(surface.tools[0]).sort(), ['annotations', 'description', 'execution', 'icons', 'inputSchema', 'name', 'outputSchema', 'title']);
   assert.equal(surface.tools[0].ttlMs, undefined);
 });
 

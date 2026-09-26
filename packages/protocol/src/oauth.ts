@@ -130,7 +130,10 @@ export async function discoverAuth(serverUrl: string, opts: { challenge?: AuthCh
     if (named && !mod.checkResourceAllowed({ requestedResource: mod.resourceUrlFromServerUrl(serverUrl), configuredResource: named })) {
       throw new AuthError({ kind: 'metadata-refused', detail: `the protected resource metadata is for ${named}, not ${serverUrl}` });
     }
-    resource = mod.resourceUrlFromServerUrl(named ?? serverUrl).href;
+    // URL.href adds a slash to a bare origin; the canonical resource URI has
+    // none (2025-06-18), and an authorization server may compare exactly.
+    const url: URL = mod.resourceUrlFromServerUrl(named ?? serverUrl);
+    resource = url.pathname === '/' && !url.search && !(named ?? serverUrl).endsWith('/') ? url.href.slice(0, -1) : url.href;
   }
 
   let metadata: Record<string, unknown> | undefined;

@@ -36,6 +36,25 @@ test('R09-2: a clock stepped back between captures does not reorder the history'
   } finally { ws.close(); }
 });
 
+test('R09-1: the timeline classifies from stored hashes and never reads an item body', () => {
+  const { ws, serverId, at } = setup();
+  try {
+    at(surface(), 1);
+    at(surface({ tools: [{ name: 'echo', description: 'Echoes, louder.', inputSchema: { type: 'object' } }] }), 2);
+    const loud = [{ name: 'echo', description: 'Echoes, louder.', inputSchema: { type: 'object' } }];
+    at(surface({ serverVersion: '2', tools: loud }), 3);
+    at(surface({ serverVersion: '2', tools: loud, instructions: 'Other.' }), 4);
+    at(surface({ serverVersion: '2', tools: loud, instructions: 'Other.', capabilities: { tools: {}, prompts: {} } }), 5);
+    at(surface({ serverVersion: '2', tools: loud, instructions: 'Other.', capabilities: { tools: {}, prompts: {} }, prompts: [{ name: 'p' }], resourceTemplates: [{ uriTemplate: 'x://{a}' }] }), 6);
+    at(surface({ serverVersion: '2', tools: [], instructions: 'Other.', capabilities: { tools: {}, prompts: {} }, prompts: [{ name: 'p' }], resourceTemplates: [{ uriTemplate: 'x://{a}' }] }), 7);
+    // Bodies that are not items: a timeline that reads them fails.
+    for (const t of ['snapshot_tool', 'snapshot_prompt', 'snapshot_resource', 'snapshot_resource_template']) ws.db.prepare(`UPDATE ${t} SET body_json = 'null'`).run();
+    assert.deepEqual(versionTimeline(ws, serverId).entries.map((e) => [e.kind, e.changes]),
+      [['first', 0], ['surface', 1], ['identity', 0], ['surface', 1], ['surface', 1], ['surface', 2], ['surface', 1]],
+      'a description, a version, instructions, capabilities, a prompt and a template added, a tool removed');
+  } finally { ws.close(); }
+});
+
 test('R09-2 twin: the latest capture is the last one recorded, not the latest by the clock', () => {
   const { ws, serverId, at } = setup();
   try {

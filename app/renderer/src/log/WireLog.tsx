@@ -59,10 +59,14 @@ export function WireLog({ client, serverId, selected, onSelect }: {
 
   // A large unit arrives without its bytes (decision 9); selecting it loads
   // them into the selection only, so they go when it does (R07-10).
+  // The newest click wins: a slow load does not replace a later selection.
+  const selecting = useRef(0);
   const select = useCallback(async (u: LogUnit | null) => {
+    const mine = ++selecting.current;
     if (!u?.omitted) return onSelect(u);
-    const whole = await client.request('log.get', { id: u.id });
-    if (!whole) return onSelect(null);
+    // Frames from before schema 3 number apart from units; the flag says which.
+    const whole = await client.request('log.get', { id: u.id, reserialized: Boolean(u.reserialized) });
+    if (mine !== selecting.current) return;
     onSelect(whole);
   }, [client, onSelect]);
 

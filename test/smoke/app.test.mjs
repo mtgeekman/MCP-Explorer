@@ -337,7 +337,7 @@ test('surface: connecting captures it; a tool opens on its exact bytes and the p
     assert.ok(await page.locator('.surface-entry .raw-viewer').isVisible());
     const pane = page.locator('.readable-pane');
     await pane.getByText('Hints the server declares about itself').waitFor();
-    assert.ok(await pane.locator('table.fields td', { hasText: 'What to echo.' }).first().isVisible(), 'the parameter description');
+    assert.ok(await pane.locator('.params .param-desc', { hasText: 'What to echo.' }).first().isVisible(), 'the parameter description');
     await page.getByRole('tab', { name: 'Instructions' }).click();
     assert.equal(await page.locator('pre.instructions').innerText(), 'Phase 01 fixture. Modern era.');
     assert.ok(await page.getByText('only on a listen stream: open one under Session').isVisible(), 'modern change notices are said to need a listen stream (phase 10)');
@@ -1126,5 +1126,26 @@ test('panes: the wire log and the readable pane resize by drag, the log collapse
     } finally {
       await app.close();
     }
+  }
+});
+
+test('surface: at the narrowest readable pane a parameter\'s type stays on one line', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'narrow', transport: 'stdio', command: process.execPath, args: [modern] }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connectAndCapture(page, 'narrow', 2);
+    await page.locator('.surface-items .item', { hasText: 'echo' }).click();
+    await page.locator('.splitter.x').focus();
+    await page.keyboard.press('Home');
+    const pane = page.locator('.readable-pane');
+    assert.equal(Math.round((await pane.boundingBox()).width), 240, 'the pane is at its minimum');
+    const type = pane.locator('.param-type').first();
+    await type.waitFor();
+    const lineHeight = await type.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight) || 18);
+    assert.ok((await type.boundingBox()).height < lineHeight * 1.5, `the type is one line, not a letter per line (${(await type.boundingBox()).height}px)`);
+    await shot(page, 'params-narrow');
+  } finally {
+    await app.close();
   }
 });

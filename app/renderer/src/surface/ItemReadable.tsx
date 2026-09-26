@@ -46,15 +46,7 @@ function ToolParts({ item, revision }: { item: Record<string, unknown>; revision
       {params === undefined && <p className="muted">The input schema has no properties object to list; the raw view shows it as sent.</p>}
       {params?.length === 0 && <p className="muted">None.</p>}
       {params && params.length > 0 && (
-        <table className="fields"><tbody>
-          {params.map((p) => (
-            <tr key={p.name}>
-              <td className="mono">{p.name}{p.required ? ' *' : ''}</td>
-              <td className="mono">{p.type}</td>
-              <td>{p.description}</td>
-            </tr>
-          ))}
-        </tbody></table>
+        <ParamList items={params.map((p) => ({ name: p.name, required: p.required, type: p.type, description: p.description }))} />
       )}
       <h4>Annotations</h4>
       <p className="muted">{ANNOTATIONS_LINE}</p>
@@ -75,9 +67,7 @@ function PromptArguments({ args }: { args: unknown }) {
       {list === undefined && <p className="muted">Not a list of named arguments; the raw view shows it as sent.</p>}
       {list?.length === 0 && <p className="muted">None.</p>}
       {list && list.length > 0 && (
-        <table className="fields"><tbody>
-          {list.map((a) => <tr key={a.name}><td className="mono">{a.name}{a.required ? ' *' : ''}</td><td>{a.description}</td></tr>)}
-        </tbody></table>
+        <ParamList items={list.map((a) => ({ name: a.name, required: a.required, description: a.description }))} />
       )}
       <p className="muted">Getting a prompt sends nothing to a model.</p>
     </>
@@ -88,4 +78,25 @@ function PromptArguments({ args }: { args: unknown }) {
 function summarize(value: unknown): string {
   const text = typeof value === 'string' ? value : JSON.stringify(value);
   return text.length > 120 ? `${text.slice(0, 117)}... (${text.length.toLocaleString()} characters)` : text;
+}
+
+/**
+ * A tool's parameters or a prompt's arguments: the name and type on one
+ * line, the description under them. Stacked rather than a table, because in
+ * a narrow pane a table squeezes its short columns to a letter wide.
+ */
+function ParamList({ items }: { items: { name: string; required: boolean; type?: string; description?: string }[] }) {
+  return (
+    <ul className="params">
+      {items.map((p) => (
+        <li key={p.name} className="param">
+          <div className="param-head">
+            <span className="mono param-name">{p.name}{p.required ? ' *' : ''}</span>
+            {p.type !== undefined && <span className="mono param-type">{p.type}</span>}
+          </div>
+          {p.description && <p className="param-desc">{p.description}</p>}
+        </li>
+      ))}
+    </ul>
+  );
 }

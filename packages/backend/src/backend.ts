@@ -5,12 +5,12 @@ import { randomUUID } from 'node:crypto';
 import { buildContext, costContext, renderContext, O200K, uriTemplate, validateAgainst, type ContextServer } from '../../protocol/dist/index.js';
 import {
   compact, deleteServer, latestCapture, readCall, repairInterrupted, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
-  type ServerDefinition, type SecretStore,
+  type PurgeResult, type ServerDefinition, type SecretStore,
 } from '../../storage/dist/index.js';
 import type { ServerRoot } from '../../platform/dist/index.js';
 import { ConnectionManager } from './connections.js';
 import { WorkspaceManager, type OpenWorkspace } from './workspaces.js';
-import { logPage, logUnit } from './log.js';
+import { listed, logPage, logUnit } from './log.js';
 import { rawEntry } from './entry.js';
 import { CallPipeline, curlFor, type CallExport } from './calls.js';
 import { listConfigLocations, readConfigs, saveImported } from './importer.js';
@@ -84,7 +84,7 @@ export class Backend {
       'settings.update': ({ changes }) => updateSettings(this.ws(), changes),
       'history.size': () => ({ fileBytes: fileBytes(this.ws().db), usedBytes: usedBytes(this.ws().db) }),
       'history.previewPurge': () => previewPurge(this.ws(), this.opts.now),
-      'history.purge': () => purgeHistory(this.ws(), this.opts.now),
+      'history.purge': () => this.purged(purgeHistory(this.ws(), this.opts.now)),
       'history.compact': () => compact(this.ws()),
       'import.locations': ({ projectRoots }) => listConfigLocations(projectRoots),
       'import.read': ({ locations }) => readConfigs(locations),
@@ -149,6 +149,12 @@ export class Backend {
     return open.ws;
   }
 
+  /** Tells open views when a purge deleted anything (R05-9). */
+  private purged(result: PurgeResult): PurgeResult {
+    if (result.callsDeleted + result.unitsDeleted + result.framesDeleted + result.connectionsDeleted > 0) this.emit('log.purged', {});
+    return result;
+  }
+
   private pipeline(): CallPipeline {
     if (!this.calls) throw new NoWorkspaceError('no workspace is open');
     return this.calls;
@@ -191,7 +197,7 @@ export class Backend {
     this.calls = new CallPipeline(open.ws, {
       session: (id) => conns.session(id),
       partialCapture: (id) => conns.partialCapture(id),
-    }, { changed: (serverId, callId) => this.emit('call.changed', { serverId, callId }) });
+    }, { changed: (serverId, callId) => this.emit('call.changed', { serverId, callId }), purged: (result) => void this.purged(result) });
   }
 
   private async closeConnections(): Promise<void> {
@@ -250,7 +256,7 @@ export class Backend {
     // Read back as stored: the opt-out may have withheld the bytes (D30).
     const unit = logUnit(this.ws().db, id);
     if (!unit) throw new Error(`unit ${id} was recorded and cannot be read back`);
-    return unit;
+    return listed(unit);
   }
 }
 

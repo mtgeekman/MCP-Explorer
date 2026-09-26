@@ -32,6 +32,10 @@ export function WireLog({ client, serverId, selected, onSelect }: {
   const list = useRef<VirtualListHandle | null>(null);
   const loading = useRef(false);
 
+  // A purge deletes what the log shows; it reloads from what is left (R05-9).
+  const [generation, setGeneration] = useState(0);
+  useEffect(() => client.on((name) => { if (name === 'log.purged') setGeneration((g) => g + 1); }), [client]);
+
   useEffect(() => {
     let live = true;
     setUnits([]);
@@ -51,7 +55,16 @@ export function WireLog({ client, serverId, selected, onSelect }: {
       if (follow) requestAnimationFrame(() => list.current?.scrollToBottom());
     });
     return () => { live = false; off(); };
-  }, [client, serverId]);
+  }, [client, serverId, generation]);
+
+  // A large unit arrives without its bytes (decision 9); selecting it loads them.
+  const select = useCallback(async (u: LogUnit | null) => {
+    if (!u?.omitted) return onSelect(u);
+    const whole = await client.request('log.get', { id: u.id });
+    if (!whole) return onSelect(null);
+    setUnits((current) => current.map((c) => (c.id === u.id && !c.reserialized ? whole : c)));
+    onSelect(whole);
+  }, [client, onSelect]);
 
   const loadEarlier = useCallback(async () => {
     if (complete || loading.current || units.length === 0) return;
@@ -94,7 +107,7 @@ export function WireLog({ client, serverId, selected, onSelect }: {
             const isSelected = i === selectedIndex;
             return (
               <div className={`log-row ${r.unit.kind} ${isSelected ? 'selected' : ''}`}>
-                <button className="log-line" onClick={() => onSelect(isSelected ? null : r.unit)} aria-expanded={isSelected}>
+                <button className="log-line" onClick={() => void select(isSelected ? null : r.unit)} aria-expanded={isSelected}>
                   <span className="t mono">{clock(r.unit.at)}</span>
                   <span className={`dir ${r.unit.direction}`}>{r.arrow}</span>
                   <span className="kind">{r.unit.kind === 'wire' ? '' : r.unit.kind}</span>

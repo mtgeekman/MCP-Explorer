@@ -24,7 +24,7 @@ export function CallHistory({ client, serverId, onRead }: { client: BackendClien
   useEffect(() => {
     load();
     return client.on((name, data) => {
-      if (name === 'call.changed' && (data as { serverId: string }).serverId === serverId) load();
+      if ((name === 'call.changed' && (data as { serverId: string }).serverId === serverId) || name === 'log.purged') load();
     });
   }, [client, serverId, load]);
 

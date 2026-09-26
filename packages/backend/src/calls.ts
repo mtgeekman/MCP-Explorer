@@ -9,7 +9,7 @@ import {
 } from '../../protocol/dist/index.js';
 import {
   latestCapture, listCalls, readCall, readSettings,
-  type CallRecord, type CallStatus, type CallSummary, type HistoryRecorder, type Workspace,
+  type CallRecord, type CallStatus, type CallSummary, type HistoryRecorder, type PurgeResult, type Workspace,
 } from '../../storage/dist/index.js';
 import type { LogUnit } from './api.js';
 
@@ -56,6 +56,8 @@ export interface CallView {
 export interface CallEvents {
   /** A call started, progressed, or ended: read calls.get again. */
   changed(serverId: string, callId: number): void;
+  /** Finishing a call ran retention (D24); this is what it deleted. */
+  purged(result: PurgeResult): void;
 }
 
 export interface CallSessions {
@@ -232,7 +234,7 @@ export class CallPipeline {
   private end(callId: number, run: Running, status: CallStatus): void {
     this.running.delete(callId);
     try {
-      run.recorder.finishCall(callId, status);
+      this.events.purged?.(run.recorder.finishCall(callId, status));
     } finally {
       this.events.changed?.(run.serverId, callId);
     }

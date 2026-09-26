@@ -57,8 +57,14 @@ export interface LogUnit {
   kind: 'wire' | 'stderr' | 'app';
   at: number;
   byteLength: number;
-  /** Null when withheld under the results opt-out (D30). */
+  /** Null when withheld under the results opt-out (D30), or when omitted from a list (see `omitted`). */
   bytes: Uint8Array | null;
+  /**
+   * The bytes were left out of this message because the unit is larger than
+   * LIST_BYTES_LIMIT; log.get has them whole. `head` is their start, for the
+   * row's preview (phase 07 decision 9).
+   */
+  omitted?: { head: Uint8Array };
   http?: HttpDetails;
   /** The JSON-RPC messages the unit carried, in order: none for stderr, app events and bytes that are not JSON-RPC. */
   frames: LogFrame[];
@@ -201,6 +207,8 @@ export interface Events {
   'surface.changed': { serverId: string };
   /** A call started, reported progress, or ended: read calls.get again. */
   'call.changed': { serverId: string; callId: number };
+  /** Retention deleted history: an open log or call list reloads (R05-9). */
+  'log.purged': Record<string, never>;
   notice: WorkspaceNotice;
 }
 

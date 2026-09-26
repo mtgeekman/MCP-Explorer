@@ -103,7 +103,7 @@ test('a call left in progress by a crash is marked interrupted at the next open,
   ws.close();
 
   const again = openWorkspaceDb({ path, workspaceId, custody: { kind: 'none' }, secrets: noSecrets });
-  assert.deepEqual(repairInterrupted(again), { calls: 1, connections: 1 });
+  assert.deepEqual(repairInterrupted(again), { calls: 1, connections: 1, serverRequests: 0 });
   const record = readCall(again, id);
   assert.equal(record.status, 'interrupted');
   assert.notEqual(record.finishedAt, null);
@@ -111,7 +111,7 @@ test('a call left in progress by a crash is marked interrupted at the next open,
   assert.ok(record.finishedAt >= record.startedAt, 'finished at its last unit, not before it started');
   const conn = again.db.prepare('SELECT closed_at FROM connection').get();
   assert.notEqual(conn.closed_at, null);
-  assert.deepEqual(repairInterrupted(again), { calls: 0, connections: 0 }, 'a second open repairs nothing');
+  assert.deepEqual(repairInterrupted(again), { calls: 0, connections: 0, serverRequests: 0 }, 'a second open repairs nothing');
 
   // Before the repair, retention never purged an in-progress call; now it can.
   again.db.prepare('UPDATE workspace_meta SET retention_max_age_days = 1').run();

@@ -13,6 +13,7 @@ import { WorkspaceManager, type OpenWorkspace } from './workspaces.js';
 import { listed, logPage, logUnit } from './log.js';
 import { rawEntry } from './entry.js';
 import { CallPipeline, curlFor, type CallExport } from './calls.js';
+import { ServerRequests } from './server-requests.js';
 import { listConfigLocations, readConfigs, saveImported } from './importer.js';
 import type { ContextView, ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow, SurfaceView } from './api.js';
 
@@ -34,6 +35,7 @@ export class Backend {
   private readonly workspaces: WorkspaceManager;
   private connections: ConnectionManager | undefined;
   private calls: CallPipeline | undefined;
+  private requests: ServerRequests | undefined;
   private readonly listeners = new Set<<E extends keyof Events>(name: E, data: Events[E]) => void>();
   private readonly handlers: { [M in Method]: Handler<M> };
 
@@ -110,6 +112,10 @@ export class Backend {
       'calls.start': (params) => { this.server(params.serverId); return this.pipeline().start(params); },
       'calls.cancel': ({ callId }) => { this.pipeline().cancel(callId); return null; },
       'calls.stop': ({ callId }) => { this.pipeline().stop(callId); return null; },
+      'calls.answer': ({ callId, inputResponses }) => { this.pipeline().answer(callId, inputResponses); return null; },
+      'calls.continue': ({ callId }) => { this.pipeline().continue(callId); return null; },
+      'requests.list': ({ serverId, limit }) => { this.server(serverId); return this.desk().list(serverId, limit); },
+      'requests.answer': ({ requestId, answer }) => { this.desk().answer(requestId, answer); return null; },
       'calls.list': ({ serverId, before, limit }) => { this.server(serverId); return this.pipeline().list(serverId, { before, limit }); },
       'calls.get': ({ callId }) => this.pipeline().view(callId),
       'calls.validate': ({ schema, value }) => validateAgainst(schema, value),
@@ -160,6 +166,11 @@ export class Backend {
     return this.calls;
   }
 
+  private desk(): ServerRequests {
+    if (!this.requests) throw new NoWorkspaceError('no workspace is open');
+    return this.requests;
+  }
+
   private exportCall(callId: number): CallExport {
     const call = readCall(this.ws(), callId);
     if (!call) throw new Error(`no call ${callId} in this workspace`);
@@ -190,12 +201,19 @@ export class Backend {
       closeGraceMs: this.opts.closeGraceMs,
       events: {
         state: (serverId, state) => {
-          if (state.status !== 'connected' && state.status !== 'closing') this.calls?.sessionEnded(serverId);
+          if (state.status !== 'connected' && state.status !== 'closing') {
+            this.calls?.sessionEnded(serverId);
+            this.requests?.sessionEnded(serverId);
+          }
           this.emit('connection.state', { serverId, state });
         },
         unit: (_serverId, _connectionId, unitId) => this.emit('log.unit', this.liveUnit(unitId)),
         processes: (roots) => this.opts.onProcesses?.(roots),
         surface: (serverId) => this.emit('surface.changed', { serverId }),
+      },
+      onServerRequest: (serverId, recorder, request) => {
+        if (!this.requests) return new Promise(() => undefined);
+        return this.requests.receive(serverId, recorder, request);
       },
     });
     const conns = this.connections;
@@ -203,12 +221,21 @@ export class Backend {
       session: (id) => conns.session(id),
       partialCapture: (id) => conns.partialCapture(id),
     }, { changed: (serverId, callId, reason) => this.emit('call.changed', { serverId, callId, reason }), purged: (result) => void this.purged(result) });
+    const calls = this.calls;
+    this.requests = new ServerRequests(open.ws, (connectionId) => calls.runningOn(connectionId), {
+      changed: (serverId, requestId, callId) => {
+        this.emit('request.changed', { serverId, requestId, callId });
+        // The linked call's transcript lists its requests.
+        if (callId !== null) this.emit('call.changed', { serverId, callId, reason: 'request' });
+      },
+    });
   }
 
   private async closeConnections(): Promise<void> {
     const c = this.connections;
     this.connections = undefined;
     this.calls = undefined;
+    this.requests = undefined;
     await c?.closeAll();
   }
 

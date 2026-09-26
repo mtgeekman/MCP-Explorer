@@ -81,4 +81,14 @@ export function seedEveryTable(db) {
   if (tableNames(db).includes('server_secret_name')) {
     db.prepare(`INSERT INTO server_secret_name (server_id, kind, name) VALUES ('srv-1', 'env', 'API_KEY')`).run();
   }
+
+  // Schema 7 (server requests, D23 amended): one answered and linked to a
+  // call, one withheld and outside any call, one the app never answered.
+  if (tableNames(db).includes('server_request')) {
+    const request = db.prepare(`INSERT INTO server_request (connection_id, call_id, jsonrpc_id, method, params_json, status, response_json, withheld, request_unit_id, received_at, finished_at)
+                                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    request.run(1, '0', 'sampling/createMessage', '{"messages":[],"maxTokens":10}', 'answered', '{"role":"assistant","content":{"type":"text","text":"hi"},"model":"human"}', 0, 1, t + 6, t + 7);
+    request.run(null, '"srv-1"', 'roots/list', null, 'refused', null, 1, null, t + 8, t + 9);
+    request.run(null, '2', 'elicitation/create', '{"message":"?"}', 'interrupted', null, 0, null, t + 8, t + 9);
+  }
 }

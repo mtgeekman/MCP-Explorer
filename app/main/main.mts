@@ -1,6 +1,6 @@
 // The Electron main process: windows, the backend utility process, and the
 // process trees it must never leave behind (D32, D36). No product logic.
-import { app, BrowserWindow, dialog, ipcMain, MessageChannelMain, utilityProcess, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, MessageChannelMain, shell, utilityProcess, type UtilityProcess } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { killServerTree, type ServerRoot } from '../../packages/platform/dist/index.js';
@@ -101,6 +101,22 @@ ipcMain.handle('choose-folder', async (e) => {
   const options = { title: 'Choose a project folder', properties: ['openDirectory' as const] };
   const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
   return r.canceled ? null : (r.filePaths[0] ?? null);
+});
+
+// URL-mode elicitation (phase 08 decision 9): a server's URL opens in the
+// system browser only when the person presses Open, and only over http or
+// https. The string opened is the one the page showed, not a re-serialization.
+ipcMain.handle('open-external', async (_e, url: unknown) => {
+  if (typeof url !== 'string') return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+  await shell.openExternal(url);
+  return true;
 });
 
 // Every window's port died with the old backend, not only the asking one's:

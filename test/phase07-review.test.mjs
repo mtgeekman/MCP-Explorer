@@ -114,8 +114,8 @@ test('R07-2 (re-review): an event stream that dies mid-event is logged, and leav
   const url = await listen('http-server.mjs', children, { CALL_TOOLS: '1', SSE_CUT: '1' });
   const units = [];
   const conn = await connectHttp({ url, onUnit: (u) => units.push(u) });
-  // The SDK never settles a request whose stream died (and calls do not time
-  // out, decision 2), so the session is closed under it.
+  // Since phase 10 (decision 13) the request fails when its stream dies; the
+  // session is closed under it here all the same, which is what this pins.
   const pending = conn.call({ kind: 'tool', target: 'add', args: { a: 1, b: 2 } });
   let post;
   for (let i = 0; i < 100 && !post; i++) {

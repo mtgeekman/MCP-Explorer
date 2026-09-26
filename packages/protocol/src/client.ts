@@ -7,7 +7,7 @@ import type { Era } from './model.js';
 import { eraOf } from './model.js';
 import type { Page, SurfaceSource } from './capture.js';
 import { StringDecoder } from 'node:string_decoder';
-import { LineSplitter, SseEventSplitter, type HttpDetails, type UnitListener, type WireUnit } from './wire.js';
+import { LineSplitter, SseEventSplitter, sseEventData, type HttpDetails, type UnitListener, type WireUnit } from './wire.js';
 import { encodeHeaderValue } from './mcp-headers.js';
 
 /**
@@ -614,6 +614,8 @@ class CallTracker {
   private readonly responses = new Map<string, Record<string, unknown>>();
   private readonly watched = new Set<string>();
   private readonly cancels = new Map<string, (reason: unknown) => void>();
+  /** Requests whose event stream ended without their response (phase 10 decision 13). */
+  private readonly abandons = new Map<string, (message: string) => void>();
   /** Replies this module is waiting on for requests it framed itself. */
   private readonly waiters = new Map<string, { resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }>();
 
@@ -655,6 +657,21 @@ class CallTracker {
     return new Promise((resolve, reject) => this.waiters.set(idKey(id), { resolve, reject }));
   }
 
+  /** Resolves with why, if the request's response will never come because its stream ended first. */
+  whenAbandoned(id: string | number): Promise<string> {
+    return new Promise((resolve) => this.abandons.set(idKey(id), resolve));
+  }
+
+  /** The stream carrying this request's response ended without it: the request fails, and nothing is sent. */
+  abandon(id: unknown, message: string): void {
+    const key = idKey(id);
+    const waiter = this.waiters.get(key);
+    this.waiters.delete(key);
+    waiter?.reject(new Error(message));
+    this.abandons.get(key)?.(message);
+    this.abandons.delete(key);
+  }
+
   /** The session ended: every reply still awaited will never come. */
   end(): void {
     for (const w of this.waiters.values()) w.reject(new Error('the session ended before a response arrived'));
@@ -679,6 +696,7 @@ class CallTracker {
   take(id: string | number): Record<string, unknown> | undefined {
     const key = idKey(id);
     this.waiters.delete(key);
+    this.abandons.delete(key);
     const response = this.responses.get(key);
     this.responses.delete(key);
     this.watched.delete(key);
@@ -767,8 +785,12 @@ async function rawRequest(session: Session, method: string, params: Record<strin
   const onAbort = () => { abortedFirst = id === undefined || !calls.has(id); };
   signal?.addEventListener('abort', onAbort, { once: true });
   let sdkError: unknown;
+  // The SDK never settles a request whose event stream died without its
+  // response; the logging fetch notices, and the request fails here instead.
+  const abandoned = id === undefined ? new Promise<never>(() => undefined) : calls.whenAbandoned(id);
   try {
-    await sent.sent;
+    const why = await Promise.race([sent.sent.then(() => undefined), abandoned]);
+    if (typeof why === 'string') sdkError = new Error(why);
   } catch (e) {
     sdkError = e;
   }
@@ -1001,7 +1023,7 @@ async function requestBytes(input: string | URL | Request, init: RequestInit | u
  * finishes it reaches the SDK: nothing the SDK acts on is ever missing from the
  * log, and cancelling the stream still cancels the connection underneath.
  */
-export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>, base: typeof fetch = fetch): typeof fetch {
+export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>, base: typeof fetch = fetch, onOrphaned?: (ids: unknown[], message: string) => void): typeof fetch {
   const secretNames = new Set([...secretHeaders].map((n) => n.toLowerCase()));
   let exchanges = 0;
   return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -1050,7 +1072,22 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
       return rebuilt(bytes);
     }
     const events = new SseEventSplitter();
-    const event = (bytes: Uint8Array) => emit({ direction: 'in', kind: 'wire', bytes, http: { ...http, framing: 'sse-event' } });
+    // The requests this POST carried, until an event answers each (decision 13).
+    const unanswered = requestIds(body);
+    const event = (bytes: Uint8Array) => {
+      emit({ direction: 'in', kind: 'wire', bytes, http: { ...http, framing: 'sse-event' } });
+      if (unanswered.size > 0) for (const id of responseIds(bytes)) unanswered.delete(id);
+    };
+    // The stream ended with requests unanswered, and not because the user
+    // aborted it: those responses will never come.
+    const orphans = () => {
+      if (unanswered.size === 0 || signal?.aborted) return;
+      const ids = [...unanswered].map((k) => JSON.parse(k) as unknown);
+      const message = 'the event stream ended without a response';
+      appEvent(emit, { event: 'stream-ended-without-response', exchange, ids });
+      unanswered.clear();
+      onOrphaned?.(ids, message);
+    };
     // Transformer.cancel is in the streams standard and in Node, not yet in the TypeScript lib.
     const logging: Transformer<Uint8Array, Uint8Array> & { cancel?: (reason: unknown) => void } = {
       transform(chunk, controller) {
@@ -1061,6 +1098,7 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
         done();
         const rest = events.flush();
         if (rest) event(rest);
+        orphans();
       },
       // The stream ended by error (the server dropped the connection mid-event)
       // or was cancelled: flush never runs, so the bytes that did arrive are
@@ -1069,11 +1107,42 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
         done();
         const rest = events.flush();
         if (rest) event(rest);
+        orphans();
       },
     };
     const logged = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(logging));
     return rebuilt(logged);
   };
+}
+
+/** The ids, as id keys, of the requests a POST body carried: one, or a batch's. */
+function requestIds(body: Uint8Array | { unrecorded: string }): Set<string> {
+  const out = new Set<string>();
+  if (!(body instanceof Uint8Array) || body.length === 0) return out;
+  try {
+    const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as unknown;
+    for (const m of Array.isArray(parsed) ? parsed : [parsed]) {
+      const msg = m as { id?: unknown; method?: unknown } | null;
+      if (msg && typeof msg.method === 'string' && msg.id !== undefined && msg.id !== null) out.add(idKey(msg.id));
+    }
+  } catch {
+    // Not JSON: nothing this stream owes.
+  }
+  return out;
+}
+
+/** The ids, as id keys, of the responses one event carried. */
+function responseIds(bytes: Uint8Array): string[] {
+  const data = sseEventData(bytes);
+  if (data === null) return [];
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    return (Array.isArray(parsed) ? parsed : [parsed])
+      .filter((m) => m && typeof m === 'object' && (m as { method?: unknown }).method === undefined && (m as { id?: unknown }).id !== undefined)
+      .map((m) => idKey((m as { id: unknown }).id));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -1174,7 +1243,8 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   const calls = new CallTracker();
   const secretHeaders = opts.secretHeaders ?? {};
   // One logging fetch for every attempt, so exchange numbers keep counting.
-  const fetchOption = { fetch: taskNameFetch(emit ? loggingFetch(emit, Object.keys(secretHeaders)) : fetch) };
+  const orphaned = (ids: unknown[], message: string) => { for (const id of ids) calls.abandon(id, message); };
+  const fetchOption = { fetch: taskNameFetch(loggingFetch(emit ?? (() => undefined), Object.keys(secretHeaders), fetch, orphaned)) };
 
   const attempt = async (negotiate: boolean) => {
     const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged, onServerRequest: opts.onServerRequest });

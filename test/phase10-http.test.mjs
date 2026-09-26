@@ -81,3 +81,37 @@ test('http, legacy: a server\'s own request mid-call reaches the person, and the
   const answer = frames.find((f) => f.direction === 'out' && f.frame.method === undefined && f.frame.result?.action === 'accept');
   assert.ok(answer, 'the person\'s answer went out as a response frame');
 });
+
+const appEvents = (units) => units.filter((u) => u.kind === 'app').map((u) => JSON.parse(Buffer.from(u.bytes).toString('utf8')));
+
+test('decision 13: a call whose event stream dies without its response fails, says why in the log, and sends nothing', async () => {
+  const url = await listen('http-server.mjs', children, { CALL_TOOLS: '1', SSE_CUT: '1' });
+  const units = [];
+  const frames = [];
+  const conn = await connectHttp({ url, onUnit: (u) => units.push(u), onFrame: (direction, frame) => frames.push({ direction, frame }) });
+  open.push(conn);
+  const outcome = await Promise.race([
+    conn.call({ kind: 'tool', target: 'add', args: { a: 1, b: 2 } }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('the call never settled')), 5000)),
+  ]);
+  assert.equal(outcome.kind, 'failed');
+  assert.match(outcome.message, /event stream ended without a response/);
+  const orphaned = appEvents(units).filter((e) => e.event === 'stream-ended-without-response');
+  assert.equal(orphaned.length, 1);
+  assert.deepEqual(orphaned[0].ids, [outcome.requestId]);
+  assert.equal(sent(frames, 'notifications/cancelled').length, 0);
+});
+
+test('decision 13: a listen the user closes is not reported as a dead stream', async () => {
+  const url = await listen('http-server.mjs', children, { EXTRAS: '1', STREAMING: '1' });
+  const units = [];
+  const notes = [];
+  const conn = await connectHttp({ url, onUnit: (u) => units.push(u), onNotification: (n) => notes.push(n) });
+  open.push(conn);
+  const handle = conn.listen({ toolsListChanged: true });
+  await until(() => notes.some((n) => n.method === 'notifications/subscriptions/acknowledged'), 'the acknowledgement');
+  handle.close();
+  assert.deepEqual(await handle.ended, { kind: 'closed' });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(appEvents(units).filter((e) => e.event === 'stream-ended-without-response'), []);
+});

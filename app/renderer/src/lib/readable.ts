@@ -18,7 +18,7 @@ export const READABLE_LIMIT = 10 * 1024 * 1024;
 export type Readable =
   | { kind: 'withheld' }
   | { kind: 'too-large'; size: string }
-  | { kind: 'json'; pretty: string; cacheHints: { name: string; value: unknown }[]; sse: boolean }
+  | { kind: 'json'; pretty: string; value: unknown; cacheHints: { name: string; value: unknown }[]; sse: boolean }
   | { kind: 'text'; text: string; why: string }
   | { kind: 'app'; fields: [string, string][] }
   | { kind: 'empty' };
@@ -56,5 +56,5 @@ export function readable(u: LogUnit): Readable {
   }
   const result = (value as { result?: Record<string, unknown> } | null)?.result;
   const cacheHints = result && typeof result === 'object' ? CACHE_HINTS.filter((k) => k in result).map((name) => ({ name, value: result[name] })) : [];
-  return { kind: 'json', pretty: JSON.stringify(value, null, 2), cacheHints, sse };
+  return { kind: 'json', pretty: JSON.stringify(value, null, 2), value, cacheHints, sse };
 }

@@ -7,6 +7,7 @@ import type { CallView } from '../../../../packages/backend/dist/index.js';
 import { readableResult, statusLabel, type Part } from '../lib/content';
 import { READABLE_LIMIT } from '../lib/readable';
 import { formatBytes } from '../lib/raw';
+import { JsonView } from '../log/JsonView';
 
 export function ResultReadable({ view }: { view: CallView }) {
   const { call } = view;
@@ -32,7 +33,7 @@ export function ResultReadable({ view }: { view: CallView }) {
       )}
       {last?.resultType === 'input_required' && <InputRequired requests={last.inputRequests} />}
       {last?.error !== null && last?.error !== undefined && (
-        <><h4>Error</h4><pre className="mono json">{JSON.stringify(last.error, null, 2)}</pre></>
+        <><h4>Error</h4><JsonView value={last.error} /></>
       )}
       {result !== null && result !== undefined && last?.resultType !== 'input_required' && (
         size > READABLE_LIMIT
@@ -61,10 +62,10 @@ function Result({ kind, result, view }: { kind: 'tool' | 'prompt' | 'resource'; 
           {view.outputCheck?.valid === true && <p className="ok-line">Matches the outputSchema in the latest capture.</p>}
           {view.outputCheck?.valid === false && <p className="warn">Does not match the outputSchema in the latest capture: {view.outputCheck.message}</p>}
           {view.outputCheck?.valid === null && <p className="muted">The outputSchema could not be used to check it: {view.outputCheck.message}</p>}
-          <pre className="mono json">{r.structuredContent}</pre>
+          <JsonView text={r.structuredContent} />
         </>
       )}
-      {r.other !== undefined && (<><h4>Other fields</h4><pre className="mono json">{r.other}</pre></>)}
+      {r.other !== undefined && (<><h4>Other fields</h4><JsonView text={r.other} /></>)}
     </>
   );
 }
@@ -95,7 +96,7 @@ function PartView({ part }: { part: Part }) {
       return (
         <div className="part-unknown">
           <p className="warn">Content of type "{part.type}", which no MCP revision defines. Shown as sent.</p>
-          <pre className="mono json">{part.json}</pre>
+          <JsonView text={part.json} />
         </div>
       );
   }
@@ -105,7 +106,7 @@ function InputRequired({ requests }: { requests: unknown }) {
   return (
     <div className="input-required">
       <p>The server needs input before it can finish, and asked for what is below. Answering and retrying come in a later version; nothing is sent until you do (the server gets no reply if you stop).</p>
-      <pre className="mono json">{requests === null || requests === undefined ? 'No input requests: the result carried only a requestState.' : JSON.stringify(requests, null, 2)}</pre>
+      {requests === null || requests === undefined ? <p className="muted">No input requests: the result carried only a requestState.</p> : <JsonView value={requests} />}
     </div>
   );
 }

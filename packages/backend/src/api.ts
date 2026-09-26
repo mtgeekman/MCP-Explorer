@@ -1,10 +1,12 @@
 // The messages between the renderer and the backend (D32). Deliberately not
 // JSON-RPC: no module outside the transport layer constructs a JSON-RPC
 // message (P1), and these are the app's own, not protocol traffic.
-import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface } from '../../protocol/dist/index.js';
-import type { PurgeResult, ServerSummary, Transport, WorkspaceSettings } from '../../storage/dist/index.js';
+import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface, Verdict, CallProgress } from '../../protocol/dist/index.js';
+import type { CallRecord, CallSummary, PurgeResult, RoundRecord, ServerSummary, Transport, WorkspaceSettings } from '../../storage/dist/index.js';
+import type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply } from './calls.js';
 
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
+export type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply, CallRecord, CallSummary, RoundRecord, Verdict, CallProgress };
 import type { CaptureStatus, ConnectionState, PartialCapture, SecretValues } from './connections.js';
 import type { Protection, Unlock, WorkspaceListing, WorkspaceNotice } from './workspaces.js';
 import type { ConfigLocation } from '../../platform/dist/index.js';
@@ -159,7 +161,27 @@ export interface Requests {
   'surface.entry': { params: { serverId: string; list: EntryList; key: string }; result: RawEntry };
   /** Every server's latest surface, less the ones excluded, as one block with its cost. */
   'context.get': { params: { excluded?: string[] }; result: ContextView };
+  /**
+   * Starts a tool call, prompt get or resource read, or answers with the
+   * confirm to show first (D7). Resolves once sent; `call.changed` follows.
+   */
+  'calls.start': { params: CallStart; result: StartReply };
+  /** Cancel a running call: the era's cancellation goes out; the server may still finish. */
+  'calls.cancel': { params: { callId: number }; result: null };
+  /** End a call waiting for input without answering it (phase 07 decision 6). */
+  'calls.stop': { params: { callId: number }; result: null };
+  /** A server's calls, newest first, with this session's live state. */
+  'calls.list': { params: { serverId: string; before?: number; limit?: number }; result: CallListRow[] };
+  'calls.get': { params: { callId: number }; result: CallView | null };
+  /** A value against a JSON Schema, by the SDK's Ajv (decision 4). Advisory. */
+  'calls.validate': { params: { schema: unknown; value: unknown }; result: Verdict };
+  /** A call's first request as it was sent, and a curl command for an HTTP server (decision 8). */
+  'calls.export': { params: { callId: number }; result: CallExport };
+  /** A resource template's variables, or the URI they make. */
+  'resources.template': { params: { uriTemplate: string; values?: Record<string, string> }; result: { variables: string[]; uri?: string } };
 }
+
+export type CallListRow = CallSummary & { live?: LiveCall };
 
 /** The workspace file against the retention cap: the file can be larger than the cap until compacted (D24). */
 export interface HistorySize {
@@ -177,6 +199,8 @@ export interface Events {
   'log.unit': LogUnit;
   /** A capture started or finished, or the server said a list changed: read surface.get again. */
   'surface.changed': { serverId: string };
+  /** A call started, reported progress, or ended: read calls.get again. */
+  'call.changed': { serverId: string; callId: number };
   notice: WorkspaceNotice;
 }
 

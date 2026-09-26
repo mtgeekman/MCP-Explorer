@@ -803,3 +803,22 @@ test('R07-7: a tool form lists its fields in the server order, not alphabeticall
     await app.close();
   }
 });
+
+test('R08-4: a tool form open across a Refresh follows the new schema', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'changing form', transport: 'stdio', command: process.execPath, args: [legacy], env: { LIST_CHANGED: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  const labels = () => page.evaluate(() => [...document.querySelectorAll('.call-form label.field > span > span.mono')].map((e) => e.textContent).join(','));
+  try {
+    await openWorkspace(page);
+    await connectAndCapture(page, 'changing form', 1);
+    await openCall(page, 'echo');
+    await page.waitForFunction(() => document.querySelectorAll('.call-form label.field').length === 1);
+    assert.equal(await labels(), 'text');
+    await page.locator('.banner', { hasText: 'The server says its tools changed' }).getByRole('button', { name: 'Refresh' }).click({ timeout: 10_000 });
+    await page.getByRole('tab', { name: 'Tools 2' }).waitFor({ timeout: 10_000 });
+    await page.waitForFunction(() => document.querySelectorAll('.call-form label.field').length === 2, undefined, { timeout: 10_000 });
+    assert.equal(await labels(), 'text,loud');
+  } finally {
+    await app.close();
+  }
+});

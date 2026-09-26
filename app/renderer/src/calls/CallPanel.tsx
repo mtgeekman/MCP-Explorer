@@ -54,19 +54,22 @@ export function CallPanel({ client, serverId, serverName, connected, target, onR
   // planned from it lists fields alphabetically. The entry's exact bytes from
   // the list reply keep the server's order; the form is planned from those,
   // and from the captured schema only when the bytes cannot be had.
-  const [rawSchema, setRawSchema] = useState<{ name: string; schema: unknown } | null>(null);
+  // The bytes belong to one capture: keyed on the captured schema as well as
+  // the name, so a Refresh that changes the schema fetches them again (R08-4).
+  const captured = target.kind === 'tool' ? JSON.stringify(target.tool.inputSchema) : undefined;
+  const [rawSchema, setRawSchema] = useState<{ name: string; captured: string; schema: unknown } | null>(null);
   useEffect(() => {
-    if (toolName === undefined) return;
+    if (toolName === undefined || captured === undefined) return;
     let stale = false;
     client.request('surface.entry', { serverId, list: 'tools', key: toolName }).then((entry) => {
       if (stale || !entry.found) return;
       const schema = entryInputSchema(entry.bytes);
-      if (schema !== undefined) setRawSchema({ name: toolName, schema });
+      if (schema !== undefined) setRawSchema({ name: toolName, captured, schema });
     }, () => undefined);
     return () => { stale = true; };
-  }, [client, serverId, toolName]);
+  }, [client, serverId, toolName, captured]);
   const source = target.kind === 'tool'
-    ? (rawSchema !== null && rawSchema.name === toolName ? rawSchema.schema : target.tool.inputSchema)
+    ? (rawSchema !== null && rawSchema.name === toolName && rawSchema.captured === captured ? rawSchema.schema : target.tool.inputSchema)
     : target.kind === 'prompt' ? target.arguments : undefined;
   const schema = useMemo(() => (target.kind === 'tool' ? source : target.kind === 'prompt' ? promptSchema(source) : undefined), [target.kind, source]);
   const uriTemplate = target.kind === 'template' ? target.uriTemplate : undefined;

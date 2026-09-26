@@ -8,6 +8,7 @@ import { ServerRequestsPanel } from '../calls/ServerRequestsPanel';
 import type { BackendClient } from '../lib/client';
 import { commandLine, describeState } from '../lib/describe';
 import { SurfacePanel, type SelectedItem } from '../surface/SurfacePanel';
+import { VersionsPanel } from '../versions/VersionsPanel';
 
 export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, selectedItem, onSelectItem, onReadCall }: {
   client: BackendClient; server: ServerRow; onEdit: () => void; onDeleted: () => void; onChanged: () => void;
@@ -98,6 +99,7 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
       {error && <p className="error">{error}</p>}
       <ServerRequestsPanel client={client} serverId={server.id} />
       <SurfacePanel client={client} server={server} selected={selectedItem} onSelect={onSelectItem} onReadCall={onReadCall} />
+      <VersionsPanel client={client} serverId={server.id} />
       <CallHistory client={client} serverId={server.id} onRead={onReadCall} />
     </section>
   );

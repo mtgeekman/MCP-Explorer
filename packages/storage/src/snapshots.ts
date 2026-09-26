@@ -181,7 +181,8 @@ export interface LatestCapture {
 }
 
 export function latestCapture(ws: Workspace, serverId: string): LatestCapture | undefined {
-  const row = ws.db.prepare('SELECT snapshot_id, connection_id, observed_at, problems_json FROM surface_observation WHERE server_id = ? ORDER BY observed_at DESC, id DESC LIMIT 1').get(serverId) as
+  // The last one recorded, whatever the wall clock said (R09-2).
+  const row = ws.db.prepare('SELECT snapshot_id, connection_id, observed_at, problems_json FROM surface_observation WHERE server_id = ? ORDER BY id DESC LIMIT 1').get(serverId) as
     { snapshot_id: number; connection_id: number | null; observed_at: number; problems_json: string } | undefined;
   if (!row) return undefined;
   return {
@@ -240,10 +241,13 @@ export const UNSTABLE_RUN = 3;
  */
 export function versionTimeline(ws: Workspace, serverId: string): VersionTimeline {
   const runs: { snapshotId: number; first: number; last: number; count: number }[] = [];
-  for (const o of ws.db.prepare('SELECT snapshot_id, observed_at FROM surface_observation WHERE server_id = ? ORDER BY observed_at, id').all(serverId) as { snapshot_id: number; observed_at: number }[]) {
+  // Record order, not the wall clock: a clock stepped back would otherwise
+  // split a run and invent versions (R09-2).
+  for (const o of ws.db.prepare('SELECT snapshot_id, observed_at FROM surface_observation WHERE server_id = ? ORDER BY id').all(serverId) as { snapshot_id: number; observed_at: number }[]) {
     const run = runs[runs.length - 1];
     if (run && run.snapshotId === o.snapshot_id) {
-      run.last = o.observed_at;
+      run.first = Math.min(run.first, o.observed_at);
+      run.last = Math.max(run.last, o.observed_at);
       run.count++;
     } else {
       runs.push({ snapshotId: o.snapshot_id, first: o.observed_at, last: o.observed_at, count: 1 });

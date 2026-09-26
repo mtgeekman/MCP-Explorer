@@ -24,7 +24,7 @@
 // one of the two markers below; each front decides what dying or hanging
 // means on its own transport.
 import { existsSync, writeFileSync } from 'node:fs';
-import { callTools, CALL_PROMPTS, CALL_RESOURCES, CALL_TEMPLATES, CALL_TOOLS_ON } from './call-handler.mjs';
+import { callTools, askTools, CALL_PROMPTS, CALL_RESOURCES, CALL_TEMPLATES, CALL_TOOLS_ON } from './call-handler.mjs';
 
 export const DIE = Symbol('die');
 export const SILENT = Symbol('silent');
@@ -64,7 +64,7 @@ export function handleLegacy(msg) {
         name: 'echo',
         description: 'Echoes its input.',
         inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-      }, ...(changed ? [{ name: 'added_later', description: 'Listed after the change notice.', inputSchema: { type: 'object' } }] : []), ...callTools()],
+      }, ...(changed ? [{ name: 'added_later', description: 'Listed after the change notice.', inputSchema: { type: 'object' } }] : []), ...callTools(), ...askTools()],
     });
   }
 

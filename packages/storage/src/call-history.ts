@@ -1,4 +1,4 @@
-import type { CallKind, CallStatus } from './history.js';
+import type { CallKind, CallStatus, ServerRequestStatus } from './history.js';
 import type { Workspace } from './workspace-db.js';
 
 /**
@@ -111,13 +111,20 @@ export function readCall(ws: Workspace, callId: number): CallRecord | undefined 
  * What a crash leaves behind, repaired at workspace open (deferred/phase-02):
  * a call still in progress becomes `interrupted`, finished when its last unit
  * was recorded; a connection never closed is closed at its last unit. Before
- * this, retention could never purge either.
+ * this, retention could never purge either. A server's request still pending
+ * becomes `interrupted` the same way (migration 7).
  *
  * Safe only because one process opens a workspace at a time: a second process
  * with the same workspace open would have its live calls marked here.
  */
-export function repairInterrupted(ws: Workspace): { calls: number; connections: number } {
+export function repairInterrupted(ws: Workspace): { calls: number; connections: number; serverRequests: number } {
   return ws.db.transaction(() => {
+    // A server's request still pending was never answered: the app stopped first.
+    const serverRequests = ws.db.prepare(`
+      UPDATE server_request SET status = 'interrupted',
+        finished_at = coalesce((SELECT max(u.at) FROM wire_unit u WHERE u.connection_id = server_request.connection_id), received_at)
+      WHERE status = 'pending'
+    `).run().changes;
     const lastCallUnit = `coalesce((SELECT max(u.at) FROM wire_unit u WHERE u.call_id = call.id), started_at)`;
     ws.db.prepare(`
       UPDATE call_round SET finished_at = coalesce((SELECT max(u.at) FROM wire_unit u WHERE u.call_id = call_round.call_id), started_at)
@@ -128,6 +135,65 @@ export function repairInterrupted(ws: Workspace): { calls: number; connections: 
       UPDATE connection SET closed_at = coalesce((SELECT max(u.at) FROM wire_unit u WHERE u.connection_id = connection.id), opened_at)
       WHERE closed_at IS NULL
     `).run().changes;
-    return { calls, connections };
+    return { calls, connections, serverRequests };
   })();
+}
+
+/** A request a legacy-era server sent the client, as recorded (migration 7). */
+export interface ServerRequestRecord {
+  id: number;
+  serverId: string;
+  connectionId: number;
+  /** The call it was linked to: the only call running on the connection when it arrived. */
+  callId: number | null;
+  /** The JSON-RPC id as text that keeps its type (7 is "7", "7" is "\"7\""). */
+  jsonrpcId: string;
+  method: string;
+  /** Null when withheld under the results opt-out (D30), or when the request had none. */
+  params: unknown;
+  status: ServerRequestStatus;
+  /** What went back: a result, or `{ error }` for a refusal. Null while pending, when withheld, or when nothing went back. */
+  response: unknown;
+  withheld: boolean;
+  receivedAt: number;
+  finishedAt: number | null;
+  /** The unit that carried the request, while it is stored. */
+  requestUnitId: number | null;
+  /** The unit that carried the answer, when one went back and is still stored. */
+  responseUnitId: number | null;
+}
+
+interface ServerRequestRow {
+  id: number; server_id: string; connection_id: number; call_id: number | null; jsonrpc_id: string; method: string; params_json: string | null;
+  status: ServerRequestStatus; response_json: string | null; withheld: number; received_at: number; finished_at: number | null;
+  request_unit_id: number | null; response_unit: number | null;
+}
+
+// The answer is the first outgoing frame with the request's id after the
+// request's own frame: server ids are their own id space, and may repeat.
+const SELECT_SERVER_REQUEST = `
+  SELECT q.id, c.server_id, q.connection_id, q.call_id, q.jsonrpc_id, q.method, q.params_json, q.status, q.response_json, q.withheld,
+         q.received_at, q.finished_at, q.request_unit_id,
+         (SELECT f.unit_id FROM frame f WHERE f.connection_id = q.connection_id AND f.direction = 'out' AND f.jsonrpc_id = q.jsonrpc_id AND f.method = q.method
+            AND f.id > coalesce((SELECT max(r.id) FROM frame r WHERE r.unit_id = q.request_unit_id), 0) ORDER BY f.id LIMIT 1) AS response_unit
+  FROM server_request q JOIN connection c ON c.id = q.connection_id`;
+
+const serverRequest = (r: ServerRequestRow): ServerRequestRecord => ({
+  id: r.id, serverId: r.server_id, connectionId: r.connection_id, callId: r.call_id, jsonrpcId: r.jsonrpc_id, method: r.method,
+  params: parse(r.params_json), status: r.status, response: parse(r.response_json), withheld: r.withheld === 1,
+  receivedAt: r.received_at, finishedAt: r.finished_at, requestUnitId: r.request_unit_id, responseUnitId: r.response_unit,
+});
+
+/** A server's requests to the client, newest first, or one call's, oldest first. */
+export function listServerRequests(ws: Workspace, of: { serverId: string; limit?: number } | { callId: number }): ServerRequestRecord[] {
+  if ('callId' in of) {
+    return (ws.db.prepare(`${SELECT_SERVER_REQUEST} WHERE q.call_id = ? ORDER BY q.id`).all(of.callId) as ServerRequestRow[]).map(serverRequest);
+  }
+  const limit = Math.max(1, Math.min(of.limit ?? 50, 1000));
+  return (ws.db.prepare(`${SELECT_SERVER_REQUEST} WHERE c.server_id = ? ORDER BY q.id DESC LIMIT ?`).all(of.serverId, limit) as ServerRequestRow[]).map(serverRequest);
+}
+
+export function readServerRequest(ws: Workspace, id: number): ServerRequestRecord | undefined {
+  const row = ws.db.prepare(`${SELECT_SERVER_REQUEST} WHERE q.id = ?`).get(id) as ServerRequestRow | undefined;
+  return row ? serverRequest(row) : undefined;
 }

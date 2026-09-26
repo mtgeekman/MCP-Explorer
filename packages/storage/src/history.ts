@@ -19,6 +19,8 @@ export const RESULT_METHODS: readonly string[] = ['tools/call', 'prompts/get', '
 
 export type CallKind = 'tool' | 'prompt' | 'resource';
 export type CallStatus = 'completed' | 'error' | 'abandoned' | 'capped' | 'cancelled' | 'interrupted';
+/** How a server's request to the client stands (migration 7). */
+export type ServerRequestStatus = 'pending' | 'answered' | 'refused' | 'cancelled' | 'interrupted';
 
 const METHOD_FOR_KIND: Record<CallKind, string> = { tool: 'tools/call', prompt: 'prompts/get', resource: 'resources/read' };
 
@@ -236,6 +238,35 @@ export class HistoryRecorder {
     const changed = this.ws.db.prepare('UPDATE call_round SET input_responses_json = ? WHERE call_id = ? AND seq = ? AND finished_at IS NOT NULL')
       .run(JSON.stringify(inputResponses), callId, seq).changes;
     if (changed === 0) throw new HistoryStateError(`call ${callId} has no finished round ${seq} to answer`);
+  }
+
+  /**
+   * Records a request the server sent the client (legacy era; D23 amended,
+   * migration 7), linked to `callId` when the caller could tell which call it
+   * belongs to. Call once its frame is recorded: the unit that carried it is
+   * found by its id and method. Returns the row's id.
+   */
+  receiveRequest(jsonrpcId: string | number, method: string, params: unknown, callId: number | null): number {
+    const id = idText(jsonrpcId)!;
+    const unit = this.ws.db.prepare(`
+      SELECT unit_id FROM frame WHERE connection_id = ? AND direction = 'in' AND jsonrpc_id = ? AND method = ? AND unit_id IS NOT NULL ORDER BY id DESC LIMIT 1
+    `).get(this.connectionId, id, method) as { unit_id: number } | undefined;
+    const withhold = this.withholding();
+    return Number(this.ws.db.prepare(`
+      INSERT INTO server_request (connection_id, call_id, jsonrpc_id, method, params_json, status, withheld, request_unit_id, received_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+    `).run(this.connectionId, callId !== null && this.openCalls.has(callId) ? callId : null, id, method,
+      withhold || params === undefined ? null : JSON.stringify(params), withhold ? 1 : 0, unit?.unit_id ?? null, this.now()).lastInsertRowid);
+  }
+
+  /** How a server's request ended, and what the human answered when they did. A request ends once. */
+  finishRequest(requestId: number, status: Exclude<ServerRequestStatus, 'pending'>, response?: unknown): void {
+    const withhold = this.withholding();
+    const changed = this.ws.db.prepare(`
+      UPDATE server_request SET status = ?, response_json = ?, withheld = max(withheld, ?), finished_at = ?
+      WHERE id = ? AND connection_id = ? AND status = 'pending'
+    `).run(status, withhold || response === undefined ? null : JSON.stringify(response), withhold ? 1 : 0, this.now(), requestId, this.connectionId).changes;
+    if (changed === 0) throw new HistoryStateError(`server request ${requestId} is not pending on this connection`);
   }
 
   /** Finishes the call, then applies retention, finishing a call being its other trigger (D24). */

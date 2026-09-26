@@ -57,12 +57,12 @@ export function WireLog({ client, serverId, selected, onSelect }: {
     return () => { live = false; off(); };
   }, [client, serverId, generation]);
 
-  // A large unit arrives without its bytes (decision 9); selecting it loads them.
+  // A large unit arrives without its bytes (decision 9); selecting it loads
+  // them into the selection only, so they go when it does (R07-10).
   const select = useCallback(async (u: LogUnit | null) => {
     if (!u?.omitted) return onSelect(u);
     const whole = await client.request('log.get', { id: u.id });
     if (!whole) return onSelect(null);
-    setUnits((current) => current.map((c) => (c.id === u.id && !c.reserialized ? whole : c)));
     onSelect(whole);
   }, [client, onSelect]);
 
@@ -99,7 +99,7 @@ export function WireLog({ client, serverId, selected, onSelect }: {
           count={rows.length}
           rowHeight={ROW}
           expanded={selectedIndex >= 0 ? selectedIndex : undefined}
-          expandedHeight={selectedIndex >= 0 ? expandedHeight(rows[selectedIndex].unit) : 0}
+          expandedHeight={selectedIndex >= 0 && selected ? expandedHeight(selected) : 0}
           handleRef={list}
           onScrollTop={loadEarlier}
           render={(i) => {
@@ -116,8 +116,8 @@ export function WireLog({ client, serverId, selected, onSelect }: {
                   <span className="size mono">{formatBytes(r.unit.byteLength)}</span>
                   <span className="preview mono">{r.preview}</span>
                 </button>
-                {isSelected && (r.unit.bytes
-                  ? <RawViewer bytes={r.unit.bytes} height={expandedHeight(r.unit) - ROW - 2} />
+                {isSelected && selected && (selected.bytes
+                  ? <RawViewer bytes={selected.bytes} height={expandedHeight(selected) - ROW - 2} />
                   : <p className="muted pad">Withheld: this workspace does not keep results.</p>)}
               </div>
             );

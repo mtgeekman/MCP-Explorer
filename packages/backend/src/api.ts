@@ -1,8 +1,8 @@
 // The messages between the renderer and the backend (D32). Deliberately not
 // JSON-RPC: no module outside the transport layer constructs a JSON-RPC
 // message (P1), and these are the app's own, not protocol traffic.
-import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface, Verdict, CallProgress } from '../../protocol/dist/index.js';
-import type { CallRecord, CallSummary, PurgeResult, RoundRecord, ServerSummary, Transport, WorkspaceSettings } from '../../storage/dist/index.js';
+import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface, Verdict, CallProgress, VersionComparison, TextComparison, TokenDelta, ToolTokenDelta, SurfaceDiff, ItemChange, FieldChange, TextDiff, Hunk, DiffLine } from '../../protocol/dist/index.js';
+import type { CallRecord, CallSummary, PurgeResult, RoundRecord, ServerSummary, Transport, WorkspaceSettings, VersionTimeline, VersionEntry, VersionKind } from '../../storage/dist/index.js';
 import type { AwaitedInput, CallChange, CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply } from './calls.js';
 import type { ServerRequestRow } from './server-requests.js';
 import type { ServerAnswer } from '../../protocol/dist/index.js';
@@ -10,6 +10,7 @@ import type { ServerAnswer } from '../../protocol/dist/index.js';
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
 export type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply, CallRecord, CallSummary, RoundRecord, Verdict, CallProgress };
 export type { AwaitedInput, ServerRequestRow, ServerAnswer };
+export type { VersionTimeline, VersionEntry, VersionKind, VersionComparison, TextComparison, TokenDelta, ToolTokenDelta, SurfaceDiff, ItemChange, FieldChange, TextDiff, Hunk, DiffLine };
 import type { CaptureStatus, ConnectionState, PartialCapture, SecretValues } from './connections.js';
 import type { Protection, Unlock, WorkspaceListing, WorkspaceNotice } from './workspaces.js';
 import type { ConfigLocation } from '../../platform/dist/index.js';
@@ -170,6 +171,10 @@ export interface Requests {
   'surface.entry': { params: { serverId: string; list: EntryList; key: string }; result: RawEntry };
   /** Every server's latest surface, less the ones excluded, as one block with its cost. */
   'context.get': { params: { excluded?: string[] }; result: ContextView };
+  /** A server's version history, oldest first (phase 09 decisions 1, 2 and 7). */
+  'versions.list': { params: { serverId: string }; result: VersionTimeline };
+  /** Two of a server's snapshots compared every way the version view shows (decisions 3 to 6). */
+  'versions.diff': { params: { serverId: string; before: number; after: number }; result: VersionComparison };
   /**
    * Starts a tool call, prompt get or resource read, or answers with the
    * confirm to show first (D7). Resolves once sent; `call.changed` follows.

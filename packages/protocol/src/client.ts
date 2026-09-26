@@ -1074,14 +1074,19 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
     const events = new SseEventSplitter();
     // The requests this POST carried, until an event answers each (decision 13).
     const unanswered = requestIds(body);
+    // An event with an id makes the stream resumable: the SDK reconnects with
+    // Last-Event-ID and the response may still come (2025-11-25 polling;
+    // _handleSseStream in the SDK), so such a stream orphans nothing (R10-1).
+    let resumable = false;
     const event = (bytes: Uint8Array) => {
       emit({ direction: 'in', kind: 'wire', bytes, http: { ...http, framing: 'sse-event' } });
+      if (!resumable && hasEventId(bytes)) resumable = true;
       if (unanswered.size > 0) for (const id of responseIds(bytes)) unanswered.delete(id);
     };
-    // The stream ended with requests unanswered, and not because the user
-    // aborted it: those responses will never come.
+    // The stream ended with requests unanswered, not because the user aborted
+    // it, and cannot be resumed: those responses will never come.
     const orphans = () => {
-      if (unanswered.size === 0 || signal?.aborted) return;
+      if (unanswered.size === 0 || signal?.aborted || resumable) return;
       const ids = [...unanswered].map((k) => JSON.parse(k) as unknown);
       const message = 'the event stream ended without a response';
       appEvent(emit, { event: 'stream-ended-without-response', exchange, ids });
@@ -1129,6 +1134,11 @@ function requestIds(body: Uint8Array | { unrecorded: string }): Set<string> {
     // Not JSON: nothing this stream owes.
   }
   return out;
+}
+
+/** Whether an event carries a non-empty `id` field: what the SDK resumes a stream by. */
+function hasEventId(bytes: Uint8Array): boolean {
+  return /(?:^|\r\n|\r|\n)id:[ ]?[^\r\n]/.test(Buffer.from(bytes).toString('utf8'));
 }
 
 /** The ids, as id keys, of the responses one event carried. */

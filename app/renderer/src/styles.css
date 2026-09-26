@@ -270,6 +270,10 @@ table.fields td:first-child { white-space: nowrap; overflow-wrap: normal; }
 .j-number { color: var(--j-number); }
 .j-literal { color: var(--j-literal); font-weight: 600; }
 .j-punct { color: var(--muted); }
+.json-embed { background: color-mix(in srgb, var(--accent) 7%, transparent); border-radius: 3px; }
+.json-badge { display: inline-block; margin-right: 6px; padding: 0 5px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 8px; color: var(--accent); font-family: var(--font); font-size: 10.5px; line-height: 15px; vertical-align: 1px; user-select: none; }
+.json-embed-part { display: block; padding: 4px 6px; margin: 4px 0; }
+.json-embed-part .json-view { margin: 4px 0 0; background: transparent; }
 .context-servers td { vertical-align: middle; }
 .readable-body h4 { margin: 12px 0 4px; }
 .readable-body .description { white-space: pre-wrap; }

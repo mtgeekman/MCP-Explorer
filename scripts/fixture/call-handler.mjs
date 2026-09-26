@@ -26,6 +26,7 @@
 //   mrtr_url        URL-mode elicitation
 //   mrtr_roots      a roots/list input request
 //   mrtr_empty      input_required with neither field, which the spec forbids
+//   mrtr_sampling_tools  sampling with tools and toolChoice (phase 10)
 //   (prompt) confirm_prompt  input_required on prompts/get
 // Legacy era (ASK_TOOLS, listed by the legacy handler only): each sends a
 // genuine server-to-client request mid-call and answers the call with what
@@ -36,6 +37,10 @@
 //   ask_roots       roots/list
 //   ask_twice       sampling and elicitation at once, both outstanding
 //   ask_unknown     a method no revision defines
+//   ask_sampling_tools  sampling/createMessage offering tools, with toolChoice
+//                   (2025-11-25; phase 10)
+//   ask_url_complete  URL-mode elicitation, then, once answered,
+//                   notifications/elicitation/complete for it (2025-11-25)
 // ROOTS_ON_INIT: a legacy server sends roots/list as soon as the client says
 // it is initialized, outside any call, as real servers do.
 //
@@ -107,6 +112,7 @@ const MRTR_TOOL_LIST = [
   { name: 'mrtr_url', description: 'Asks the user to visit a URL.', inputSchema: obj({}) },
   { name: 'mrtr_roots', description: 'Asks for the client roots.', inputSchema: obj({}) },
   { name: 'mrtr_empty', description: 'Answers input_required with neither inputRequests nor requestState.', inputSchema: obj({}) },
+  { name: 'mrtr_sampling_tools', description: 'Asks for sampling that may use tools.', inputSchema: obj({}) },
 ];
 
 const ASK_TOOL_LIST = [
@@ -116,6 +122,8 @@ const ASK_TOOL_LIST = [
   { name: 'ask_roots', description: 'Sends roots/list to the client mid-call.', inputSchema: obj({}) },
   { name: 'ask_twice', description: 'Sends sampling and elicitation at once.', inputSchema: obj({}) },
   { name: 'ask_unknown', description: 'Sends a request whose method no revision defines.', inputSchema: obj({}) },
+  { name: 'ask_sampling_tools', description: 'Sends sampling/createMessage offering tools.', inputSchema: obj({}) },
+  { name: 'ask_url_complete', description: 'Sends URL-mode elicitation, then notifications/elicitation/complete.', inputSchema: obj({}) },
 ];
 
 /** The modern-era input_required tools; the modern handler lists them. */
@@ -207,6 +215,12 @@ const SAMPLING_PARAMS = {
   modelPreferences: { hints: [{ name: 'claude' }], intelligencePriority: 0.5 },
   maxTokens: 100,
 };
+/** Sampling that offers the model a tool and says it may choose (2025-11-25 sampling.tools). */
+export const SAMPLING_WITH_TOOLS = {
+  ...SAMPLING_PARAMS,
+  tools: [{ name: 'lookup', description: 'Looks a word up.', inputSchema: { type: 'object', properties: { word: { type: 'string' } }, required: ['word'] } }],
+  toolChoice: { mode: 'auto' },
+};
 const FORM_ELICIT = {
   message: 'Publish it?',
   requestedSchema: { type: 'object', properties: { publish: { type: 'boolean', description: 'Say yes to publish.' }, title: { type: 'string' } }, required: ['publish'] },
@@ -247,6 +261,9 @@ function mrtr(params, ok, err) {
       return done(`roots answered: ${JSON.stringify(answered.roots)}`);
     case 'mrtr_empty':
       return ok({ resultType: 'input_required' });
+    case 'mrtr_sampling_tools':
+      if (!answered?.draft) return need({ draft: { method: 'sampling/createMessage', params: SAMPLING_WITH_TOOLS } }, 'tools:1');
+      return done(`sampling answered: ${JSON.stringify(answered.draft)}`);
     default:
       return undefined;
   }
@@ -272,6 +289,14 @@ async function askTool(params, send, ok) {
     }
     case 'ask_unknown':
       return reply('unknown', await ask(send, 'fixture/custom', { anything: true }));
+    case 'ask_sampling_tools':
+      return reply('sampling', await ask(send, 'sampling/createMessage', SAMPLING_WITH_TOOLS));
+    case 'ask_url_complete': {
+      const response = await ask(send, 'elicitation/create', { ...URL_ELICIT, elicitationId: 'fixture-elicit-complete' });
+      // The out-of-band step finished: 2025-11-25 tells the client so.
+      if (response?.result?.action === 'accept') send({ jsonrpc: '2.0', method: 'notifications/elicitation/complete', params: { elicitationId: 'fixture-elicit-complete' } });
+      return reply('url elicitation', response);
+    }
     default:
       return undefined;
   }

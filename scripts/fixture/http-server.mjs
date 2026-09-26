@@ -14,6 +14,8 @@
 //   WIRE_LOG     append every response body written, as hex, one per line.
 //   HEADER_LOG   append the Authorization header each request carried.
 //   MCP_HEADER_LOG  append each POST's Mcp-* headers as one JSON line (phase 10).
+//   SSE_PRIMED_CUT  a tools/call's stream sends an event id, then closes; the
+//                response comes when the client resumes with Last-Event-ID.
 //   LEGACY       serve the legacy-era handler instead of the modern one; its
 //                hostile modes die by dropping the connection, or hang.
 //   STREAMING    (phase 10) answer every POST that carries a request with an
@@ -70,8 +72,30 @@ async function stream(req, res, frame) {
   res.end();
 }
 
+/**
+ * SSE_PRIMED_CUT: a tools/call's stream carries one event with an id and no
+ * data, then closes without the response (the 2025-11-25 polling pattern).
+ * The response waits for the client to resume with Last-Event-ID on a GET.
+ */
+const resumable = new Map();
+
+async function primedCut(res, frame) {
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+  res.write('id: primed-1\nretry: 50\ndata:\n\n');
+  res.end();
+  resumable.set('primed-1', await handle(frame, () => {}));
+}
+
+function resume(req, res) {
+  const response = resumable.get(req.headers['last-event-id']);
+  resumable.delete(req.headers['last-event-id']);
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+  res.end(`id: primed-2\nevent: message\ndata: ${JSON.stringify(response)}\n\n`);
+}
+
 const server = createServer((req, res) => {
   if (process.env.HEADER_LOG) appendFileSync(process.env.HEADER_LOG, `${req.headers.authorization ?? ''}\n`);
+  if (req.method === 'GET' && req.headers['last-event-id'] && resumable.has(req.headers['last-event-id'])) return resume(req, res);
   if (process.env.STREAMING && process.env.LEGACY && req.method === 'GET' && req.url.startsWith(endpoint)) return openGetStream(res);
   if (req.method !== 'POST' || !req.url.startsWith(endpoint)) {
     res.writeHead(405, { 'content-type': 'text/plain' });
@@ -100,6 +124,7 @@ const server = createServer((req, res) => {
     }
 
     const frames = Array.isArray(msg) ? msg : [msg];
+    if (process.env.SSE_PRIMED_CUT && !Array.isArray(msg) && msg.method === 'tools/call') return primedCut(res, msg);
     if (process.env.STREAMING && !Array.isArray(msg) && msg.method !== undefined && msg.id !== undefined) return stream(req, res, msg);
     const results = await Promise.all(frames.map((f) => handle(f, () => {})));
     if (results.includes(DIE)) return req.socket.destroy();

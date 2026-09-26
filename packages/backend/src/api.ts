@@ -8,10 +8,12 @@ import type { ServerRequestRow } from './server-requests.js';
 import type { CallOutcome, ServerAnswer, LogLevel, SubscriptionFilter, UtilityMethod, UtilityOutcome, ListenEnd } from '../../protocol/dist/index.js';
 import type { SessionInfo, ListenView } from './session-controls.js';
 import type { NotificationRow } from './notifications.js';
+import type { HealthReport, ListState } from './health.js';
 
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
 export type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply, CallRecord, CallSummary, RoundRecord, Verdict, CallProgress };
 export type { AwaitedInput, ServerRequestRow, ServerAnswer, LiveTask, TaskOp };
+export type { HealthReport, ListState };
 export type { LogLevel, SubscriptionFilter, UtilityMethod, UtilityOutcome, ListenEnd, SessionInfo, ListenView, NotificationRow };
 export type { VersionTimeline, VersionEntry, VersionKind, VersionComparison, TextComparison, TokenDelta, ToolTokenDelta, SurfaceDiff, ItemChange, FieldChange, TextDiff, Hunk, DiffLine };
 import type { CaptureStatus, ConnectionState, PartialCapture, SecretValues } from './connections.js';
@@ -220,6 +222,11 @@ export interface Requests {
   'session.subscribe': { params: { serverId: string; uri: string; on: boolean }; result: UtilityOutcome | null };
   /** Modern: open the listen with this filter, replacing an open one; null closes it. */
   'session.listen': { params: { serverId: string; filter: SubscriptionFilter | null }; result: null };
+  /**
+   * The health check (phase 10 decision 12): connects if needed, lists
+   * everything, pings a legacy server, and reports. Shown, never stored.
+   */
+  'health.check': { params: { serverId: string }; result: HealthReport };
   /** A page of the server's notifications, oldest first, from units older than `before` (decision 6). */
   'notifications.list': { params: { serverId: string; before?: number; limit?: number }; result: NotificationRow[] };
   /** A resource template's variables, or the URI they make. */

@@ -91,7 +91,7 @@ test('R06-3: capture tells a failed list from duplicate keys, and a surface with
     listTools: async () => ({ items: [{ name: 'a' }, { name: 'a' }] }),
     listPrompts: async () => { throw new Error('nope'); },
   });
-  assert.deepEqual(s.problems.map((p) => [p.endpoint, p.kind]), [['prompts/list', 'list-failed'], ['tools/list', 'duplicate-keys']]);
+  assert.deepEqual(s.problems.filter((p) => p.kind !== 'malformed').map((p) => [p.endpoint, p.kind]), [['prompts/list', 'list-failed'], ['tools/list', 'duplicate-keys']]);
 });
 
 test('R06-4: after a new capture the selected entry is re-read from it, or dropped when it is gone', async () => {

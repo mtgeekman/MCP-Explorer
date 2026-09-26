@@ -123,9 +123,12 @@ export interface CaptureProblem {
   /**
    * `list-failed`: the list was not read, so the capture is not the whole
    * surface. `duplicate-keys`: it was read and repeats an identity key.
+   * `malformed` (phase 10): one entry breaks a rule every revision states.
    * Absent on problems stored before phase 06.
    */
-  kind?: 'list-failed' | 'duplicate-keys';
+  kind?: 'list-failed' | 'duplicate-keys' | 'malformed';
+  /** `malformed`: the entry's identity key as sent, or its position when it has none. */
+  key?: string;
   message: string;
 }
 

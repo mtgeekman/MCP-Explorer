@@ -29,6 +29,7 @@
 //   end_listen     a tool that closes every open listen with its result
 //   cancel_listen  a tool that ends every open listen with notifications/cancelled
 //   tasks          (tasks.mjs) on modern, and on legacy at LEGACY_REVISION=2025-11-25
+//   task_shaped    an ordinary result that happens to carry a `task` object
 //   routed         a tool whose `region` argument declares x-mcp-header Region,
 //                  answering with the arguments it got
 //   MALFORMED_SURFACE  adds one deliberately malformed element of each kind the
@@ -64,6 +65,7 @@ const EXTRA_TOOLS = [
   { name: 'touch', description: 'Announces that a resource changed.', inputSchema: { type: 'object', properties: { uri: { type: 'string' } }, required: ['uri'] } },
   { name: 'end_listen', description: 'Closes every open listen with its result.', inputSchema: { type: 'object', properties: {} } },
   { name: 'cancel_listen', description: 'Ends every open listen with notifications/cancelled.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'task_shaped', description: 'An ordinary result that carries a field named task, as a task handle would.', inputSchema: { type: 'object', properties: {} } },
 ];
 const MUTATED_TOOL = { name: 'mutated', description: 'Listed after mutate.', inputSchema: { type: 'object', properties: {} } };
 const ROUTED_TOOL = { name: 'routed', description: 'Takes a region its server routes on.', inputSchema: { type: 'object', properties: { region: { type: 'string', 'x-mcp-header': 'Region' }, text: { type: 'string' } }, required: ['region'] }, annotations: { readOnlyHint: true } };
@@ -179,6 +181,7 @@ export function withExtras(handle, era, extra = () => ({})) {
       return ok({ content: [{ type: 'text', text: `cancelled ${count}` }] });
     }
     if (method === 'tools/call' && params.name === 'routed') return ok({ content: [{ type: 'text', text: JSON.stringify(params.arguments ?? {}) }] });
+    if (method === 'tools/call' && params.name === 'task_shaped') return ok({ content: [{ type: 'text', text: 'not a task' }], task: { taskId: 'shaped-1', status: 'completed' } });
     if (method === 'prompts/get' && params.name === 'pick') {
       return ok({ messages: [{ role: 'user', content: { type: 'text', text: `Pick ${params.arguments?.language}.` } }] });
     }

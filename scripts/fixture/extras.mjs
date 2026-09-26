@@ -17,17 +17,49 @@
 //   pick           a prompt with a completable argument
 //   resources      one resource carrying size and annotations, one template
 //                  carrying annotations (decision 9)
+//   subscriptions  legacy: resources/subscribe and unsubscribe, and change
+//                  notices sent unasked. Modern: subscriptions/listen, which
+//                  acknowledges, then stays open until the client cancels it
+//                  or end_listen closes it with a result; a notice goes only
+//                  to a listen whose filter asked for it
+//   mutate         a tool that adds the tool `mutated` to tools/list and
+//                  announces tools/list_changed
+//   touch          a tool that announces resources/updated for `uri`, to a
+//                  subscriber of that uri only
+//   end_listen     a tool that closes every open listen with its result
+//   cancel_listen  a tool that ends every open listen with notifications/cancelled
+//                  instead, the other ending the spec describes
+//
+// Notices sent outside a request go through setBroadcast's writer: stdout on
+// stdio, the GET event stream on legacy HTTP.
 import { LEVELS } from './levels.mjs';
 
 export const EXTRAS_ON = () => Boolean(process.env.EXTRAS);
 
 let legacyLevel;
+let mutated = false;
+const legacySubscriptions = new Set();
+/** Open modern listens by request id: the filter and the writer of the stream they arrived on. */
+const listens = new Map();
+let broadcast = () => {};
+
+/** Where a notice sent outside any request goes. Each front sets it. */
+export function setBroadcast(send) { broadcast = send; }
+
+const idKey = (id) => JSON.stringify(id);
+const SUBSCRIPTION_KEY = 'io.modelcontextprotocol/subscriptionId';
+const note = (method, params) => ({ jsonrpc: '2.0', method, ...(params === undefined ? {} : { params }) });
 
 const LANGS = ['go', 'haskell', 'javascript', 'python', 'rust', 'typescript'];
 
 const EXTRA_TOOLS = [
   { name: 'log_burst', description: 'Sends one log message per level at or above the threshold.', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
+  { name: 'mutate', description: 'Adds a tool and announces the change.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'touch', description: 'Announces that a resource changed.', inputSchema: { type: 'object', properties: { uri: { type: 'string' } }, required: ['uri'] } },
+  { name: 'end_listen', description: 'Closes every open listen with its result.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'cancel_listen', description: 'Ends every open listen with notifications/cancelled.', inputSchema: { type: 'object', properties: {} } },
 ];
+const MUTATED_TOOL = { name: 'mutated', description: 'Listed after mutate.', inputSchema: { type: 'object', properties: {} } };
 const EXTRA_PROMPTS = [{ name: 'pick', description: 'A prompt whose argument completes.', arguments: [{ name: 'language', required: true }] }];
 const EXTRA_RESOURCES = [{ uri: 'fixture://sized', name: 'sized', mimeType: 'text/plain', size: 42, annotations: { audience: ['user'], priority: 0.5 } }];
 const EXTRA_TEMPLATES = [{ uriTemplate: 'fixture://langs/{lang}', name: 'langs', annotations: { audience: ['assistant'] } }];
@@ -66,6 +98,59 @@ export function withExtras(handle, era, extra = () => ({})) {
       for (const level of levels) send({ jsonrpc: '2.0', method: 'notifications/message', params: { level, logger: 'fixture', data: `a ${level} message` } });
       return ok({ content: [{ type: 'text', text: `sent ${levels.length} messages` }] });
     }
+    if (era === 'legacy' && (method === 'resources/subscribe' || method === 'resources/unsubscribe')) {
+      if (typeof params.uri !== 'string') return err(-32602, 'uri is required');
+      if (method === 'resources/subscribe') legacySubscriptions.add(params.uri); else legacySubscriptions.delete(params.uri);
+      return ok({});
+    }
+    if (era === 'modern' && method === 'subscriptions/listen') {
+      const asked = params.notifications ?? {};
+      // Every kind this server has; a real server omits what it cannot honour.
+      const honoured = {};
+      for (const k of ['toolsListChanged', 'promptsListChanged', 'resourcesListChanged']) if (asked[k] === true) honoured[k] = true;
+      if (Array.isArray(asked.resourceSubscriptions)) honoured.resourceSubscriptions = asked.resourceSubscriptions;
+      if (Array.isArray(asked.taskIds)) honoured.taskIds = asked.taskIds;
+      send(note('notifications/subscriptions/acknowledged', { notifications: honoured, _meta: { [SUBSCRIPTION_KEY]: id } }));
+      return new Promise((resolve) => listens.set(idKey(id), { id, filter: honoured, send, resolve }));
+    }
+    if (method === 'notifications/cancelled' && listens.has(idKey(params.requestId))) {
+      // A cancelled listen gets no response, as the cancellation utility asks.
+      const listen = listens.get(idKey(params.requestId));
+      listens.delete(idKey(params.requestId));
+      listen.resolve(undefined);
+      return undefined;
+    }
+    if (method === 'tools/call' && params.name === 'mutate') {
+      mutated = true;
+      announce(era, 'toolsListChanged', note('notifications/tools/list_changed'));
+      return ok({ content: [{ type: 'text', text: 'mutated' }] });
+    }
+    if (method === 'tools/call' && params.name === 'touch') {
+      const uri = String(params.arguments?.uri ?? '');
+      if (era === 'legacy') {
+        if (legacySubscriptions.has(uri)) broadcast(note('notifications/resources/updated', { uri }));
+      } else {
+        for (const l of listens.values()) {
+          if (l.filter.resourceSubscriptions?.includes(uri)) l.send(note('notifications/resources/updated', { uri, _meta: { [SUBSCRIPTION_KEY]: l.id } }));
+        }
+      }
+      return ok({ content: [{ type: 'text', text: `touched ${uri}` }] });
+    }
+    if (method === 'tools/call' && params.name === 'end_listen') {
+      const count = listens.size;
+      for (const l of listens.values()) l.resolve({ jsonrpc: '2.0', id: l.id, result: { resultType: 'complete', _meta: { [SUBSCRIPTION_KEY]: l.id } } });
+      listens.clear();
+      return ok({ content: [{ type: 'text', text: `closed ${count}` }] });
+    }
+    if (method === 'tools/call' && params.name === 'cancel_listen') {
+      const count = listens.size;
+      for (const l of listens.values()) {
+        l.send(note('notifications/cancelled', { requestId: l.id, reason: 'the fixture is shutting the stream' }));
+        l.resolve(undefined);
+      }
+      listens.clear();
+      return ok({ content: [{ type: 'text', text: `cancelled ${count}` }] });
+    }
     if (method === 'prompts/get' && params.name === 'pick') {
       return ok({ messages: [{ role: 'user', content: { type: 'text', text: `Pick ${params.arguments?.language}.` } }] });
     }
@@ -73,6 +158,14 @@ export function withExtras(handle, era, extra = () => ({})) {
     const response = await handle(msg, send);
     return decorate(method, response);
   };
+}
+
+/** A change notice: unasked on legacy, and on modern only to the listens that asked for it. */
+function announce(era, flag, message) {
+  if (era === 'legacy') return broadcast(message);
+  for (const l of listens.values()) {
+    if (l.filter[flag] === true) l.send({ ...message, params: { ...(message.params ?? {}), _meta: { [SUBSCRIPTION_KEY]: l.id } } });
+  }
 }
 
 /** Adds the extras to a handshake's capabilities and to each list. */
@@ -87,7 +180,8 @@ function decorate(method, response) {
   }
   const list = LIST_EXTRAS[method];
   if (list && Array.isArray(result[list[0]]) && result.nextCursor === undefined) {
-    return { ...response, result: { ...result, [list[0]]: [...result[list[0]], ...list[1]] } };
+    const added = method === 'tools/list' && mutated ? [...list[1], MUTATED_TOOL] : list[1];
+    return { ...response, result: { ...result, [list[0]]: [...result[list[0]], ...added] } };
   }
   return response;
 }

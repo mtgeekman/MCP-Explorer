@@ -151,3 +151,101 @@ for (const [era, file] of [['legacy', LEGACY], ['modern', MODERN]]) {
     assert.deepEqual(sized.annotations, { audience: ['user'], priority: 0.5 });
   });
 }
+
+const until = async (check, what, ms = 3000) => {
+  const end = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
+
+test('subscriptions, legacy: resources/subscribe, then an update for that uri only; unsubscribe stops it', async () => {
+  const { conn, frames, notes } = await extras(LEGACY);
+  const updates = () => notes.filter((n) => n.method === 'notifications/resources/updated').map((n) => n.params.uri);
+  await conn.call({ kind: 'tool', target: 'touch', args: { uri: 'fixture://sized' } });
+  assert.deepEqual(updates(), [], 'nothing before subscribing');
+  assert.equal((await conn.request({ method: 'resources/subscribe', params: { uri: 'fixture://sized' } })).kind, 'result');
+  await conn.call({ kind: 'tool', target: 'touch', args: { uri: 'fixture://sized' } });
+  await conn.call({ kind: 'tool', target: 'touch', args: { uri: 'fixture://other' } });
+  await until(() => updates().length === 1, 'the update');
+  assert.deepEqual(updates(), ['fixture://sized']);
+  await conn.request({ method: 'resources/unsubscribe', params: { uri: 'fixture://sized' } });
+  await conn.call({ kind: 'tool', target: 'touch', args: { uri: 'fixture://sized' } });
+  assert.deepEqual(updates(), ['fixture://sized']);
+  assert.equal(sent(frames, 'subscriptions/listen').length, 0);
+});
+
+test('change notice, legacy: a mid-session tool change arrives unasked, and nothing is re-listed', async () => {
+  const { conn, frames, notes } = await extras(LEGACY);
+  const lists = sent(frames, 'tools/list').length;
+  await conn.call({ kind: 'tool', target: 'mutate', args: {} });
+  await until(() => notes.some((n) => n.method === 'notifications/tools/list_changed'), 'the notice');
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(sent(frames, 'tools/list').length, lists, 'P2: the app re-lists only on the user\'s Refresh');
+});
+
+test('subscriptions, modern: nothing arrives without a listen; a listen is acknowledged and carries only what it asked for', async () => {
+  const { conn, frames, notes } = await extras(MODERN);
+  await conn.call({ kind: 'tool', target: 'mutate', args: {} });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(notes.filter((n) => n.method === 'notifications/tools/list_changed').length, 0, 'no listen, no notice');
+
+  const listen = conn.listen({ toolsListChanged: true, resourceSubscriptions: ['fixture://sized'] });
+  await until(() => notes.some((n) => n.method === 'notifications/subscriptions/acknowledged'), 'the acknowledgement');
+  const ack = notes.find((n) => n.method === 'notifications/subscriptions/acknowledged');
+  assert.equal(ack.params._meta['io.modelcontextprotocol/subscriptionId'], listen.requestId);
+  assert.deepEqual(ack.params.notifications, { toolsListChanged: true, resourceSubscriptions: ['fixture://sized'] });
+  const [request] = sent(frames, 'subscriptions/listen');
+  assert.equal(request.frame.id, listen.requestId);
+
+  await conn.call({ kind: 'tool', target: 'mutate', args: {} });
+  await conn.call({ kind: 'tool', target: 'touch', args: { uri: 'fixture://sized' } });
+  await conn.call({ kind: 'tool', target: 'touch', args: { uri: 'fixture://other' } });
+  await until(() => notes.some((n) => n.method === 'notifications/resources/updated'), 'the update');
+  const changed = notes.filter((n) => n.method === 'notifications/tools/list_changed');
+  assert.equal(changed.length, 1);
+  assert.equal(changed[0].params._meta['io.modelcontextprotocol/subscriptionId'], listen.requestId);
+  assert.deepEqual(notes.filter((n) => n.method === 'notifications/resources/updated').map((n) => n.params.uri), ['fixture://sized']);
+
+  listen.close();
+  assert.deepEqual(await listen.ended, { kind: 'closed' });
+  const cancel = sent(frames, 'notifications/cancelled').at(-1);
+  assert.equal(cancel.frame.params.requestId, listen.requestId, 'stdio closes a listen with notifications/cancelled');
+});
+
+test('subscriptions, modern: a listen stays open past the SDK\'s 60 s, and the server can end it with the result', async () => {
+  const { conn, frames } = await extras(MODERN);
+  const listen = conn.listen({ toolsListChanged: true });
+  await until(() => listen.requestId !== undefined, 'the listen to go out');
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    mock.timers.tick(61_000);
+    await new Promise((r) => setImmediate(r));
+  } finally {
+    mock.timers.reset();
+  }
+  assert.equal(sent(frames, 'notifications/cancelled').length, 0, 'nothing cancelled the listen on its own');
+  await conn.call({ kind: 'tool', target: 'end_listen', args: {} });
+  const end = await listen.ended;
+  assert.equal(end.kind, 'result');
+  assert.equal(end.result._meta['io.modelcontextprotocol/subscriptionId'], listen.requestId);
+});
+
+test('subscriptions, legacy: listen is refused without a frame', async () => {
+  const { conn, frames } = await extras(LEGACY);
+  const end = await conn.listen({ toolsListChanged: true }).ended;
+  assert.equal(end.kind, 'failed');
+  assert.equal(sent(frames, 'subscriptions/listen').length, 0);
+});
+
+test('subscriptions, modern: a listen the server cancels ends as cancelled-by-server, and nothing is sent back', { timeout: 10_000 }, async () => {
+  const { conn, frames } = await extras(MODERN);
+  const listen = conn.listen({ toolsListChanged: true });
+  await until(() => listen.requestId !== undefined, 'the listen to go out');
+  await conn.call({ kind: 'tool', target: 'cancel_listen', args: {} });
+  const end = await listen.ended;
+  assert.equal(end.kind, 'cancelled-by-server');
+  assert.equal(end.reason, 'the fixture is shutting the stream');
+  assert.equal(sent(frames, 'notifications/cancelled').length, 0);
+});

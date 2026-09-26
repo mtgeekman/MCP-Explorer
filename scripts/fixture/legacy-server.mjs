@@ -6,11 +6,13 @@ import { appendFileSync } from 'node:fs';
 import { readFrames, writer } from './stdio-lines.mjs';
 import { afterLegacy, DIE, SILENT } from './legacy-handler.mjs';
 import { eraAnswerer } from './answer.mjs';
+import { setBroadcast } from './extras.mjs';
 
 const spawnLog = process.env.SPAWN_LOG;
 if (spawnLog) appendFileSync(spawnLog, `${Date.now()} pid=${process.pid}\n`);
 
 const { send } = writer(process.stdout);
+setBroadcast(send);
 const answer = eraAnswerer('legacy');
 
 readFrames(process.stdin, (msg, line) => {

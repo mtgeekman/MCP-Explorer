@@ -8,6 +8,7 @@
 // reason, and every field it leaves out is listed.
 import { parse, printParseErrorCode, type ParseError } from 'jsonc-parser';
 import type { Transport } from '../../storage/dist/index.js';
+import { isAlwaysSecretHeader } from '../../protocol/dist/index.js';
 
 export type ImportClient = 'claude-desktop' | 'claude-code' | 'vscode' | 'cursor';
 
@@ -108,6 +109,13 @@ export function parseConfig(text: string, source: ConfigSource): ParsedConfig {
 export function looksSecret(name: string): boolean {
   return /token|key|secret|passw(or)?d|auth|credential/i.test(name);
 }
+
+/**
+ * A header is marked when it looks secret, and always when it is a
+ * credential by definition (Cookie has no telltale word). Storage refuses
+ * the latter as plain configuration (D31), so the review locks them.
+ */
+const secretHeader = (name: string) => looksSecret(name) || isAlwaysSecretHeader(name);
 
 interface Group {
   location: string;
@@ -231,7 +239,7 @@ function readEntry(name: string, value: unknown, location: string, ctx: ConfigSo
         entry.notes.push(`${what[0].toUpperCase()}${what.slice(1)} ${key} comes from ${r.unresolved}; you will be asked for its value when you connect.`);
       } else {
         server[kind][key] = r.value;
-        if (looksSecret(key)) server.suggestedSecrets[kind].push(key);
+        if (stdio ? looksSecret(key) : secretHeader(key)) server.suggestedSecrets[kind].push(key);
       }
     }
   }
@@ -240,8 +248,8 @@ function readEntry(name: string, value: unknown, location: string, ctx: ConfigSo
 
 function sensitiveValues(value: unknown): string[] {
   if (!isObject(value)) return [];
-  return [value.env, value.headers].flatMap((map) => (isObject(map)
-    ? Object.entries(map).filter(([k, v]) => typeof v === 'string' && v !== '' && looksSecret(k)).map(([, v]) => v as string)
+  return ([[value.env, looksSecret], [value.headers, secretHeader]] as const).flatMap(([map, secret]) => (isObject(map)
+    ? Object.entries(map).filter(([k, v]) => typeof v === 'string' && v !== '' && secret(k)).map(([, v]) => v as string)
     : []));
 }
 

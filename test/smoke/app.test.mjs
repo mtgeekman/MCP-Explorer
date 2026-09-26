@@ -1,4 +1,4 @@
-// Phase 04, 05, 06 and 07 acceptance, driven through the real app with playwright-core. Run
+// Phase 04 to 08 acceptance, driven through the real app with playwright-core. Run
 // with `npm run test:smoke` after `npm run build`; it needs a display (CI
 // runs it under xvfb on Linux). Set MCPX_APP_EXE to drive a packaged build
 // instead of the built tree.
@@ -626,6 +626,179 @@ test('R07-6: a large result in the pane is not re-serialized when something else
     await page.locator('.server-row', { hasText: 'other' }).getByText('Connected').waitFor({ state: 'detached', timeout: 20_000 });
     assert.ok(await page.locator('.readable-pane .part-text').isVisible(), 'the result is still in the pane');
     assert.equal(await page.evaluate(() => window.__bigStringify), 0);
+  } finally {
+    await app.close();
+  }
+});
+
+// --- phase 08: client-side callbacks -----------------------------------------------------
+
+/** Calls the open tool, confirming it: none of the phase 08 tools declares itself read-only. */
+async function callConfirmed(page) {
+  await callButton(page).click();
+  await page.locator('.modal').getByRole('button', { name: 'Send', exact: true }).click();
+}
+
+const sendRetry = (page) => page.getByRole('button', { name: 'Send answers and retry' });
+const outCalls = (path, id) => {
+  const ws = openWorkspaceDb({ path, workspaceId: id, custody: { kind: 'none' }, secrets: noSecrets });
+  try {
+    return ws.db.prepare("SELECT count(*) AS n FROM frame WHERE method = 'tools/call' AND direction = 'out'").get().n;
+  } finally {
+    ws.close();
+  }
+};
+
+test('MRTR: sampling and elicitation in one result are two cards, sent together only when both are answered (board 6.3)', async () => {
+  const { dataDir, path, id } = seed([{ id: randomUUID(), name: 'asks', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'asks');
+    await openCall(page, 'mrtr_both');
+    await callConfirmed(page);
+    await transcriptStatus(page, 'Waiting for input').waitFor({ timeout: 10_000 });
+    const cards = page.locator('.input-set .input-card');
+    await cards.nth(1).waitFor();
+    assert.equal(await cards.count(), 2);
+    assert.ok(await page.getByText('Sampling is deprecated in 2026-07-28').isVisible(), 'sampling marked deprecated on this revision');
+    assert.equal(await sendRetry(page).isDisabled(), true, 'nothing answered yet');
+    await page.getByRole('textbox', { name: 'Sampling reply' }).fill('Ports carry the tide.');
+    assert.equal(await sendRetry(page).isDisabled(), true, 'one of two answered');
+    const elicit = page.locator('.input-card', { hasText: 'Publish it?' });
+    await elicit.getByRole('radio', { name: 'Accept with these values' }).check();
+    await elicit.locator('.call-form select').first().selectOption('true');
+    await elicit.locator('.call-editor textarea').filter({ hasText: '"publish": true' }).waitFor();
+    await shot(page, '08-1-answer-set');
+    await sendRetry(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    await page.locator('.readable-pane .part-text', { hasText: 'requestState intact' }).waitFor();
+    assert.match(await page.locator('.readable-pane').innerText(), /Ports carry the tide/);
+    assert.equal(await page.locator('.call-panel .transcript .round h4', { hasText: /^Round/ }).count(), 2, 'two rounds');
+  } finally {
+    await app.close();
+  }
+  assert.equal(outCalls(path, id), 2, 'the call and its one retry');
+});
+
+test('MRTR, D21: the soft cap pauses the call naming the server and the count; Stop ends it capped (board 6.4)', async () => {
+  const { dataDir, path, id } = seed([{ id: randomUUID(), name: 'loops', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const ws = openWorkspaceDb({ path, workspaceId: id, custody: { kind: 'none' }, secrets: noSecrets });
+  ws.db.prepare('UPDATE workspace_meta SET mrtr_soft_cap = 2').run();
+  ws.close();
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'loops');
+    await openCall(page, 'mrtr_loop');
+    await callConfirmed(page);
+    await page.locator('.input-card', { hasText: 'Round 1: go again?' }).getByRole('radio', { name: 'Decline' }).check({ timeout: 10_000 });
+    await sendRetry(page).click();
+    const pause = page.locator('.pause-box');
+    await pause.waitFor({ timeout: 10_000 });
+    assert.match(await pause.innerText(), /loops has asked for input 2 times on mrtr_loop/);
+    await transcriptStatus(page, 'Paused at the round limit').waitFor();
+    assert.equal(await page.locator('.input-set').count(), 0, 'no answers while paused');
+    await shot(page, '08-2-soft-cap');
+    await pause.getByRole('button', { name: 'Keep answering' }).click();
+    await page.locator('.input-card', { hasText: 'Round 2: go again?' }).getByRole('radio', { name: 'Decline' }).check({ timeout: 10_000 });
+    await sendRetry(page).click();
+    await page.locator('.input-card', { hasText: 'Round 3: go again?' }).getByRole('radio', { name: 'Decline' }).check({ timeout: 10_000 });
+    await sendRetry(page).click();
+    await page.locator('.pause-box', { hasText: '4 times' }).waitFor({ timeout: 10_000 });
+    await page.locator('.pause-box').getByRole('button', { name: 'Stop the call' }).click();
+    await transcriptStatus(page, 'Stopped at the round limit').waitFor({ timeout: 10_000 });
+  } finally {
+    await app.close();
+  }
+  assert.equal(outCalls(path, id), 4);
+});
+
+test('MRTR: a URL-mode request shows the whole URL and its host, and opens only on the click (decision 9)', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'url', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    // Stand in for the system browser: record what would open.
+    await app.evaluate(({ shell }) => {
+      globalThis.opened = [];
+      shell.openExternal = async (url) => { globalThis.opened.push(url); };
+    });
+    await openWorkspace(page);
+    await connect(page, 'url');
+    await openCall(page, 'mrtr_url');
+    await callConfirmed(page);
+    const box = page.locator('.url-box');
+    await box.waitFor({ timeout: 10_000 });
+    assert.equal(await box.locator('strong').innerText(), 'auth.example.com');
+    assert.equal(await box.locator('.url-full').innerText(), 'https://auth.example.com/authorize?client=fixture&state=abc123');
+    await shot(page, '08-3-url');
+    assert.deepEqual(await app.evaluate(() => globalThis.opened), [], 'nothing opened before the click');
+    await box.getByRole('button', { name: 'Open in browser' }).click();
+    await box.getByText('Opened in your browser.').waitFor();
+    assert.deepEqual(await app.evaluate(() => globalThis.opened), ['https://auth.example.com/authorize?client=fixture&state=abc123']);
+    // The main process refuses anything but http and https, whatever the page asks.
+    assert.deepEqual(await page.evaluate(async () => [await window.mcpxShell.openExternal('javascript:alert(1)'), await window.mcpxShell.openExternal('file:///etc/passwd')]), [false, false]);
+    assert.equal((await app.evaluate(() => globalThis.opened)).length, 1);
+    await page.locator('.input-card').getByRole('radio', { name: 'Accept (I will visit it)' }).check();
+    await sendRetry(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+  } finally {
+    await app.close();
+  }
+});
+
+test('legacy: a sampling request mid-call waits under "Requests from the server", and the reply completes the call', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'legacy asks', transport: 'stdio', command: process.execPath, args: [legacy], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'legacy asks');
+    await openCall(page, 'ask_sampling');
+    await callConfirmed(page);
+    const panel = page.locator('.server-requests');
+    await panel.getByText('The server is waiting for your answer.').waitFor({ timeout: 10_000 });
+    await page.locator('.call-panel .transcript', { hasText: 'Requests from the server during this call' }).waitFor();
+    assert.equal(await page.getByText('Sampling is deprecated').count(), 0, 'not deprecated on a legacy revision');
+    await panel.getByRole('textbox', { name: 'Sampling reply' }).fill('A reply from a person.');
+    await shot(page, '08-4-legacy-request');
+    await panel.getByRole('button', { name: 'Send reply' }).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    await page.locator('.readable-pane .part-text', { hasText: 'A reply from a person.' }).waitFor();
+    await panel.locator('summary', { hasText: 'Earlier requests (1)' }).click();
+    await panel.locator('.earlier-request .call-status', { hasText: 'Answered' }).waitFor();
+  } finally {
+    await app.close();
+  }
+});
+
+test('legacy: a refusal sends the chosen error, and the server sees it', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'refuse', transport: 'stdio', command: process.execPath, args: [legacy], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'refuse');
+    await openCall(page, 'ask_elicit');
+    await callConfirmed(page);
+    const panel = page.locator('.server-requests');
+    await panel.getByRole('button', { name: 'Refuse' }).click({ timeout: 10_000 });
+    await panel.getByRole('button', { name: 'Send refusal' }).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    await page.locator('.readable-pane .part-text', { hasText: 'User rejected the request' }).waitFor();
+  } finally {
+    await app.close();
+  }
+});
+
+test('R07-7: a tool form lists its fields in the server order, not alphabetically', async () => {
+  // The legacy fixture keeps its key order; the modern one shuffles keys on every reply, on purpose.
+  const { dataDir } = seed([{ id: randomUUID(), name: 'order', transport: 'stdio', command: process.execPath, args: [legacy], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'order');
+    await openCall(page, 'schema_primitives');
+    // The labels settle once the entry's bytes arrive.
+    await page.waitForFunction(() => [...document.querySelectorAll('.call-form label.field > span > span.mono')].map((e) => e.textContent).join(',') === 'text,count,ratio,flag,colour,when', undefined, { timeout: 10_000 });
   } finally {
     await app.close();
   }

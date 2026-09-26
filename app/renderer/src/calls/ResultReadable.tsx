@@ -11,8 +11,9 @@ import { formatBytes } from '../lib/raw';
 export function ResultReadable({ view }: { view: CallView }) {
   const { call } = view;
   const status = statusLabel(call.status, view.live);
-  const first = call.roundRecords[0];
-  const result = first?.result ?? view.sessionResult;
+  // A call's result is its last round's: earlier rounds asked for input (phase 08).
+  const last = call.roundRecords[call.roundRecords.length - 1];
+  const result = last?.result ?? view.sessionResult;
   // Serializing a multi-megabyte result is the expensive part; the pane
   // re-renders with the app, so it happens once per result (R07-6).
   const size = useMemo(() => (result === undefined || result === null ? 0 : JSON.stringify(result).length), [result]);
@@ -20,7 +21,7 @@ export function ResultReadable({ view }: { view: CallView }) {
     <div className="readable-body">
       <h4 className="mono">{call.target}</h4>
       <p className={`call-status ${status.tone}`}>{status.text}</p>
-      {first?.result === null && view.sessionResult !== undefined && (
+      {last?.result === null && view.sessionResult !== undefined && (
         <p className="muted">This workspace does not keep results. What is shown is this session's copy, gone when the app closes.</p>
       )}
       {view.sdkRejected && (
@@ -29,11 +30,11 @@ export function ResultReadable({ view }: { view: CallView }) {
           <pre className="mono part-text">{view.sdkRejected}</pre>
         </details>
       )}
-      {first?.resultType === 'input_required' && <InputRequired requests={first.inputRequests} />}
-      {first?.error !== null && first?.error !== undefined && (
-        <><h4>Error</h4><pre className="mono json">{JSON.stringify(first.error, null, 2)}</pre></>
+      {last?.resultType === 'input_required' && <InputRequired requests={last.inputRequests} />}
+      {last?.error !== null && last?.error !== undefined && (
+        <><h4>Error</h4><pre className="mono json">{JSON.stringify(last.error, null, 2)}</pre></>
       )}
-      {result !== null && result !== undefined && first?.resultType !== 'input_required' && (
+      {result !== null && result !== undefined && last?.resultType !== 'input_required' && (
         size > READABLE_LIMIT
           ? <p className="muted">{formatBytes(size)} is more than the readable view renders. The raw transcript holds all of it.</p>
           : <Result kind={call.kind} result={result} view={view} />

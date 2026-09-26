@@ -2,8 +2,9 @@
 #
 # llama [fedora, podman] is a SHELL executor: `image:` is ignored and node is
 # NOT on the host, so every node step runs in a pinned container we start
-# ourselves. miniserver [miniserver, windows] is new and largely unproven;
-# the Windows job is written to fail loudly about what it is missing.
+# ourselves. miniserver [miniserver, windows] runs node on the host with no
+# usable Python and no proven compiler (wiki: miniserver-runner); the Windows
+# package job still names each missing tool before it fails.
 #
 # Phase 00 established that NO native compilation is required: the encrypted
 # SQLite module ships N-API prebuilds and electron-builder runs with

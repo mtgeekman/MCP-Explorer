@@ -1,7 +1,6 @@
 import {
   canonicalJson,
   diffSurfaces,
-  surfaceChangeCount,
   hashPrompt,
   hashResource,
   hashResourceTemplate,
@@ -254,11 +253,11 @@ export function versionTimeline(ws: Workspace, serverId: string): VersionTimelin
     }
   }
 
-  const loaded = new Map<number, NormalizedSurface>();
+  const digests = new Map<number, Digest>();
   const load = (id: number) => {
-    let s = loaded.get(id);
-    if (!s) loaded.set(id, (s = loadSnapshot(ws, id)));
-    return s;
+    let d = digests.get(id);
+    if (!d) digests.set(id, (d = digest(ws, id)));
+    return d;
   };
   const firstIndex = new Map<number, number>();
   let version = 0;
@@ -267,13 +266,13 @@ export function versionTimeline(ws: Workspace, serverId: string): VersionTimelin
     let kind: VersionKind = 'first';
     let changes = 0;
     if (index > 0) {
-      const diff = diffSurfaces(load(runs[index - 1]!.snapshotId), surface);
-      changes = surfaceChangeCount(diff);
-      // The hashes differ, so something did. A difference the diff cannot
+      const prev = load(runs[index - 1]!.snapshotId);
+      changes = countChanges(prev, surface);
+      // The hashes differ, so something did. A difference the count cannot
       // name (a repeated key's second entry) is still a surface change.
       kind = changes > 0 ? 'surface'
-        : diff.revisionChanged ? 'revision'
-        : diff.identityChanged ? 'identity'
+        : prev.revision !== surface.revision ? 'revision'
+        : prev.serverName !== surface.serverName || prev.serverVersion !== surface.serverVersion ? 'identity'
         : 'surface';
     }
     if (kind !== 'identity') version++;
@@ -286,8 +285,8 @@ export function versionTimeline(ws: Workspace, serverId: string): VersionTimelin
       changes,
       ...(seen !== undefined ? { sameAs: seen } : {}),
       revision: surface.revision, era: surface.era,
-      ...(surface.serverName !== undefined ? { serverName: surface.serverName } : {}),
-      ...(surface.serverVersion !== undefined ? { serverVersion: surface.serverVersion } : {}),
+      ...(surface.serverName !== null ? { serverName: surface.serverName } : {}),
+      ...(surface.serverVersion !== null ? { serverVersion: surface.serverVersion } : {}),
       firstObservedAt: run.first, lastObservedAt: run.last, observations: run.count,
     };
   });
@@ -299,4 +298,42 @@ export function versionTimeline(ws: Workspace, serverId: string): VersionTimelin
     timeline.unstable = { entries: run, since: entries[entries.length - run]!.firstObservedAt, until: entries[entries.length - 1]!.lastObservedAt };
   }
   return timeline;
+}
+
+/**
+ * What the timeline compares a snapshot by: its row and each item's stored
+ * hash, never the item bodies (R09-1). The hashes are the protocol package's,
+ * taken at record time, so this counts what diffSurfaces counts: a key
+ * repeated in a list keeps its last hash, as diffSurfaces' join does.
+ */
+interface Digest {
+  revision: string; era: Era; serverName: string | null; serverVersion: string | null;
+  instructions: string | null; capabilities: string;
+  items: Record<ItemList, Map<string, string>>;
+}
+
+function digest(ws: Workspace, snapshotId: number): Digest {
+  const row = ws.db.prepare('SELECT revision, era, server_name, server_version, instructions, capabilities_json FROM surface_snapshot WHERE id = ?').get(snapshotId) as SnapshotRow | undefined;
+  if (!row) throw new SnapshotNotFoundError(`no snapshot ${snapshotId} in this workspace`);
+  const items = {} as Digest['items'];
+  for (const list of LISTS) {
+    items[list] = new Map((ws.db.prepare(`SELECT key, item_hash FROM ${ITEM_TABLES[list].table} WHERE snapshot_id = ? ORDER BY ordinal`).all(snapshotId) as { key: string; item_hash: string }[])
+      .map((r) => [r.key, r.item_hash]));
+  }
+  return {
+    revision: row.revision, era: row.era, serverName: row.server_name, serverVersion: row.server_version,
+    instructions: row.instructions, capabilities: row.capabilities_json, items,
+  };
+}
+
+/** surfaceChangeCount of the diff between two snapshots, from their digests. */
+function countChanges(a: Digest, b: Digest): number {
+  let n = (a.instructions !== b.instructions ? 1 : 0) + (a.capabilities !== b.capabilities ? 1 : 0);
+  for (const list of LISTS) {
+    const before = a.items[list];
+    const after = b.items[list];
+    for (const [key, hash] of before) if (after.get(key) !== hash) n++;
+    for (const key of after.keys()) if (!before.has(key)) n++;
+  }
+  return n;
 }

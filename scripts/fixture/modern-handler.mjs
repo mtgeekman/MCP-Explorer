@@ -12,6 +12,8 @@
 //   - capabilities that can be made to lie (LIE_ABOUT)
 //   - a first probe that can answer -32022 (UNSUPPORTED_FIRST)
 
+import { callTools, CALL_PROMPTS, CALL_RESOURCES, CALL_TEMPLATES, CALL_TOOLS_ON } from './call-handler.mjs';
+
 let probed = false;
 let toolsListCalls = 0;
 
@@ -22,7 +24,7 @@ const shuffleKeys = (o) =>
   : o;
 
 const volatile = () => ({ ttlMs: 1000 + Math.floor(Math.random() * 60000), cacheScope: Math.random() < 0.5 ? 'public' : 'private' });
-const serverMeta = () => ({ _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'phase01-modern-fixture', version: '0.0.0' } } });
+export const serverMeta = () => ({ _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'phase01-modern-fixture', version: '0.0.0' } } });
 
 const TOOLS = [
   {
@@ -115,13 +117,13 @@ export function handleModern(msg) {
         ...volatile(),
       }));
     }
-    return ok(id, shuffleKeys({ resultType: 'complete', tools: shuffle(TOOLS.map(shuffleKeys)), ...serverMeta(), ...volatile() }));
+    return ok(id, shuffleKeys({ resultType: 'complete', tools: shuffle([...TOOLS, ...callTools()].map(shuffleKeys)), ...serverMeta(), ...volatile() }));
   }
 
   if (method === 'prompts/list') {
     return ok(id, shuffleKeys({
       resultType: 'complete',
-      prompts: [{ name: 'greet', title: 'Greet', description: 'A greeting.', arguments: [{ name: 'who', required: true }] }].map(shuffleKeys),
+      prompts: [{ name: 'greet', title: 'Greet', description: 'A greeting.', arguments: [{ name: 'who', required: true }] }, ...(CALL_TOOLS_ON() ? CALL_PROMPTS : [])].map(shuffleKeys),
       ...serverMeta(), ...volatile(),
     }));
   }
@@ -129,7 +131,7 @@ export function handleModern(msg) {
   if (method === 'resources/list') {
     return ok(id, shuffleKeys({
       resultType: 'complete',
-      resources: [{ uri: 'file:///fixture/readme.md', name: 'readme', title: 'Readme', mimeType: 'text/markdown' }].map(shuffleKeys),
+      resources: [{ uri: 'file:///fixture/readme.md', name: 'readme', title: 'Readme', mimeType: 'text/markdown' }, ...(CALL_TOOLS_ON() ? CALL_RESOURCES : [])].map(shuffleKeys),
       ...serverMeta(), ...volatile(),
     }));
   }
@@ -137,7 +139,7 @@ export function handleModern(msg) {
   if (method === 'resources/templates/list') {
     return ok(id, shuffleKeys({
       resultType: 'complete',
-      resourceTemplates: [{ uriTemplate: 'file:///fixture/{name}.md', name: 'doc', mimeType: 'text/markdown' }].map(shuffleKeys),
+      resourceTemplates: [{ uriTemplate: 'file:///fixture/{name}.md', name: 'doc', mimeType: 'text/markdown' }, ...(CALL_TOOLS_ON() ? CALL_TEMPLATES : [])].map(shuffleKeys),
       ...serverMeta(), ...volatile(),
     }));
   }

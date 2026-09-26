@@ -24,6 +24,7 @@
 // one of the two markers below; each front decides what dying or hanging
 // means on its own transport.
 import { existsSync, writeFileSync } from 'node:fs';
+import { callTools, CALL_PROMPTS, CALL_RESOURCES, CALL_TEMPLATES, CALL_TOOLS_ON } from './call-handler.mjs';
 
 export const DIE = Symbol('die');
 export const SILENT = Symbol('silent');
@@ -40,7 +41,7 @@ export function handleLegacy(msg) {
   if (msg.method === 'initialize') {
     return ok(msg.id, {
       protocolVersion: '2025-06-18',
-      capabilities: { tools: { listChanged: Boolean(process.env.LIST_CHANGED) } },
+      capabilities: { tools: { listChanged: Boolean(process.env.LIST_CHANGED) }, ...(CALL_TOOLS_ON() ? { prompts: {}, resources: {} } : {}) },
       serverInfo: { name: 'phase00-legacy-fixture', version: '0.0.0' },
       instructions: 'Phase 00 fixture. Legacy era.',
     });
@@ -63,8 +64,16 @@ export function handleLegacy(msg) {
         name: 'echo',
         description: 'Echoes its input.',
         inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-      }, ...(changed ? [{ name: 'added_later', description: 'Listed after the change notice.', inputSchema: { type: 'object' } }] : [])],
+      }, ...(changed ? [{ name: 'added_later', description: 'Listed after the change notice.', inputSchema: { type: 'object' } }] : []), ...callTools()],
     });
+  }
+
+  if (CALL_TOOLS_ON() && msg.method === 'prompts/list') return ok(msg.id, { prompts: CALL_PROMPTS });
+  if (CALL_TOOLS_ON() && msg.method === 'resources/list') return ok(msg.id, { resources: CALL_RESOURCES });
+  if (CALL_TOOLS_ON() && msg.method === 'resources/templates/list') return ok(msg.id, { resourceTemplates: CALL_TEMPLATES });
+  if (msg.method === 'tools/call' && msg.params?.name === 'echo') {
+    const text = String(msg.params.arguments?.text ?? '');
+    return ok(msg.id, { content: [{ type: 'text', text }] });
   }
 
   // Unknown method, including server/discover -> the probe MUST read this as legacy.

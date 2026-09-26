@@ -53,9 +53,12 @@ export interface CallView {
   outputCheck?: Verdict;
 }
 
+/** Why call.changed fired. Only 'progress' leaves the call's status as it was. */
+export type CallChange = 'started' | 'progress' | 'waiting' | 'ended';
+
 export interface CallEvents {
-  /** A call started, progressed, or ended: read calls.get again. */
-  changed(serverId: string, callId: number): void;
+  /** A call started, progressed, began waiting for input, or ended: read calls.get again. */
+  changed(serverId: string, callId: number, reason: CallChange): void;
   /** Finishing a call ran retention (D24); this is what it deleted. */
   purged(result: PurgeResult): void;
 }
@@ -134,9 +137,9 @@ export class CallPipeline {
     this.running.set(callId, run);
     const outcome = s.conn.call({
       kind: req.kind, target: req.target, args: req.args, signal: run.abort.signal,
-      onProgress: (progress) => { run.live.progress = progress; this.events.changed?.(req.serverId, callId); },
+      onProgress: (progress) => { run.live.progress = progress; this.events.changed?.(req.serverId, callId, 'progress'); },
     });
-    this.events.changed?.(req.serverId, callId);
+    this.events.changed?.(req.serverId, callId, 'started');
     void outcome.then((o) => this.settle(callId, seq, run, o));
     return { started: true, callId };
   }
@@ -211,7 +214,7 @@ export class CallPipeline {
         if (inputRequired && this.sessions.session(run.serverId)?.conn === run.conn) {
           // Decision 6: round 1 is recorded and the call waits. Phase 08 answers it.
           run.live = { status: 'awaiting-input' };
-          this.events.changed?.(run.serverId, callId);
+          this.events.changed?.(run.serverId, callId, 'waiting');
           return;
         }
         this.end(callId, run, inputRequired ? 'interrupted' : 'completed');
@@ -239,7 +242,7 @@ export class CallPipeline {
     try {
       this.events.purged?.(run.recorder.finishCall(callId, status));
     } finally {
-      this.events.changed?.(run.serverId, callId);
+      this.events.changed?.(run.serverId, callId, 'ended');
     }
   }
 

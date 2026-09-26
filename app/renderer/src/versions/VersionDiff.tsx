@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { TextComparison, VersionComparison } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
 import { latestOnly } from '../lib/latest';
-import { fieldRows, hunkHeader, segments, tokenLine, toolTokenCells } from '../lib/versions';
+import { fieldRows, hunkHeader, instructionsTokenCells, segments, tokenLine, toolTokenCells } from '../lib/versions';
 
 type Tab = 'model' | 'items' | 'raw';
 const TABS: [Tab, string][] = [['model', 'What the model sees'], ['items', 'By item'], ['raw', 'Raw snapshots']];
@@ -25,6 +25,8 @@ export function VersionDiff({ client, serverId, before, after }: { client: Backe
   if (error) return <p className="error">{error}</p>;
   if (!comparison) return <p className="muted">Comparing</p>;
   const { tokens } = comparison;
+  const instructionsRow = instructionsTokenCells(tokens);
+  const costRows = [...(instructionsRow ? [instructionsRow] : []), ...tokens.tools.map(toolTokenCells)];
 
   return (
     <div className="version-diff">
@@ -35,12 +37,11 @@ export function VersionDiff({ client, serverId, before, after }: { client: Backe
       {tab === 'model' && (
         <>
           <TextDiffView text={comparison.model} same="Nothing the model sees changed." />
-          {tokens.tools.length > 0 && (
+          {costRows.length > 0 && (
             <table className="calls token-table"><tbody>
-              {tokens.tools.map((t) => {
-                const [name, what, delta] = toolTokenCells(t);
-                return <tr key={name}><td className="mono">{name}</td><td className="muted">{what}</td><td className="mono">{delta}</td></tr>;
-              })}
+              {costRows.map(([name, what, delta]) => (
+                <tr key={name}><td className="mono">{name}</td><td className="muted">{what}</td><td className="mono">{delta}</td></tr>
+              ))}
             </tbody></table>
           )}
           <p className="muted">The block this server adds to a model request, as the context preview builds it. Counts are {tokens.tokenizer.label}.</p>

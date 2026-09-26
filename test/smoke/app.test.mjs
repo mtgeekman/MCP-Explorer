@@ -411,9 +411,10 @@ test('calls: a read-only tool runs from the form without a confirm, and its resu
     await openWorkspace(page);
     await connect(page, 'calls');
     await openCall(page, 'add');
-    const inputs = page.locator('.call-form input');
-    await inputs.nth(0).fill('20');
-    await inputs.nth(1).fill('22');
+    // By name: the modern fixture shuffles schema keys, and the form keeps the server's order (R07-7).
+    const input = (name) => page.locator('.call-form label.field', { has: page.locator('span.mono', { hasText: new RegExp(`^${name}$`) }) }).locator('input');
+    await input('a').fill('20');
+    await input('b').fill('22');
     await page.locator('.call-editor textarea').filter({ hasText: '"b": 22' }).waitFor();
     await page.locator('.ok-line', { hasText: 'match the schema' }).waitFor();
     await shot(page, '07-1-form');

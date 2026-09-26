@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FoundLocation, ReadConfig, ServerRow } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
 import { commandLine } from '../lib/describe';
+import { isAlwaysSecretHeader } from '../../../../packages/protocol/dist/secret-headers.js';
 import { entryKey, hiddenValues, initialState, mergePicked, outcomes, OUT_OF_REACH, plan, redactRaw, toggle, type EntryState, type OnClash, type ReviewState } from '../lib/importReview';
 
 type Step =
@@ -199,6 +200,7 @@ function Review({ files, state, encrypted, servers, busy, error, onChange, onBac
                     {s.keep && o?.problem && <p className="error">{o.problem}</p>}
                     <Values title={e.server.transport === 'stdio' ? 'Environment' : 'Headers'} values={e.server.transport === 'stdio' ? e.server.env : e.server.headers}
                       marked={e.server.transport === 'stdio' ? s.secretEnv : s.secretHeaders}
+                      locked={e.server.transport === 'stdio' ? () => false : isAlwaysSecretHeader}
                       onMark={(name, on) => (e.server!.transport === 'stdio' ? set(key, { secretEnv: toggle(s.secretEnv, name, on) }) : set(key, { secretHeaders: toggle(s.secretHeaders, name, on) }))} />
                     {e.notes.map((n) => <p key={n} className="hint">{n}</p>)}
                   </>
@@ -231,7 +233,9 @@ function Review({ files, state, encrypted, servers, busy, error, onChange, onBac
   );
 }
 
-function Values({ title, values, marked, onMark }: { title: string; values: Record<string, string>; marked: string[]; onMark: (name: string, on: boolean) => void }) {
+// A locked name is a credential by definition (Authorization, Cookie, ...):
+// storage refuses it as plain configuration (D31), so it cannot be unmarked.
+function Values({ title, values, marked, locked, onMark }: { title: string; values: Record<string, string>; marked: string[]; locked: (name: string) => boolean; onMark: (name: string, on: boolean) => void }) {
   const names = Object.keys(values);
   if (names.length === 0) return null;
   return (
@@ -242,7 +246,7 @@ function Values({ title, values, marked, onMark }: { title: string; values: Reco
           <tr key={n}>
             <td className="mono">{n}</td>
             <td className="mono">{marked.includes(n) ? '(hidden)' : values[n]}</td>
-            <td><input type="checkbox" aria-label={`${n} is a secret`} checked={marked.includes(n)} onChange={(e) => onMark(n, e.target.checked)} /></td>
+            <td><input type="checkbox" aria-label={`${n} is a secret`} checked={marked.includes(n)} disabled={locked(n)} title={locked(n) ? `${n} is a credential, so it is always a secret` : undefined} onChange={(e) => onMark(n, e.target.checked)} /></td>
           </tr>
         ))}
       </tbody>

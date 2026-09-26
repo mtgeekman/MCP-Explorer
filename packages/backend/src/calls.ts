@@ -214,6 +214,13 @@ export class CallPipeline {
       const extra = Object.keys(given).filter((k) => !Object.hasOwn(asked, k));
       if (missing.length) throw new AnswerError(`no answer for ${missing.join(', ')}`);
       if (extra.length) throw new AnswerError(`the server did not ask for ${extra.join(', ')}`);
+      // answerRound stores them as JSON after the round begins; a value JSON
+      // cannot hold (a BigInt, a cycle) must fail before that (re-review 1).
+      try {
+        JSON.stringify(given);
+      } catch (e) {
+        throw new AnswerError(`the answers cannot be stored as JSON: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
     // The round begins before anything changes: if it cannot, the call is
     // still waiting and can still be stopped (R08-6).

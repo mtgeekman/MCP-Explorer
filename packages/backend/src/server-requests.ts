@@ -77,6 +77,13 @@ export class ServerRequests {
   answer(requestId: number, answer: ServerAnswer): void {
     const p = this.pending.get(requestId);
     if (!p) throw new Error(`server request ${requestId} is not waiting for an answer`);
+    // Stored and sent as JSON: a value JSON cannot hold (a BigInt, a cycle)
+    // would fail both after the request had left the pending set.
+    try {
+      JSON.stringify(answer);
+    } catch (e) {
+      throw new InvalidAnswerError(`the answer cannot be stored as JSON: ${e instanceof Error ? e.message : String(e)}`);
+    }
     if ('error' in answer) {
       const e = answer.error as { code?: unknown; message?: unknown };
       if (!Number.isSafeInteger(e?.code)) throw new InvalidAnswerError('an error needs a whole-number code');

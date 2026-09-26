@@ -145,6 +145,30 @@ test('R08-6: an answer whose round cannot begin leaves the call waiting, still s
   assert.equal((await p.view(callId)).call.status, 'abandoned');
 });
 
+test('re-review 1: answers that cannot be stored are refused before a round begins, and a good answer still goes', async () => {
+  const { p, calls } = pipeline();
+  const { callId } = await p.start({ serverId: 's', kind: 'tool', target: 't', args: {}, confirmed: true });
+  calls[0].resolve(inputRequired(1));
+  await tick();
+  // A BigInt survives the message port's structured clone and fails JSON.
+  assert.throws(() => p.answer(callId, { q: { action: 'accept', content: { n: 1n } } }), /cannot be stored/);
+  assert.equal((await p.view(callId)).call.rounds, 1, 'no round was begun');
+  p.answer(callId, { q: { action: 'decline' } });
+  assert.equal(calls.length, 2, 'the good answer went');
+});
+
+test('re-review 1, twin: a server request answer that cannot be stored is refused, and the request stays answerable', async () => {
+  const { ws, rec, serverId } = workspace();
+  const desk = new ServerRequests(ws, () => []);
+  frame(rec, 'in', sampling(1));
+  void desk.receive(serverId, rec, { id: 1, method: 'sampling/createMessage', params: {}, signal: signal() });
+  const [row] = desk.list(serverId);
+  assert.throws(() => desk.answer(row.id, { result: { n: 1n } }), /cannot be stored/);
+  assert.ok(desk.list(serverId)[0].live, 'still pending and answerable');
+  desk.answer(row.id, { result: { ok: true } });
+  assert.equal(desk.list(serverId)[0].status, 'answered');
+});
+
 test('a call finishes in storage with no purge listener (an optional call skipped finishCall)', async () => {
   const { p, calls } = pipeline();
   const { callId } = await p.start({ serverId: 's', kind: 'tool', target: 't', args: {}, confirmed: true });

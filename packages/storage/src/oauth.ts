@@ -42,9 +42,13 @@ const fromRow = (r: GrantRow): StoredGrant => ({
   ...(r.tokens_json !== null ? { tokens: JSON.parse(r.tokens_json) } : {}),
 });
 
-/** The grant last written for this server, whichever issuer it is under, or null. */
+/**
+ * The grant for this server: the newest that holds tokens, else the newest
+ * registration. A registration under a new issuer is written before its
+ * sign-in finishes, and must not hide tokens that still work (R11-6).
+ */
 export function loadGrant(ws: Workspace, serverId: string): StoredGrant | null {
-  const row = ws.db.prepare('SELECT issuer, auth_server, resource, client_json, tokens_json, updated_at FROM server_oauth WHERE server_id = ? ORDER BY updated_at DESC, issuer LIMIT 1').get(serverId) as GrantRow | undefined;
+  const row = ws.db.prepare('SELECT issuer, auth_server, resource, client_json, tokens_json, updated_at FROM server_oauth WHERE server_id = ? ORDER BY tokens_json IS NULL, updated_at DESC, issuer LIMIT 1').get(serverId) as GrantRow | undefined;
   return row ? fromRow(row) : null;
 }
 

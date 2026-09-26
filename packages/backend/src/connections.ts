@@ -4,6 +4,7 @@
 import {
   captureSurface, connectHttp, connectStdio, ConnectError,
   type ChangedList, type CloseInfo, type NormalizedSurface, type ConnectFailure, type Connection, type EraPreference, type ProcessExit, type WireUnit,
+  type ServerAnswer, type ServerRequest,
 } from '../../protocol/dist/index.js';
 import {
   HistoryRecorder, loadServer, pinEra, clearEra, readDetectedEra, recordCapture,
@@ -69,6 +70,12 @@ export interface ConnectionManagerOptions {
   closeGraceMs?: number;
   /** Ends a server's process tree; the platform's killServerTree unless a test stands in. */
   killTree?: (root: ServerRoot) => Promise<unknown>;
+  /**
+   * A server's own request (legacy era), with the recorder of the session it
+   * arrived on. Resolves with a person's answer. Without it a request waits
+   * unanswered until the session ends (phase 08 decision 1).
+   */
+  onServerRequest?: (serverId: string, recorder: HistoryRecorder, request: ServerRequest) => Promise<ServerAnswer>;
 }
 
 interface Slot {
@@ -354,6 +361,8 @@ export class ConnectionManager {
       slot.changed.add(list);
       this.opts.events.surface?.(serverId);
     };
+    const answer = this.opts.onServerRequest;
+    const onServerRequest = answer ? (request: ServerRequest) => answer(serverId, recorder, request) : undefined;
 
     let conn: Connection;
     try {
@@ -361,7 +370,7 @@ export class ConnectionManager {
         ? await connectStdio({
           command: def.command!, args: def.args, cwd: def.cwd,
           env: { ...inheritedEnv(), ...def.env, ...def.secretEnv, ...session?.env },
-          era, onUnit, onClose, onListChanged, probeTimeoutMs: this.opts.probeTimeoutMs,
+          era, onUnit, onClose, onListChanged, onServerRequest, probeTimeoutMs: this.opts.probeTimeoutMs,
           // A failed connect ends the whole tree, not just its root (D36),
           // before the SDK's own close signals the root alone.
           terminate: (pid) => { const root = this.owned.get(pid); return root ? this.endTree(root) : Promise.resolve(); },
@@ -369,7 +378,7 @@ export class ConnectionManager {
         : await connectHttp({
           url: def.url!, kind: def.transport, era,
           headers: def.headers, secretHeaders: { ...def.secretHeaders, ...session?.headers },
-          onUnit, onListChanged, probeTimeoutMs: this.opts.probeTimeoutMs,
+          onUnit, onListChanged, onServerRequest, probeTimeoutMs: this.opts.probeTimeoutMs,
         });
     } catch (e) {
       recorder.close();

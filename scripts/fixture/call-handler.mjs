@@ -25,6 +25,7 @@
 //                   (D21). `rounds` makes it complete after that many
 //   mrtr_url        URL-mode elicitation
 //   mrtr_roots      a roots/list input request
+//   mrtr_empty      input_required with neither field, which the spec forbids
 //   (prompt) confirm_prompt  input_required on prompts/get
 // Legacy era (ASK_TOOLS, listed by the legacy handler only): each sends a
 // genuine server-to-client request mid-call and answers the call with what
@@ -105,6 +106,7 @@ const MRTR_TOOL_LIST = [
   { name: 'mrtr_loop', description: 'Asks again on every retry.', inputSchema: obj({ rounds: { type: 'integer', minimum: 1 } }) },
   { name: 'mrtr_url', description: 'Asks the user to visit a URL.', inputSchema: obj({}) },
   { name: 'mrtr_roots', description: 'Asks for the client roots.', inputSchema: obj({}) },
+  { name: 'mrtr_empty', description: 'Answers input_required with neither inputRequests nor requestState.', inputSchema: obj({}) },
 ];
 
 const ASK_TOOL_LIST = [
@@ -243,6 +245,8 @@ function mrtr(params, ok, err) {
     case 'mrtr_roots':
       if (!answered?.roots) return need({ roots: { method: 'roots/list', params: {} } }, 'roots:1');
       return done(`roots answered: ${JSON.stringify(answered.roots)}`);
+    case 'mrtr_empty':
+      return ok({ resultType: 'input_required' });
     default:
       return undefined;
   }

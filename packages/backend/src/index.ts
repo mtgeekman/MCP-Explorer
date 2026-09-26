@@ -20,7 +20,8 @@ export {
 } from './workspaces.js';
 export { Backend, NoWorkspaceError, serve, type BackendOptions } from './backend.js';
 export { rawEntry } from './entry.js';
-export { CallPipeline, confirmPolicy, curlFor } from './calls.js';
+export { CallPipeline, AnswerError, confirmPolicy, curlFor } from './calls.js';
+export { ServerRequests, InvalidAnswerError } from './server-requests.js';
 export { listConfigLocations, readConfigs, saveImported, ImportError, type FoundLocation, type ReadConfig, type ImportChoice } from './importer.js';
 export {
   parseConfig,

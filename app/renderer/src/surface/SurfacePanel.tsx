@@ -3,7 +3,9 @@
 // reply (board 5.1A); the readable pane beside it is where a person reads.
 // Refresh is the only way anything is listed again (P2, phase 06 decision 3).
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { EntryList, RawEntry, ServerRow, SurfaceView } from '../../../../packages/backend/dist/index.js';
+import type { CallView, EntryList, RawEntry, ServerRow, SurfaceView } from '../../../../packages/backend/dist/index.js';
+import type { NormalizedTool } from '../../../../packages/protocol/dist/index.js';
+import { CallPanel, type CallTarget } from '../calls/CallPanel';
 import type { BackendClient } from '../lib/client';
 import { LISTS, entryKey, listLabel, listState, reselect, type Selection } from '../lib/surface';
 import { latestOnly } from '../lib/latest';
@@ -15,8 +17,9 @@ type Tab = 'instructions' | EntryList;
 
 const LIST_NOUN: Record<string, string> = { tools: 'tools', prompts: 'prompts', resources: 'resources' };
 
-export function SurfacePanel({ client, server, selected, onSelect }: {
+export function SurfacePanel({ client, server, selected, onSelect, onReadCall }: {
   client: BackendClient; server: ServerRow; selected: SelectedItem | null; onSelect: (item: SelectedItem | null) => void;
+  onReadCall: (view: CallView) => void;
 }) {
   const [view, setView] = useState<SurfaceView | null>(null);
   const [tab, setTab] = useState<Tab>('tools');
@@ -108,16 +111,16 @@ export function SurfacePanel({ client, server, selected, onSelect }: {
             ? (surface.instructions === undefined
               ? <p className="muted">None sent. The server gave no instructions.</p>
               : <pre className="mono instructions">{surface.instructions}</pre>)
-            : <ListTab client={client} serverId={server.id} list={tab} surface={surface} selected={selected} onSelect={onSelect} />}
+            : <ListTab client={client} serverId={server.id} connected={live} list={tab} surface={surface} selected={selected} onSelect={onSelect} onReadCall={onReadCall} />}
         </>
       )}
     </section>
   );
 }
 
-function ListTab({ client, serverId, list, surface, selected, onSelect }: {
-  client: BackendClient; serverId: string; list: EntryList; surface: NonNullable<SurfaceView['capture']>['surface'];
-  selected: SelectedItem | null; onSelect: (item: SelectedItem | null) => void;
+function ListTab({ client, serverId, connected, list, surface, selected, onSelect, onReadCall }: {
+  client: BackendClient; serverId: string; connected: boolean; list: EntryList; surface: NonNullable<SurfaceView['capture']>['surface'];
+  selected: SelectedItem | null; onSelect: (item: SelectedItem | null) => void; onReadCall: (view: CallView) => void;
 }) {
   const state = listState(surface, list);
   if (state.kind === 'not-advertised') return <p className="muted">Not advertised: the server's capabilities do not include this, so nothing was asked.</p>;
@@ -142,9 +145,40 @@ function ListTab({ client, serverId, list, surface, selected, onSelect }: {
         })}
       </ul>
       <div className="surface-entry">
-        {current === null ? <p className="muted pad">Choose an entry to see it exactly as the server listed it.</p> : <EntryRaw client={client} serverId={serverId} list={list} entryKey={current} />}
+        {current === null
+          ? <p className="muted pad">Choose an entry to see it exactly as the server listed it.</p>
+          : <Entry key={current} client={client} serverId={serverId} connected={connected} list={list} entryKey={current}
+            item={items.find((i) => entryKey(list, i) === current)} onReadCall={onReadCall} />}
       </div>
     </div>
+  );
+}
+
+const VERB: Record<EntryList, string> = { tools: 'Call', prompts: 'Get', resources: 'Read', resourceTemplates: 'Read' };
+
+function callTarget(list: EntryList, item: Record<string, unknown>): CallTarget {
+  if (list === 'tools') return { kind: 'tool', tool: item as unknown as NormalizedTool };
+  if (list === 'prompts') return { kind: 'prompt', name: String(item.name), arguments: item.arguments };
+  if (list === 'resources') return { kind: 'resource', uri: String(item.uri) };
+  return { kind: 'template', uriTemplate: String(item.uriTemplate) };
+}
+
+/** An entry opens on its definition (board 5.1A); the call view is one click over (board 6.1). */
+function Entry({ client, serverId, connected, list, entryKey: key, item, onReadCall }: {
+  client: BackendClient; serverId: string; connected: boolean; list: EntryList; entryKey: string;
+  item: Record<string, unknown> | undefined; onReadCall: (view: CallView) => void;
+}) {
+  const [mode, setMode] = useState<'definition' | 'call'>('definition');
+  return (
+    <>
+      <div className="tabs small" role="tablist">
+        <button role="tab" aria-selected={mode === 'definition'} className={mode === 'definition' ? 'tab on' : 'tab'} onClick={() => setMode('definition')}>Definition</button>
+        {item && <button role="tab" aria-selected={mode === 'call'} className={mode === 'call' ? 'tab on' : 'tab'} onClick={() => setMode('call')}>{VERB[list]}</button>}
+      </div>
+      {mode === 'definition' || !item
+        ? <EntryRaw client={client} serverId={serverId} list={list} entryKey={key} />
+        : <CallPanel client={client} serverId={serverId} connected={connected} target={callTarget(list, item)} onRead={onReadCall} />}
+    </>
   );
 }
 

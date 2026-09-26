@@ -9,11 +9,14 @@ import type { CallOutcome, ServerAnswer, LogLevel, SubscriptionFilter, UtilityMe
 import type { SessionInfo, ListenView } from './session-controls.js';
 import type { NotificationRow } from './notifications.js';
 import type { HealthReport, ListState } from './health.js';
+import type { AuthReport } from './auth.js';
+import type { AuthChallenge, AuthFailure } from '../../protocol/dist/index.js';
 
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
 export type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply, CallRecord, CallSummary, RoundRecord, Verdict, CallProgress };
 export type { AwaitedInput, ServerRequestRow, ServerAnswer, LiveTask, TaskOp };
 export type { HealthReport, ListState };
+export type { AuthReport, AuthChallenge, AuthFailure };
 export type { LogLevel, SubscriptionFilter, UtilityMethod, UtilityOutcome, ListenEnd, SessionInfo, ListenView, NotificationRow };
 export type { VersionTimeline, VersionEntry, VersionKind, VersionComparison, TextComparison, TokenDelta, ToolTokenDelta, SurfaceDiff, ItemChange, FieldChange, TextDiff, Hunk, DiffLine };
 import type { CaptureStatus, ConnectionState, PartialCapture, SecretValues } from './connections.js';
@@ -41,6 +44,11 @@ export interface ServerForm {
   secretHeaders?: Record<string, string | null>;
   /** Secrets asked for each session instead of stored (D31, amended). */
   unstoredSecrets?: { env?: string[]; headers?: string[] };
+  /**
+   * A client registered by hand (phase 11 decision 6). `clientSecret` is
+   * like a stored secret: null keeps the stored one, and it is never sent back.
+   */
+  oauthClient?: { clientId: string; redirectUri: string; clientSecret?: string | null };
 }
 
 export interface ServerRow extends ServerSummary {
@@ -227,6 +235,19 @@ export interface Requests {
    * everything, pings a legacy server, and reports. Shown, never stored.
    */
   'health.check': { params: { serverId: string }; result: HealthReport };
+  /** Phase 11: what the app holds for a server's sign-in, never a token value (decision 12). */
+  'auth.get': { params: { serverId: string }; result: AuthReport };
+  /**
+   * Sign in (decision 5): discovery, the client, the authorization URL for
+   * the page to open on the user's word. The code is exchanged when the
+   * browser comes back; auth.changed says when.
+   */
+  'auth.signIn': { params: { serverId: string; challenge?: AuthChallenge; scope?: string; reregister?: boolean }; result: { authorizationUrl: string } };
+  'auth.cancel': { params: { serverId: string }; result: null };
+  /** Forgets the tokens; with `registrations`, the app's registrations too. */
+  'auth.signOut': { params: { serverId: string; registrations?: boolean }; result: AuthReport };
+  /** "Refresh and retry" (decision 2): one refresh, now. */
+  'auth.refresh': { params: { serverId: string }; result: AuthReport };
   /** A page of the server's notifications, oldest first, from units older than `before` (decision 6). */
   'notifications.list': { params: { serverId: string; before?: number; limit?: number }; result: NotificationRow[] };
   /** A resource template's variables, or the URI they make. */
@@ -257,6 +278,8 @@ export interface Events {
   'request.changed': { serverId: string; requestId: number; callId: number | null };
   /** What the user set on a live session changed, or the session ended: read session.get again. */
   'session.changed': { serverId: string };
+  /** A sign-in started, finished or failed, or tokens were refreshed or forgotten: read auth.get again. */
+  'auth.changed': { serverId: string };
   /** Retention deleted history: an open log or call list reloads (R05-9). */
   'log.purged': Record<string, never>;
   notice: WorkspaceNotice;

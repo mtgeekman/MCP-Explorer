@@ -97,4 +97,4 @@ export {
   InvalidSettingsError,
   type WorkspaceSettings,
 } from './settings.js';
-export { saveGrant, loadGrant, loadGrantFor, forgetGrants, type StoredGrant } from './oauth.js';
+export { saveGrant, loadGrant, loadGrantFor, forgetGrants, dropGrant, type StoredGrant } from './oauth.js';

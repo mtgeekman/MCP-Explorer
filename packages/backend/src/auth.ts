@@ -306,6 +306,11 @@ export class AuthManager {
 
   private store(serverId: string, g: Grant): void {
     if (!this.ws.encrypted) {
+      // One grant per server in memory: a registration with another issuer,
+      // written before its sign-in finishes, must not replace working
+      // tokens (R11-13, the session twin of R11-6).
+      const current = this.sessionGrants.get(serverId);
+      if (!g.tokens && current?.tokens && current.info.issuer !== g.info.issuer) return;
       this.sessionGrants.set(serverId, g);
       return;
     }

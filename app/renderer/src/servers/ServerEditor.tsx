@@ -24,6 +24,11 @@ export function ServerEditor({ client, encrypted, serverId, onSaved, onCancel }:
   const [env, setEnv] = useState('');
   const [headers, setHeaders] = useState('');
   const [secrets, setSecrets] = useState<SecretRow[]>([]);
+  // A client registered with the server's authorization server by hand (phase 11 decision 6).
+  const [clientId, setClientId] = useState('');
+  const [redirectUri, setRedirectUri] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [clientSecretStored, setClientSecretStored] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(!serverId);
 
@@ -44,6 +49,9 @@ export function ServerEditor({ client, encrypted, serverId, onSaved, onCancel }:
         ...(f.unstoredSecrets?.env ?? []).map((n) => ({ kind: 'env' as const, name: n, value: '', stored: false })),
         ...(f.unstoredSecrets?.headers ?? []).map((n) => ({ kind: 'header' as const, name: n, value: '', stored: false })),
       ]);
+      setClientId(f.oauthClient?.clientId ?? '');
+      setRedirectUri(f.oauthClient?.redirectUri ?? '');
+      setClientSecretStored(f.oauthClient?.clientSecret === null);
       setLoaded(true);
     });
   }, [client, serverId]);
@@ -67,6 +75,10 @@ export function ServerEditor({ client, encrypted, serverId, onSaved, onCancel }:
     } else {
       form.url = url.trim();
       if (Object.keys(parsedHeaders.value).length) form.headers = parsedHeaders.value;
+      if (clientId.trim()) {
+        const secret = clientSecret !== '' ? clientSecret : clientSecretStored ? null : undefined;
+        form.oauthClient = { clientId: clientId.trim(), redirectUri: redirectUri.trim(), ...(secret !== undefined ? { clientSecret: secret } : {}) };
+      }
     }
     if (Object.keys(parsedEnv.value).length) form.env = parsedEnv.value;
     const named = shownSecrets.filter((s) => s.name.trim() !== '');
@@ -119,6 +131,15 @@ export function ServerEditor({ client, encrypted, serverId, onSaved, onCancel }:
         <>
           <label className="field"><span>URL</span><input className="mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/mcp" /></label>
           <label className="field"><span>Headers, Name: value per line</span><textarea className="mono" rows={2} value={headers} onChange={(e) => setHeaders(e.target.value)} /></label>
+          <fieldset className="secrets">
+            <legend>OAuth client (optional)</legend>
+            <p className="hint">Only for a server whose authorization server does not let apps register themselves. Enter the client you registered with it, and the redirect URI you gave it, exactly.</p>
+            <label className="field"><span>Client ID</span><input className="mono" value={clientId} onChange={(e) => setClientId(e.target.value)} /></label>
+            <label className="field"><span>Redirect URI</span><input className="mono" value={redirectUri} onChange={(e) => setRedirectUri(e.target.value)} placeholder="http://127.0.0.1:43123/callback" /></label>
+            {encrypted
+              ? <label className="field"><span>Client secret, if it has one</span><input className="mono" type="password" value={clientSecret} placeholder={clientSecretStored ? 'Stored; type to replace' : 'None'} onChange={(e) => setClientSecret(e.target.value)} /></label>
+              : <p className="hint">This workspace is not encrypted, so a client secret cannot be kept. A public client (no secret) works.</p>}
+          </fieldset>
         </>
       )}
       <fieldset className="secrets">

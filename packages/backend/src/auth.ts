@@ -49,6 +49,8 @@ export interface AuthReport {
   registration?: { kind: ClientInfo['source']; clientId: string; redirectUri: string };
   scope?: string;
   expiresAt?: number;
+  /** When the tokens held were obtained: a sign-in or refresh newer than a failed connect. */
+  obtainedAt?: number;
   hasRefreshToken?: boolean;
   warnings: string[];
   /** A sign-in waiting for the browser. */
@@ -104,6 +106,7 @@ export class AuthManager {
       ...(g?.tokens ? {
         ...(g.tokens.scope ? { scope: g.tokens.scope } : {}),
         ...(g.tokens.expiresAt !== undefined ? { expiresAt: g.tokens.expiresAt } : {}),
+        ...(typeof g.tokens.obtainedAt === 'number' ? { obtainedAt: g.tokens.obtainedAt } : {}),
         hasRefreshToken: Boolean(g.tokens.refreshToken),
       } : {}),
       ...(p ? { pending: { authorizationUrl: p.authorizationUrl, startedAt: p.startedAt } } : {}),

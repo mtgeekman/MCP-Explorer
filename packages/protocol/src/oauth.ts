@@ -95,6 +95,8 @@ export interface TokenSet {
   scope?: string;
   /** Epoch ms, when the server said how long the token lives. */
   expiresAt?: number;
+  /** Epoch ms, when the token endpoint answered. */
+  obtainedAt: number;
 }
 
 type Fetch = typeof fetch;
@@ -267,6 +269,7 @@ function tokenSet(t: Record<string, unknown>, now: number): TokenSet {
     ...(typeof t.refresh_token === 'string' ? { refreshToken: t.refresh_token } : {}),
     ...(typeof t.scope === 'string' ? { scope: t.scope } : {}),
     ...(expiresIn !== undefined ? { expiresAt: now + expiresIn * 1000 } : {}),
+    obtainedAt: now,
   };
 }
 

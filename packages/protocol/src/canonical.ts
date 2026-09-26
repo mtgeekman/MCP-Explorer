@@ -34,17 +34,27 @@ function sha256(value: unknown): string {
 // One allowlist per item kind. Adding a field here changes the stored hash of
 // every item that carries it (pick skips an absent field, so the rest keep
 // theirs), so it is a deliberate act, not a convenience. Phase 10 decision 9
-// added execution, size and the resource annotations.
+// added execution and the resource annotations. Resource.size is captured and
+// shown but never hashed: it follows the content, not the surface (R10-3).
 export const TOOL_FIELDS = ['name', 'title', 'description', 'icons', 'inputSchema', 'outputSchema', 'annotations', 'execution'] as const;
 export const PROMPT_FIELDS = ['name', 'title', 'description', 'icons', 'arguments'] as const;
-export const RESOURCE_FIELDS = ['uri', 'name', 'title', 'description', 'mimeType', 'icons', 'size', 'annotations'] as const;
+export const RESOURCE_FIELDS = ['uri', 'name', 'title', 'description', 'mimeType', 'icons', 'annotations'] as const;
 export const TEMPLATE_FIELDS = ['uriTemplate', 'name', 'title', 'description', 'mimeType', 'icons', 'annotations'] as const;
 
-/** The allowlisted fields of an item: what is hashed, and what a field-level diff compares. */
+/**
+ * The allowlisted fields of an item: what is hashed, and what a field-level
+ * diff compares. Annotations.lastModified (2025-06-18) is a timestamp of the
+ * content, so it is left out of an annotations object, and an object holding
+ * nothing else counts as absent (R10-3).
+ */
 export function pick<T extends object>(item: T, fields: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const f of fields) {
-    const v = (item as Record<string, unknown>)[f];
+    let v = (item as Record<string, unknown>)[f];
+    if (f === 'annotations' && v !== null && typeof v === 'object' && !Array.isArray(v) && 'lastModified' in v) {
+      const { lastModified: _, ...rest } = v as Record<string, unknown>;
+      v = Object.keys(rest).length > 0 ? rest : undefined;
+    }
     if (v !== undefined) out[f] = v;
   }
   return out;

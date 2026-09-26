@@ -13,6 +13,7 @@ import type {
 } from './model.js';
 import { unavailableFields } from './model.js';
 import type { CaptureProblem } from './model.js';
+import { lintPrompt, lintResource, lintResourceTemplate, lintTool } from './lint.js';
 
 export interface Page<T> {
   items: T[];
@@ -80,6 +81,7 @@ function normalizeTool(raw: Record<string, unknown>): NormalizedTool {
     inputSchema: raw.inputSchema,
     outputSchema: raw.outputSchema,
     annotations: raw.annotations,
+    execution: raw.execution,
   };
 }
 
@@ -101,6 +103,8 @@ function normalizeResource(raw: Record<string, unknown>): NormalizedResource {
     description: str(raw.description),
     mimeType: str(raw.mimeType),
     icons: raw.icons,
+    size: raw.size,
+    annotations: raw.annotations,
   };
 }
 
@@ -112,6 +116,7 @@ function normalizeResourceTemplate(raw: Record<string, unknown>): NormalizedReso
     description: str(raw.description),
     mimeType: str(raw.mimeType),
     icons: raw.icons,
+    annotations: raw.annotations,
   };
 }
 
@@ -184,12 +189,32 @@ function reportDuplicates<T>(
   }
 }
 
+/**
+ * Reports each entry that breaks a structural rule, from the raw entry, before
+ * normalization can hide it. Recorded, never hashed, never a reason to drop
+ * the entry: a malformed element is what an explorer is for.
+ */
+function reportMalformed(items: Record<string, unknown>[], lint: (item: Record<string, unknown>) => string[], keyField: string, endpoint: string, problems: CaptureProblem[]): void {
+  items.forEach((item, i) => {
+    const raw = item !== null && typeof item === 'object' ? item : {};
+    const messages = item !== null && typeof item === 'object' && !Array.isArray(item) ? lint(raw) : ['the entry is not an object'];
+    if (messages.length === 0) return;
+    const key = typeof raw[keyField] === 'string' ? (raw[keyField] as string) : `#${i + 1}`;
+    problems.push({ endpoint, kind: 'malformed', key, message: messages.join('; ') });
+  });
+}
+
 export async function captureSurface(source: SurfaceSource): Promise<NormalizedSurface> {
   const problems: CaptureProblem[] = [];
   const tools = await collectOrRecord(source.listTools?.bind(source), 'tools/list', problems);
   const prompts = await collectOrRecord(source.listPrompts?.bind(source), 'prompts/list', problems);
   const resources = await collectOrRecord(source.listResources?.bind(source), 'resources/list', problems);
   const templates = await collectOrRecord(source.listResourceTemplates?.bind(source), 'resources/templates/list', problems);
+
+  reportMalformed(tools, lintTool, 'name', 'tools/list', problems);
+  reportMalformed(prompts, lintPrompt, 'name', 'prompts/list', problems);
+  reportMalformed(resources, lintResource, 'uri', 'resources/list', problems);
+  reportMalformed(templates, lintResourceTemplate, 'uriTemplate', 'resources/templates/list', problems);
 
   const normalizedTools = tools.map(normalizeTool);
   const normalizedPrompts = prompts.map(normalizePrompt);

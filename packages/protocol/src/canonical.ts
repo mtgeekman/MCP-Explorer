@@ -31,18 +31,34 @@ function sha256(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonicalJson(value))).digest('hex');
 }
 
-// One allowlist per item kind. Adding a field here changes every stored hash,
-// so it is a deliberate act, not a convenience.
-export const TOOL_FIELDS = ['name', 'title', 'description', 'icons', 'inputSchema', 'outputSchema', 'annotations'] as const;
+// One allowlist per item kind. Adding a field here changes the stored hash of
+// every item that carries it (pick skips an absent field, so the rest keep
+// theirs), so it is a deliberate act, not a convenience. Phase 10 decision 9
+// added execution and the resource annotations. Resource.size is captured and
+// shown but never hashed: it follows the content, not the surface (R10-3).
+export const TOOL_FIELDS = ['name', 'title', 'description', 'icons', 'inputSchema', 'outputSchema', 'annotations', 'execution'] as const;
 export const PROMPT_FIELDS = ['name', 'title', 'description', 'icons', 'arguments'] as const;
-export const RESOURCE_FIELDS = ['uri', 'name', 'title', 'description', 'mimeType', 'icons'] as const;
-export const TEMPLATE_FIELDS = ['uriTemplate', 'name', 'title', 'description', 'mimeType', 'icons'] as const;
+export const RESOURCE_FIELDS = ['uri', 'name', 'title', 'description', 'mimeType', 'icons', 'annotations'] as const;
+export const TEMPLATE_FIELDS = ['uriTemplate', 'name', 'title', 'description', 'mimeType', 'icons', 'annotations'] as const;
 
-/** The allowlisted fields of an item: what is hashed, and what a field-level diff compares. */
+/**
+ * The allowlisted fields of an item: what is hashed, and what a field-level
+ * diff compares. Annotations.lastModified (2025-06-18) is a timestamp of the
+ * content, so it is left out of an annotations object (R10-3). A resource's
+ * or template's annotations holding nothing else count as absent, `{}`
+ * included (R10-11): they were first hashed in phase 10, so no stored hash
+ * depends on `{}`. A tool's `{}` has been hashed as present since phase 01,
+ * and stays so, or every stored snapshot of such a tool would read as changed.
+ */
 export function pick<T extends object>(item: T, fields: readonly string[]): Record<string, unknown> {
+  const emptyIsAbsent = fields === RESOURCE_FIELDS || fields === TEMPLATE_FIELDS;
   const out: Record<string, unknown> = {};
   for (const f of fields) {
-    const v = (item as Record<string, unknown>)[f];
+    let v = (item as Record<string, unknown>)[f];
+    if (f === 'annotations' && v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      const { lastModified: _, ...rest } = v as Record<string, unknown>;
+      v = Object.keys(rest).length > 0 ? rest : emptyIsAbsent ? undefined : {};
+    }
     if (v !== undefined) out[f] = v;
   }
   return out;

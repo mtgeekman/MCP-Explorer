@@ -8,6 +8,7 @@ import { eraOf } from './model.js';
 import type { Page, SurfaceSource } from './capture.js';
 import { StringDecoder } from 'node:string_decoder';
 import { LineSplitter, SseEventSplitter, type HttpDetails, type UnitListener, type WireUnit } from './wire.js';
+import { encodeHeaderValue } from './mcp-headers.js';
 
 /**
  * Subclassing StdioClientTransport is what opts out of the SDK's disposable
@@ -94,6 +95,8 @@ export interface ConnectOptions {
   onListChanged?: ListChangedListener;
   /** Legacy era: the server's own requests (sampling, elicitation, roots, any other), for a person to answer. */
   onServerRequest?: ServerRequestListener;
+  /** Every notification the server sends, as the tap saw it, whatever the SDK does with it. */
+  onNotification?: NotificationListener;
 }
 
 /**
@@ -180,12 +183,39 @@ export const PROBE_TIMEOUT_MS = 5000;
 export interface Connection {
   era: Era;
   revision: string;
+  /** How the session travels: Mcp-Param-* headers exist on Streamable HTTP only. */
+  transport: 'stdio' | HttpTransportKind;
   source: SurfaceSource;
   /**
    * Sends one tools/call, prompts/get or resources/read as the user asked, and
    * reports what came back exactly as the server sent it. Never retries (P2).
    */
   call(request: CallRequest): Promise<CallOutcome>;
+  /** Sends one utility request as the user asked: ping, a completion, a subscription. Never retried. */
+  request(request: UtilityRequest): Promise<UtilityOutcome>;
+  /** The log level the user set this session; undefined until one is set. */
+  readonly logLevel: LogLevel | undefined;
+  /**
+   * Sets the log level (phase 10 decision 5). Legacy: sends logging/setLevel
+   * and resolves with its outcome. Modern: holds the level for every later
+   * request's _meta, sends nothing, and resolves undefined.
+   */
+  setLogLevel(level: LogLevel | undefined): Promise<UtilityOutcome | undefined>;
+  /**
+   * Modern era: opens one subscriptions/listen stream with this filter, as the
+   * user asked. Sent through request() with no timeout, never the SDK's
+   * listen(), whose 60 s acknowledgement timeout cancels on its own (P2). The
+   * acknowledgement arrives as a notification. On legacy it sends nothing and
+   * ends at once as failed.
+   */
+  listen(filter: SubscriptionFilter): ListenHandle;
+  /**
+   * One request about a task, as the user asked. Legacy: through request().
+   * Modern: SDK 2.0.0 refuses the task methods locally, so this module frames
+   * the request itself with the SDK's own _meta envelope and sends it on the
+   * tapped transport (P1 holds), pairing the reply by id.
+   */
+  task(request: TaskRequest): Promise<CallOutcome>;
   /** stdio only: the process the app spawned, the root of its tree (D36). */
   pid?: number;
   /** stdio only: when that process was seen to spawn, milliseconds since the epoch. */
@@ -278,14 +308,28 @@ function makeClient(
   const onListChanged = opts.onListChanged;
   if (onListChanged) {
     // Registering sends nothing; a notice is only reported. On 2026-07-28 a
-    // server sends these only on a subscriptions/listen stream, which the app
-    // does not open (phase 06 decision 7), so in practice this is legacy only.
+    // server sends these only on a subscriptions/listen stream the user
+    // opened (phase 10 decision 7). The app's backend reads notices through
+    // onNotification instead; this listener stays for the adapter's callers.
     for (const [method, list] of LIST_CHANGED) {
       client.setNotificationHandler(method, () => onListChanged(list));
     }
   }
   return client;
 }
+
+/** A notification from the server: method and params as sent. */
+export interface ServerNotification {
+  method: string;
+  params: unknown;
+}
+/**
+ * Told of every notification the server sends. Read from the tap, not the
+ * SDK's dispatch: on the modern era the SDK drops some it does not model
+ * (notifications/tasks/status, notifications/elicitation/complete), and an
+ * explorer shows them anyway. Only reports; nothing is sent back.
+ */
+export type NotificationListener = (notification: ServerNotification) => void;
 
 export type ChangedList = 'tools' | 'prompts' | 'resources';
 /** Told which list a server says changed. The app never re-lists on its own (P2). */
@@ -297,13 +341,14 @@ const LIST_CHANGED: [string, ChangedList][] = [
   ['notifications/resources/list_changed', 'resources'],
 ];
 
-function tap(inner: any, listener: FrameListener | undefined, onFrameError: FrameErrorListener = warnFrameError, calls?: CallTracker): any {
-  if (!listener && !calls) return inner;
+function tap(inner: any, listener: FrameListener | undefined, onFrameError: FrameErrorListener = warnFrameError, calls?: CallTracker, onNotification?: NotificationListener): any {
+  if (!listener && !calls && !onNotification) return inner;
   // A listener that throws must not cost the protocol the frame. Called before
   // the SDK's handler, an exception here made the transport drop the message
   // (the request then hung) or reject the send; it is reported instead.
   const onFrame: FrameListener = (direction, frame) => {
     calls?.see(direction, frame);
+    if (onNotification && direction === 'in') reportNotification(frame, onNotification);
     if (!listener) return;
     try {
       listener(direction, frame);
@@ -323,7 +368,7 @@ function tap(inner: any, listener: FrameListener | undefined, onFrameError: Fram
       if (p === 'send') {
         return async (m: unknown, o?: unknown) => {
           for (const f of Array.isArray(m) ? m : [m]) onFrame('out', f);
-          return t.send(m, o);
+          return t.send(m, calls ? withStreamEnd(m, o, calls) : o);
         };
       }
       if (p === 'onmessage') return assigned;
@@ -331,6 +376,10 @@ function tap(inner: any, listener: FrameListener | undefined, onFrameError: Fram
       return typeof v === 'function' ? v.bind(t) : v;
     },
     set(t: any, p: string | symbol, v: unknown) {
+      if (p === 'onclose' && calls) {
+        // The session is over: replies to requests framed here will not come.
+        return Reflect.set(t, p, (...a: unknown[]) => { calls.end(); return (v as ((...x: unknown[]) => unknown) | undefined)?.(...a); });
+      }
       if (p === 'onmessage') {
         assigned = v;
         // Installed even when v is empty: a frame arriving between handlers
@@ -341,6 +390,41 @@ function tap(inner: any, listener: FrameListener | undefined, onFrameError: Fram
       return Reflect.set(t, p, v);
     },
   });
+}
+
+const STREAM_ENDED = 'the event stream ended without a response';
+
+/**
+ * Decision 13, revised by R10-9 and R10-10: the Streamable HTTP transport
+ * calls a send's onRequestStreamEnd when a request's event stream is over
+ * and it will not resume it: the stream ended with no event id to resume
+ * from, or every reconnect failed (or was refused). client.request() passes
+ * no such callback, so the tap adds one to each request it sends, and the
+ * request fails then instead of waiting forever. The SDK decides; this only
+ * listens. A transport without the callback (stdio, SSE) never calls it.
+ */
+function withStreamEnd(message: unknown, options: unknown, calls: CallTracker): unknown {
+  const m = message as { id?: unknown; method?: unknown } | null;
+  if (Array.isArray(message) || !m || typeof m.method !== 'string' || m.id === undefined || m.id === null) return options;
+  const given = options as { onRequestStreamEnd?: () => void } | undefined;
+  return {
+    ...given,
+    onRequestStreamEnd: () => {
+      given?.onRequestStreamEnd?.();
+      calls.abandon(m.id, STREAM_ENDED);
+    },
+  };
+}
+
+/** A listener that throws must not cost the connection the frame; it is warned about instead. */
+function reportNotification(frame: unknown, listener: NotificationListener): void {
+  const m = frame as { id?: unknown; method?: unknown; params?: unknown } | null;
+  if (!m || typeof m !== 'object' || typeof m.method !== 'string' || (m.id !== undefined && m.id !== null)) return;
+  try {
+    listener({ method: m.method, params: m.params });
+  } catch (error) {
+    process.emitWarning('a notification listener failed: ' + messageOf(error), 'MCPExplorerFrameLogWarning');
+  }
 }
 
 /**
@@ -362,15 +446,17 @@ function tap(inner: any, listener: FrameListener | undefined, onFrameError: Fram
  *    server now. request() never consults that cache.
  */
 function lister(
-  client: any,
-  calls: CallTracker,
+  session: Session,
   method: 'tools/list' | 'prompts/list' | 'resources/list' | 'resources/templates/list',
   field: 'tools' | 'prompts' | 'resources' | 'resourceTemplates',
   supported: boolean,
 ): ((cursor?: string) => Promise<Page<Record<string, unknown>>>) | undefined {
   if (!supported) return undefined;
   return async (cursor?: string) => {
-    const r = await rawRequest(client, calls, method, cursor === undefined ? {} : { cursor }, {});
+    // No timeout: the SDK's 60 s default sends notifications/cancelled, a
+    // request the user did not make (P2). A list that never answers holds the
+    // capture until the user disconnects.
+    const r = await rawRequest(session, method, cursor === undefined ? {} : { cursor }, { timeout: NO_TIMEOUT_MS });
     if (!r.response) throw r.failure;
     if ('error' in r.response) {
       const e = (r.response.error ?? {}) as { code?: unknown; message?: unknown };
@@ -401,6 +487,13 @@ export interface CallRequest {
   inputResponses?: Record<string, unknown>;
   /** Phase 08: echoed byte-exact, and only when the server sent one (D16). */
   requestState?: string;
+  /**
+   * Legacy (2025-11-25): run the tool call as a task, `params.task`. On the
+   * modern era the server decides per request and there is no such field.
+   */
+  task?: { ttl?: number };
+  /** Extra HTTP request headers for this request, such as Mcp-Param-* (phase 10 decision 11). */
+  headers?: Record<string, string>;
 }
 
 export interface CallProgress {
@@ -424,6 +517,102 @@ export type CallOutcome =
   | { kind: 'failed'; requestId?: string | number; message: string };
 
 export const CALL_METHOD: Record<CallKind, string> = { tool: 'tools/call', prompt: 'prompts/get', resource: 'resources/read' };
+
+/** The syslog levels MCP logging uses, least severe first (every revision). */
+export const LOG_LEVELS = ['debug', 'info', 'notice', 'warning', 'error', 'critical', 'alert', 'emergency'] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+export const LOG_LEVEL_META_KEY = 'io.modelcontextprotocol/logLevel';
+
+/**
+ * A protocol request the user asked for that is not a call: each one is sent
+ * once, on a click, with no timeout (P2; phase 10).
+ */
+export type UtilityMethod = 'ping' | 'logging/setLevel' | 'completion/complete' | 'resources/subscribe' | 'resources/unsubscribe';
+
+export interface UtilityRequest {
+  method: UtilityMethod;
+  params?: Record<string, unknown>;
+  signal?: AbortSignal;
+}
+
+/**
+ * What a modern subscriptions/listen stream asks for (2026-07-28
+ * SubscriptionFilter). Open-ended: an extension's field, such as the tasks
+ * extension's taskIds, goes through as given.
+ */
+export interface SubscriptionFilter {
+  toolsListChanged?: boolean;
+  promptsListChanged?: boolean;
+  resourcesListChanged?: boolean;
+  resourceSubscriptions?: string[];
+  [extension: string]: unknown;
+}
+
+/** How a listen stream ended. */
+export type ListenEnd =
+  /** The user closed it: the era's cancellation was sent. */
+  | { kind: 'closed' }
+  /** The server ended it gracefully with the listen result. */
+  | { kind: 'result'; result: Record<string, unknown> }
+  /** The server answered the listen with an error. */
+  | { kind: 'error'; error: { code?: unknown; message?: unknown; data?: unknown } }
+  /** The server cancelled it (notifications/cancelled naming the listen). */
+  | { kind: 'cancelled-by-server'; reason?: unknown }
+  /** No response: the session ended, or the request could not be sent. */
+  | { kind: 'failed'; message: string };
+
+/** An open modern listen stream (phase 10 decision 7). */
+export interface ListenHandle {
+  /** The listen request's id: every notification on the stream carries it as its subscriptionId. Absent when nothing was sent. */
+  readonly requestId?: string | number;
+  /** Settles when the stream ends, for any reason. */
+  readonly ended: Promise<ListenEnd>;
+  /** Ends the stream as the user asked: the SDK sends the era's cancellation. */
+  close(): void;
+}
+
+export const SUBSCRIPTION_ID_META_KEY = 'io.modelcontextprotocol/subscriptionId';
+
+/** The tasks extension's identifier (2026-07-28; SEP-2663). */
+export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
+
+/**
+ * A request about a task, sent once on the user's word; nothing polls (phase
+ * 10 decision 2). Legacy (2025-11-25 core): get, result, cancel, list. Modern
+ * (the tasks extension): get, update, cancel.
+ */
+export type TaskMethod = 'tasks/get' | 'tasks/result' | 'tasks/cancel' | 'tasks/list' | 'tasks/update';
+
+export interface TaskRequest {
+  method: TaskMethod;
+  params: Record<string, unknown>;
+}
+
+const TASK_METHODS_BY_ERA: Record<Era, ReadonlySet<TaskMethod>> = {
+  legacy: new Set<TaskMethod>(['tasks/get', 'tasks/result', 'tasks/cancel', 'tasks/list']),
+  modern: new Set<TaskMethod>(['tasks/get', 'tasks/update', 'tasks/cancel']),
+};
+
+/** Why this task request cannot go to a server on this era, or undefined when it can. */
+export function taskRefusal(method: TaskMethod, era: Era, revision: string): string | undefined {
+  return TASK_METHODS_BY_ERA[era].has(method) ? undefined : method + ' does not exist on ' + revision;
+}
+
+/** A utility request's outcome, and how long it took from send to response. */
+export type UtilityOutcome = CallOutcome & { elapsedMs: number };
+
+/**
+ * The methods 2026-07-28 removed: ping, logging/setLevel and
+ * resources/(un)subscribe (its changelog items 4 and 5). Each would otherwise
+ * fail inside the SDK with no frame sent.
+ */
+const ABSENT_ON_MODERN: ReadonlySet<UtilityMethod> = new Set<UtilityMethod>(['ping', 'logging/setLevel', 'resources/subscribe', 'resources/unsubscribe']);
+
+/** Why this request cannot go to a server on this era, or undefined when it can. */
+export function utilityRefusal(method: UtilityMethod, era: Era, revision: string): string | undefined {
+  if (era === 'modern' && ABSENT_ON_MODERN.has(method)) return method + ' does not exist on ' + revision;
+  return undefined;
+}
 
 /**
  * setTimeout's ceiling, about 24.8 days: the SDK has no "never", and a larger
@@ -449,13 +638,25 @@ class CallTracker {
   private armed: { method: string; id?: string | number } | undefined;
   private readonly responses = new Map<string, Record<string, unknown>>();
   private readonly watched = new Set<string>();
+  private readonly cancels = new Map<string, (reason: unknown) => void>();
+  /** Requests whose event stream ended without their response (phase 10 decision 13). */
+  private readonly abandons = new Map<string, (message: string) => void>();
+  /** Replies this module is waiting on for requests it framed itself. */
+  private readonly waiters = new Map<string, { resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }>();
 
   see(direction: FrameDirection, frame: unknown): void {
-    const m = frame as { id?: unknown; method?: unknown } | null;
+    const m = frame as { id?: unknown; method?: unknown; params?: { requestId?: unknown; reason?: unknown } } | null;
+    if (direction === 'in' && m && typeof m === 'object' && m.method === 'notifications/cancelled' && m.params) {
+      this.cancels.get(idKey(m.params.requestId))?.(m.params.reason);
+    }
     if (!m || typeof m !== 'object' || m.id === undefined || m.id === null) return;
     if (direction === 'out' && this.armed && m.method === this.armed.method && this.armed.id === undefined) {
       this.armed.id = m.id as string | number;
       this.watched.add(idKey(m.id));
+    } else if (direction === 'in' && m.method === undefined && this.waiters.has(idKey(m.id))) {
+      const waiter = this.waiters.get(idKey(m.id))!;
+      this.waiters.delete(idKey(m.id));
+      waiter.resolve(m as Record<string, unknown>);
     } else if (direction === 'in' && m.method === undefined && this.watched.has(idKey(m.id))) {
       this.responses.set(idKey(m.id), m as Record<string, unknown>);
     }
@@ -476,6 +677,51 @@ class CallTracker {
     }
   }
 
+  /** Resolves with the reply to a request this module framed itself; rejects when the session ends first. */
+  expect(id: string | number): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => this.waiters.set(idKey(id), { resolve, reject }));
+  }
+
+  /** Resolves with why, if the request's response will never come because its stream ended first. */
+  whenAbandoned(id: string | number): Promise<string> {
+    return new Promise((resolve) => this.abandons.set(idKey(id), resolve));
+  }
+
+  /** Told when a request is abandoned, to record why beside the wire traffic (decision 13). */
+  onAbandoned?: (id: unknown, message: string) => void;
+
+  /**
+   * The stream carrying this request's response ended without it, and will
+   * not be resumed: the request fails, and nothing is sent. A request already
+   * answered, or not pending here, is left alone: the SDK reports the end of
+   * every request stream, answered or not.
+   */
+  abandon(id: unknown, message: string): void {
+    const key = idKey(id);
+    if (!this.watched.has(key) && !this.waiters.has(key)) return;
+    this.onAbandoned?.(id, message);
+    const waiter = this.waiters.get(key);
+    this.waiters.delete(key);
+    waiter?.reject(new Error(message));
+    this.abandons.get(key)?.(message);
+    this.abandons.delete(key);
+  }
+
+  /** The session ended: every reply still awaited will never come. */
+  end(): void {
+    for (const w of this.waiters.values()) w.reject(new Error('the session ended before a response arrived'));
+    this.waiters.clear();
+  }
+
+  /** Calls back when the server cancels the request we sent under this id. */
+  watchCancel(id: string | number, onCancel: (reason: unknown) => void): void {
+    this.cancels.set(idKey(id), onCancel);
+  }
+
+  unwatchCancel(id: string | number): void {
+    this.cancels.delete(idKey(id));
+  }
+
   /** Whether the response for this id has arrived. */
   has(id: string | number): boolean {
     return this.responses.has(idKey(id));
@@ -484,6 +730,8 @@ class CallTracker {
   /** The response the tap saw for this id, if any; forgets the id either way. */
   take(id: string | number): Record<string, unknown> | undefined {
     const key = idKey(id);
+    this.waiters.delete(key);
+    this.abandons.delete(key);
     const response = this.responses.get(key);
     this.responses.delete(key);
     this.watched.delete(key);
@@ -495,15 +743,16 @@ class CallTracker {
  * The params a call sends, before the SDK adds its `_meta`: the one place they
  * are built, so the confirm shows what call() will send (phase 07 decision 5).
  */
-export function callParams(req: Pick<CallRequest, 'kind' | 'target' | 'args' | 'inputResponses' | 'requestState'>): Record<string, unknown> {
+export function callParams(req: Pick<CallRequest, 'kind' | 'target' | 'args' | 'inputResponses' | 'requestState' | 'task'>): Record<string, unknown> {
   const params: Record<string, unknown> = req.kind === 'resource' ? { uri: req.target } : { name: req.target };
   if (req.kind !== 'resource' && req.args !== undefined) params.arguments = req.args;
   if (req.inputResponses !== undefined) params.inputResponses = req.inputResponses;
   if (req.requestState !== undefined) params.requestState = req.requestState;
+  if (req.kind === 'tool' && req.task !== undefined) params.task = req.task;
   return params;
 }
 
-async function callOn(client: any, calls: CallTracker, req: CallRequest): Promise<CallOutcome> {
+async function callOn(session: Session, req: CallRequest): Promise<CallOutcome> {
   const method = CALL_METHOD[req.kind];
   const params = callParams(req);
   const onProgress = req.onProgress;
@@ -511,6 +760,7 @@ async function callOn(client: any, calls: CallTracker, req: CallRequest): Promis
     allowInputRequired: true,
     timeout: NO_TIMEOUT_MS,
     ...(req.signal ? { signal: req.signal } : {}),
+    ...(req.headers ? { headers: req.headers } : {}),
     ...(onProgress ? {
       onprogress: (p: CallProgress) => onProgress({
         progress: p.progress,
@@ -520,7 +770,12 @@ async function callOn(client: any, calls: CallTracker, req: CallRequest): Promis
     } : {}),
   };
 
-  const r = await rawRequest(client, calls, method, params, options);
+  const r = await rawRequest(session, method, params, options);
+  return outcomeOf(r);
+}
+
+/** What a raw request came to, as a call outcome. */
+function outcomeOf(r: RawResponse): CallOutcome {
   if (r.requestId === undefined) return { kind: 'failed', message: messageOf(r.failure) };
   const requestId = r.requestId;
   // A response the SDK accepted before the abort is the outcome: the cancel
@@ -542,25 +797,36 @@ async function callOn(client: any, calls: CallTracker, req: CallRequest): Promis
  * still does everything else a request needs (the id, `_meta`, progress,
  * cancellation). `failure` says why there is no response.
  */
-async function rawRequest(client: any, calls: CallTracker, method: string, params: Record<string, unknown>, options: Record<string, unknown>): Promise<{
+interface RawResponse {
   requestId?: string | number; response?: Record<string, unknown>; sdkError?: unknown; failure: unknown;
   /** The request's signal aborted before its response arrived: the request was cancelled. */
   abortedFirst?: true;
-}> {
+}
+
+async function rawRequest(session: Session, method: string, params: Record<string, unknown>, options: Record<string, unknown>): Promise<RawResponse> {
+  const { client, calls } = session;
+  // onSent is ours: told the id the moment the frame is out, before any reply.
+  const { onSent, ...sdkOptions } = options as Record<string, unknown> & { onSent?: (id: string | number) => void };
   let sent: { id?: string | number; sent: Promise<unknown> };
   try {
-    sent = calls.send(method, () => client.request({ method, params }, PASS_THROUGH, options) as Promise<unknown>);
+    sent = calls.send(method, () => client.request({ method, params: withLogLevel(session, params) }, PASS_THROUGH, sdkOptions) as Promise<unknown>);
   } catch (e) {
     return { failure: e };
   }
   let abortedFirst = false;
   const signal = options.signal as AbortSignal | undefined;
   const id = sent.id;
+  if (id !== undefined) onSent?.(id);
   const onAbort = () => { abortedFirst = id === undefined || !calls.has(id); };
   signal?.addEventListener('abort', onAbort, { once: true });
   let sdkError: unknown;
+  // The SDK never settles a request whose event stream ended without its
+  // response and will not be resumed; the tap hears it from the transport
+  // (withStreamEnd), and the request fails here instead.
+  const abandoned = id === undefined ? new Promise<never>(() => undefined) : calls.whenAbandoned(id);
   try {
-    await sent.sent;
+    const why = await Promise.race([sent.sent.then(() => undefined), abandoned]);
+    if (typeof why === 'string') sdkError = new Error(why);
   } catch (e) {
     sdkError = e;
   }
@@ -578,9 +844,121 @@ async function rawRequest(client: any, calls: CallTracker, method: string, param
   };
 }
 
+/** One connected session: the SDK client, the tap's call tracker, and what the user set for it. */
+interface Session {
+  client: any;
+  calls: CallTracker;
+  era: Era;
+  revision: string;
+  /** Modern era: added to every request's _meta once the user sets it (phase 10 decision 5). */
+  logLevel?: LogLevel;
+  /** How many task requests this module framed itself (modern era), for their ids. */
+  framed: number;
+}
+
+/**
+ * Modern era: the user's log level rides on every request as
+ * _meta["io.modelcontextprotocol/logLevel"]; without the key a server sends
+ * no log messages for that request. The SDK never sets it, and a key given
+ * here wins over its envelope. Legacy params go out untouched.
+ */
+function withLogLevel(session: Session, params: Record<string, unknown>): Record<string, unknown> {
+  if (session.era !== 'modern' || session.logLevel === undefined) return params;
+  const meta = (params._meta && typeof params._meta === 'object' ? params._meta : {}) as Record<string, unknown>;
+  return { ...params, _meta: { ...meta, [LOG_LEVEL_META_KEY]: session.logLevel } };
+}
+
+async function utilityOn(session: Session, req: UtilityRequest): Promise<UtilityOutcome> {
+  const refusal = utilityRefusal(req.method, session.era, session.revision);
+  if (refusal) return { kind: 'failed', message: refusal, elapsedMs: 0 };
+  const started = performance.now();
+  const r = await rawRequest(session, req.method, req.params ?? {}, { timeout: NO_TIMEOUT_MS, ...(req.signal ? { signal: req.signal } : {}) });
+  return { ...outcomeOf(r), elapsedMs: performance.now() - started };
+}
+
+async function setLogLevelOn(session: Session, level: LogLevel | undefined): Promise<UtilityOutcome | undefined> {
+  if (session.era === 'modern') {
+    session.logLevel = level;
+    return undefined;
+  }
+  // Legacy has no way to unset a level: the protocol's lowest is still a level.
+  if (level === undefined) return { kind: 'failed', message: 'a legacy server has no way to turn logging off once a level is set', elapsedMs: 0 };
+  const outcome = await utilityOn(session, { method: 'logging/setLevel', params: { level } });
+  if (outcome.kind === 'result') session.logLevel = level;
+  return outcome;
+}
+
+function listenOn(session: Session, filter: SubscriptionFilter): ListenHandle {
+  if (session.era !== 'modern') {
+    return { ended: Promise.resolve({ kind: 'failed', message: 'subscriptions/listen does not exist on ' + session.revision }), close: () => undefined };
+  }
+  const abort = new AbortController();
+  let requestId: string | number | undefined;
+  let serverCancel: ((end: ListenEnd) => void) | undefined;
+  const byServer = new Promise<ListenEnd>((resolve) => { serverCancel = resolve; });
+  const onSent = (id: string | number) => {
+    requestId = id;
+    // The spec's cancellation page says a server ending a listen sends
+    // notifications/cancelled naming it; its subscriptions page says the
+    // listen result. Both are read. The SDK does not settle a request the
+    // server cancelled, so this does, and nothing is sent back.
+    session.calls.watchCancel(id, (reason) => serverCancel?.({ kind: 'cancelled-by-server', reason }));
+  };
+  const request = rawRequest(session, 'subscriptions/listen', { notifications: filter }, { timeout: NO_TIMEOUT_MS, signal: abort.signal, onSent }).then((r): ListenEnd => {
+    if (r.abortedFirst) return { kind: 'closed' };
+    const response = r.response;
+    if (response && 'error' in response) return { kind: 'error', error: (response.error ?? {}) as { code?: unknown; message?: unknown; data?: unknown } };
+    if (response) return { kind: 'result', result: (response.result && typeof response.result === 'object' ? response.result : {}) as Record<string, unknown> };
+    return { kind: 'failed', message: messageOf(r.failure) };
+  });
+  const ended = Promise.race([request, byServer]).finally(() => { if (requestId !== undefined) session.calls.unwatchCancel(requestId); });
+  return {
+    get requestId() { return requestId; },
+    ended,
+    close: () => abort.abort(),
+  };
+}
+
+async function taskOn(session: Session, req: TaskRequest): Promise<CallOutcome> {
+  const refusal = taskRefusal(req.method, session.era, session.revision);
+  if (refusal) return { kind: 'failed', message: refusal };
+  if (session.era === 'legacy') return outcomeOf(await rawRequest(session, req.method, req.params, { timeout: NO_TIMEOUT_MS }));
+  const client = session.client;
+  if (typeof client._envelopeOutbound !== 'function' || !client.transport) {
+    return { kind: 'failed', message: 'this SDK offers no way to frame a modern task request' };
+  }
+  // A string id: the SDK's own are numbers, so the two can never collide, and
+  // the SDK, finding no handler for the reply, reports it and does nothing else.
+  const id = 'mcpx-task-' + String(++session.framed);
+  const message = client._envelopeOutbound({ jsonrpc: '2.0', id, method: req.method, params: withLogLevel(session, req.params) });
+  const response = session.calls.expect(id);
+  try {
+    await client.transport.send(message);
+  } catch (e) {
+    session.calls.take(id);
+    return { kind: 'failed', requestId: id, message: messageOf(e) };
+  }
+  try {
+    const r = await response;
+    if ('error' in r) return { kind: 'error', requestId: id, error: (r.error ?? {}) as { code?: unknown; message?: unknown; data?: unknown } };
+    return { kind: 'result', requestId: id, result: (r.result && typeof r.result === 'object' ? r.result : {}) as Record<string, unknown> };
+  } catch (e) {
+    return { kind: 'failed', requestId: id, message: messageOf(e) };
+  }
+}
+
 /** Everything after the transport is connected is identical across transports. */
-async function describe(client: any, calls: CallTracker): Promise<Connection> {
+async function describe(client: any, calls: CallTracker, transport: 'stdio' | HttpTransportKind): Promise<Connection> {
   const revision: string = client.getNegotiatedProtocolVersion?.() ?? '2025-06-18';
+  const session: Session = { client, calls, era: eraOf(revision), revision, framed: 0 };
+  // The tasks extension is declared on the modern era only: a legacy server
+  // has no extensions field to read it in. The SDK reads its capabilities
+  // afresh for every request's _meta envelope, and allows no registration
+  // after connect, so they are set in place: an SDK internal, pinned by
+  // test/phase10-tasks.test.mjs.
+  if (session.era === 'modern' && client._capabilities && typeof client._capabilities === 'object') {
+    client._capabilities = { ...client._capabilities, extensions: { ...(client._capabilities.extensions ?? {}), [TASKS_EXTENSION]: {} } };
+  }
   const capabilities = client.getServerCapabilities?.() ?? {};
   const caps = capabilities as Record<string, unknown>;
 
@@ -590,12 +968,21 @@ async function describe(client: any, calls: CallTracker): Promise<Connection> {
     serverInfo: client.getServerVersion?.(),
     instructions: client.getInstructions?.(),
     capabilities,
-    listTools: lister(client, calls, 'tools/list', 'tools', caps.tools !== undefined),
-    listPrompts: lister(client, calls, 'prompts/list', 'prompts', caps.prompts !== undefined),
-    listResources: lister(client, calls, 'resources/list', 'resources', caps.resources !== undefined),
-    listResourceTemplates: lister(client, calls, 'resources/templates/list', 'resourceTemplates', caps.resources !== undefined),
+    listTools: lister(session, 'tools/list', 'tools', caps.tools !== undefined),
+    listPrompts: lister(session, 'prompts/list', 'prompts', caps.prompts !== undefined),
+    listResources: lister(session, 'resources/list', 'resources', caps.resources !== undefined),
+    listResourceTemplates: lister(session, 'resources/templates/list', 'resourceTemplates', caps.resources !== undefined),
   };
-  return { era: source.era, revision, source, call: (req) => callOn(client, calls, req), close: () => client.close() };
+  return {
+    era: source.era, revision, source, transport,
+    call: (req) => callOn(session, req),
+    request: (req) => utilityOn(session, req),
+    get logLevel() { return session.logLevel; },
+    setLogLevel: (level) => setLogLevelOn(session, level),
+    listen: (filter) => listenOn(session, filter),
+    task: (req) => taskOn(session, req),
+    close: () => client.close(),
+  };
 }
 
 export type HttpTransportKind = 'streamable-http' | 'sse';
@@ -624,6 +1011,8 @@ export interface HttpConnectOptions {
   onListChanged?: ListChangedListener;
   /** Legacy era: the server's own requests, for a person to answer. */
   onServerRequest?: ServerRequestListener;
+  /** Every notification the server sends, as the tap saw it. */
+  onNotification?: NotificationListener;
   probeTimeoutMs?: number;
 }
 
@@ -746,6 +1135,32 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
 }
 
 /**
+ * The tasks extension requires Mcp-Name to equal the taskId on a modern task
+ * request over Streamable HTTP. The SDK's transport derives Mcp-Name from a
+ * name or uri only, and refuses a caller's own, so it is added here, on the
+ * way out, before the logging fetch records the request. Only a modern
+ * request (its body carries the _meta protocol-version claim) that names a
+ * task and has no Mcp-Name yet.
+ */
+export function taskNameFetch(base: typeof fetch): typeof fetch {
+  return (input: string | URL | Request, init?: RequestInit) => {
+    if (typeof init?.body !== 'string' || !init.body.includes('"tasks/')) return base(input, init);
+    let message: { method?: unknown; params?: { taskId?: unknown; _meta?: Record<string, unknown> } };
+    try {
+      message = JSON.parse(init.body);
+    } catch {
+      return base(input, init);
+    }
+    const taskId = message?.params?.taskId;
+    const modern = typeof message?.params?._meta?.['io.modelcontextprotocol/protocolVersion'] === 'string';
+    if (typeof message?.method !== 'string' || !message.method.startsWith('tasks/') || typeof taskId !== 'string' || !modern) return base(input, init);
+    const headers = new Headers(init.headers);
+    if (!headers.has('mcp-name')) headers.set('mcp-name', encodeHeaderValue(taskId));
+    return base(input, { ...init, headers });
+  };
+}
+
+/**
  * Which handshake to use. `auto` probes with `server/discover` and falls back
  * to `initialize` per the spec's probe order; `legacy` sends `initialize`
  * straight away, for a server whose era is pinned as legacy (D20).
@@ -817,13 +1232,15 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   const calls = new CallTracker();
   const secretHeaders = opts.secretHeaders ?? {};
   // One logging fetch for every attempt, so exchange numbers keep counting.
-  const fetchOption = emit ? { fetch: loggingFetch(emit, Object.keys(secretHeaders)) } : {};
+  // A request the transport gave up on is recorded beside the traffic (P1).
+  calls.onAbandoned = (id, message) => appEvent(emit, { event: 'stream-ended-without-response', ids: [id], message });
+  const fetchOption = { fetch: taskNameFetch(emit ? loggingFetch(emit, Object.keys(secretHeaders)) : fetch) };
 
   const attempt = async (negotiate: boolean) => {
     const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged, onServerRequest: opts.onServerRequest });
     const transport = new Transport(new URL(opts.url), { requestInit: { headers: { ...opts.headers, ...secretHeaders } }, ...fetchOption });
     try {
-      await client.connect(tap(transport, opts.onFrame, opts.onFrameError, calls));
+      await client.connect(tap(transport, opts.onFrame, opts.onFrameError, calls, opts.onNotification));
       return client;
     } catch (e) {
       // An SSE transport holds its event stream open; a failed attempt must not leak it.
@@ -863,7 +1280,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   } catch (e) {
     throw classifyHttp(e);
   }
-  return describe(client, calls);
+  return describe(client, calls, opts.kind ?? 'streamable-http');
 }
 
 function classifyHttp(e: unknown): ConnectError {
@@ -992,7 +1409,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   const client = makeClient(Client, { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' }, { negotiate: era === 'auto', probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged, onServerRequest: opts.onServerRequest });
 
   try {
-    await client.connect(tap(inner, opts.onFrame, opts.onFrameError, calls));
+    await client.connect(tap(inner, opts.onFrame, opts.onFrameError, calls, opts.onNotification));
   } catch (e) {
     const failure = classifyStdio(e, watch);
     // A server that answered is still running, and must be ended here. The
@@ -1013,7 +1430,9 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   }
 
   client.onclose = () => opts.onClose?.({ exit: watch.exit });
-  return { ...(await describe(client, calls)), pid: watch.pid, startedAt: watch.spawnedAt };
+  // Assigned, not spread: a spread would read the logLevel getter once and
+  // keep that value forever.
+  return Object.assign(await describe(client, calls, 'stdio'), { pid: watch.pid, startedAt: watch.spawnedAt });
 }
 
 function classifyStdio(e: unknown, watch: ProcessWatch): ConnectFailure {

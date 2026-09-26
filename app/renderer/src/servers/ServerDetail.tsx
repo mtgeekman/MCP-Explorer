@@ -2,13 +2,15 @@
 // what the process did, and the two offers D20 allows. Starting a server
 // again is always a button the user presses (P2).
 import { useEffect, useState } from 'react';
-import type { CallView, ServerForm, ServerRow } from '../../../../packages/backend/dist/index.js';
+import type { CallView, HealthReport, ServerForm, ServerRow } from '../../../../packages/backend/dist/index.js';
 import { CallHistory } from '../calls/CallHistory';
 import { ServerRequestsPanel } from '../calls/ServerRequestsPanel';
 import type { BackendClient } from '../lib/client';
 import { commandLine, describeState } from '../lib/describe';
 import { SurfacePanel, type SelectedItem } from '../surface/SurfacePanel';
 import { VersionsPanel } from '../versions/VersionsPanel';
+import { HealthView, SessionPanel } from './SessionPanel';
+import { NotificationsPanel } from './NotificationsPanel';
 
 export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, selectedItem, onSelectItem, onReadCall }: {
   client: BackendClient; server: ServerRow; onEdit: () => void; onDeleted: () => void; onChanged: () => void;
@@ -18,6 +20,7 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [health, setHealth] = useState<HealthReport | null>(null);
 
   useEffect(() => {
     void client.request('servers.get', { id: server.id }).then(setForm);
@@ -63,6 +66,8 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
               Re-detect era
             </button>
           )}
+          <button disabled={busy || moving} title="Connects if needed, lists everything, pings a legacy server, and reports"
+            onClick={() => run(async () => setHealth(await client.request('health.check', { serverId: server.id })))}>Health check</button>
           <button disabled={busy || live || moving} onClick={onEdit}>Edit</button>
           {!confirmDelete && <button disabled={busy || moving} onClick={() => setConfirmDelete(true)}>Delete</button>}
         </div>
@@ -97,7 +102,10 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
         )}
       </div>
       {error && <p className="error">{error}</p>}
+      {health && <HealthView report={health} onClose={() => setHealth(null)} />}
+      <SessionPanel client={client} server={server} />
       <ServerRequestsPanel client={client} serverId={server.id} />
+      <NotificationsPanel client={client} serverId={server.id} modernStdio={server.transport === 'stdio' && server.era?.era === 'modern'} />
       <SurfacePanel client={client} server={server} selected={selectedItem} onSelect={onSelectItem} onReadCall={onReadCall} />
       <VersionsPanel client={client} serverId={server.id} />
       <CallHistory client={client} serverId={server.id} onRead={onReadCall} />

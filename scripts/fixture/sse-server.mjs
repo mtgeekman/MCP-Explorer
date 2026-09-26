@@ -12,14 +12,12 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
-import { handleModern } from './modern-handler.mjs';
-import { handleLegacy, DIE, SILENT } from './legacy-handler.mjs';
-import { answerer } from './call-handler.mjs';
-import { serverMeta } from './modern-handler.mjs';
+import { DIE, SILENT } from './legacy-handler.mjs';
+import { eraAnswerer } from './answer.mjs';
 
 // LEGACY: serve the legacy-era handler. HTTP+SSE is itself the transport of
 // the legacy revisions, so this is the pairing real servers deployed.
-const handle = answerer(process.env.LEGACY ? handleLegacy : handleModern, () => (process.env.LEGACY ? {} : { resultType: 'complete', ...serverMeta() }));
+const handle = eraAnswerer(process.env.LEGACY ? 'legacy' : 'modern');
 
 const streams = new Map();
 

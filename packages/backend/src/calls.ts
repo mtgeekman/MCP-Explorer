@@ -134,7 +134,8 @@ const SESSION_RESULTS = 50;
 
 export class CallPipeline {
   private readonly running = new Map<number, Running>();
-  private readonly session = new Map<number, { result?: unknown; sdkRejected?: string }>();
+  /** Per call, what storage does not keep, and the round it came from. */
+  private readonly session = new Map<number, { round: number; result?: unknown; sdkRejected?: string }>();
 
   constructor(private readonly ws: Workspace, private readonly sessions: CallSessions, private readonly events: Partial<CallEvents> = {}) {}
 
@@ -172,7 +173,7 @@ export class CallPipeline {
       kind: req.kind, target: req.target, ...(req.args === undefined ? {} : { args: req.args }), capBase: 0,
     };
     this.running.set(callId, run);
-    this.send(callId, run);
+    this.send(callId, run, s.recorder.beginRound(callId, run.args));
     this.events.changed?.(req.serverId, callId, 'started');
     return { started: true, callId };
   }
@@ -182,8 +183,7 @@ export class CallPipeline {
    * the server's requestState exactly as it came (D16). The retry repeats the
    * call's own arguments; the SDK gives it a new id.
    */
-  private send(callId: number, run: Running, retry?: { inputResponses?: Record<string, unknown>; requestState?: string }): void {
-    const seq = run.recorder.beginRound(callId, run.args);
+  private send(callId: number, run: Running, seq: number, retry?: { inputResponses?: Record<string, unknown>; requestState?: string }): void {
     const outcome = run.conn.call({
       kind: run.kind, target: run.target, args: run.args, signal: run.abort.signal,
       ...(retry?.inputResponses === undefined ? {} : { inputResponses: retry.inputResponses }),
@@ -214,12 +214,15 @@ export class CallPipeline {
       const extra = Object.keys(given).filter((k) => !Object.hasOwn(asked, k));
       if (missing.length) throw new AnswerError(`no answer for ${missing.join(', ')}`);
       if (extra.length) throw new AnswerError(`the server did not ask for ${extra.join(', ')}`);
-      run.recorder.answerRound(callId, run.awaited.round, given);
     }
+    // The round begins before anything changes: if it cannot, the call is
+    // still waiting and can still be stopped (R08-6).
+    const seq = run.recorder.beginRound(callId, run.args);
+    if (asked !== undefined) run.recorder.answerRound(callId, run.awaited.round, inputResponses ?? {});
     const requestState = run.awaited.requestState;
     run.awaited = undefined;
     run.live = { status: 'running' };
-    this.send(callId, run, { ...(asked === undefined ? {} : { inputResponses: inputResponses ?? {} }), ...(requestState === undefined ? {} : { requestState }) });
+    this.send(callId, run, seq, { ...(asked === undefined ? {} : { inputResponses: inputResponses ?? {} }), ...(requestState === undefined ? {} : { requestState }) });
     this.events.changed?.(run.serverId, callId, 'started');
   }
 
@@ -276,7 +279,10 @@ export class CallPipeline {
     const kept = this.session.get(callId);
     // The call's result is its last round's: earlier rounds asked for input.
     const last = call.roundRecords[call.roundRecords.length - 1];
-    const result = (last?.result ?? kept?.result) as { structuredContent?: unknown; isError?: unknown } | undefined;
+    // A result kept in memory is shown only as its own round's: during a
+    // retry it belongs to the round that asked, not the one running (R08-3).
+    const keptResult = last && kept?.round === last.seq ? kept.result : undefined;
+    const result = (last?.result ?? keptResult) as { structuredContent?: unknown; isError?: unknown } | undefined;
     let outputCheck: Verdict | undefined;
     if (call.kind === 'tool' && result && result.structuredContent !== undefined) {
       const schema = latestCapture(this.ws, call.serverId)?.surface.tools.find((t) => t.name === call.target)?.outputSchema;
@@ -286,8 +292,8 @@ export class CallPipeline {
       call,
       serverRequests: listServerRequests(this.ws, { callId }),
       ...(run ? { live: { ...run.live } } : {}),
-      ...(last && last.result === null && kept?.result !== undefined ? { sessionResult: kept.result } : {}),
-      ...(kept?.sdkRejected ? { sdkRejected: kept.sdkRejected } : {}),
+      ...(last && last.result === null && keptResult !== undefined ? { sessionResult: keptResult } : {}),
+      ...(kept?.sdkRejected && kept.round === last?.seq ? { sdkRejected: kept.sdkRejected } : {}),
       ...(outputCheck ? { outputCheck } : {}),
     };
   }
@@ -306,7 +312,7 @@ export class CallPipeline {
         // Memory holds only what storage does not: a result withheld under the
         // opt-out (D30), and the SDK's objection, which has no column (R07-3).
         const withheld = !readSettings(this.ws).persistResults;
-        if (withheld || o.sdkRejected) this.keep(callId, { ...(withheld ? { result: r } : {}), ...(o.sdkRejected ? { sdkRejected: o.sdkRejected } : {}) });
+        if (withheld || o.sdkRejected) this.keep(callId, { round: seq, ...(withheld ? { result: r } : {}), ...(o.sdkRejected ? { sdkRejected: o.sdkRejected } : {}) });
         if (inputRequired && this.sessions.session(run.serverId)?.conn === run.conn) {
           // The round is recorded and the call waits for the person (decision 6).
           this.await(callId, seq, run, r);
@@ -357,13 +363,16 @@ export class CallPipeline {
   private end(callId: number, run: Running, status: CallStatus): void {
     this.running.delete(callId);
     try {
-      this.events.purged?.(run.recorder.finishCall(callId, status));
+      // Not inside the optional call: with no listener its argument is never
+      // evaluated, and the call would never be finished in storage.
+      const purged = run.recorder.finishCall(callId, status);
+      this.events.purged?.(purged);
     } finally {
       this.events.changed?.(run.serverId, callId, 'ended');
     }
   }
 
-  private keep(callId: number, entry: { result?: unknown; sdkRejected?: string }): void {
+  private keep(callId: number, entry: { round: number; result?: unknown; sdkRejected?: string }): void {
     this.session.set(callId, entry);
     while (this.session.size > SESSION_RESULTS) this.session.delete(this.session.keys().next().value!);
   }

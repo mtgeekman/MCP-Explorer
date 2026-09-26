@@ -52,13 +52,24 @@ export class ServerRequests {
   receive(serverId: string, recorder: HistoryRecorder, request: ServerRequest): Promise<ServerAnswer> {
     const running = this.runningOn(recorder.connectionId);
     const callId = running.length === 1 ? running[0] : null;
-    const id = recorder.receiveRequest(request.id, request.method, request.params, callId);
+    let id: number;
+    try {
+      id = recorder.receiveRequest(request.id, request.method, request.params, callId);
+    } catch (e) {
+      // Throwing here would make the SDK answer -32603, a reply nobody gave
+      // (P2). With nowhere to record it, the request waits unanswered until
+      // the session ends; the wire log still has its frame (R08-5).
+      process.emitWarning(`server request ${JSON.stringify(request.id)} (${request.method}) could not be recorded, and waits unanswered: ${e instanceof Error ? e.message : String(e)}`, 'MCPExplorerCallWarning');
+      return new Promise<never>(() => undefined);
+    }
     return new Promise<ServerAnswer>((resolve) => {
       this.pending.set(id, { serverId, recorder, request, callId, resolve });
-      // The server gave up on it: the SDK sends nothing after this, and the
-      // person can no longer answer.
-      request.signal.addEventListener('abort', () => this.finish(id, 'cancelled'), { once: true });
       this.events.changed?.(serverId, id, callId);
+      // The server gave up on it: the SDK sends nothing after this, and the
+      // person can no longer answer. A cancel can land before the SDK hands
+      // the request over, and an aborted signal never fires again (R08-1).
+      if (request.signal.aborted) this.finish(id, 'cancelled');
+      else request.signal.addEventListener('abort', () => this.finish(id, 'cancelled'), { once: true });
     });
   }
 
@@ -70,6 +81,9 @@ export class ServerRequests {
       const e = answer.error as { code?: unknown; message?: unknown };
       if (!Number.isSafeInteger(e?.code)) throw new InvalidAnswerError('an error needs a whole-number code');
       if (typeof e.message !== 'string') throw new InvalidAnswerError('an error needs a message');
+      // The SDK's legacy encoder sends -32002 as -32602, so the code the
+      // person chose would not be the code the server got (R08-8).
+      if (e.code === -32002) throw new InvalidAnswerError('the client library sends -32002 as -32602 on this era; choose another code');
       this.finish(requestId, 'refused', { error: answer.error });
     } else if ('result' in answer && isObject(answer.result)) {
       this.finish(requestId, 'answered', answer.result);
@@ -89,9 +103,17 @@ export class ServerRequests {
     }
   }
 
-  /** A server's requests, newest first, the pending ones with their params. */
+  /**
+   * A server's requests, newest first, the pending ones with their params.
+   * Every pending request is listed whatever the limit: one pushed off the
+   * page could never be answered (R08-2).
+   */
   list(serverId: string, limit?: number): ServerRequestRow[] {
-    return listServerRequests(this.ws, { serverId, limit }).map((r) => this.row(r));
+    const page = listServerRequests(this.ws, { serverId, limit });
+    const onPage = new Set(page.map((r) => r.id));
+    const older = [...this.pending].filter(([id, p]) => p.serverId === serverId && !onPage.has(id))
+      .flatMap(([id]) => readServerRequest(this.ws, id) ?? []);
+    return [...page, ...older].sort((a, b) => b.id - a.id).map((r) => this.row(r));
   }
 
   get(requestId: number): ServerRequestRow | null {

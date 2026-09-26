@@ -24,8 +24,11 @@ function expandedHeight(u: LogUnit): number {
 }
 const PAGE = 500;
 
-export function WireLog({ client, serverId, selected, onSelect }: {
+export function WireLog({ client, serverId, selected, onSelect, collapsed = false, onToggleCollapsed }: {
   client: BackendClient; serverId: string; selected: LogUnit | null; onSelect: (u: LogUnit | null) => void;
+  /** Only the header shows; the log keeps loading underneath. */
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 }) {
   const [units, setUnits] = useState<LogUnit[]>([]);
   const [complete, setComplete] = useState(false);
@@ -95,9 +98,10 @@ export function WireLog({ client, serverId, selected, onSelect }: {
         <span className="muted">
           {counts.frames} messages, {counts.stderr} stderr, {counts.app} app events{counts.other ? `, ${counts.other} other` : ''}
           {complete ? '' : ' (more above)'}
+          {onToggleCollapsed && <button className="log-toggle" onClick={onToggleCollapsed} aria-expanded={!collapsed}>{collapsed ? 'Expand' : 'Collapse'}</button>}
         </span>
       </div>
-      {rows.length === 0 ? <p className="muted pad">Nothing yet. Every byte this server sends or receives appears here.</p> : (
+      {collapsed ? null : rows.length === 0 ? <p className="muted pad">Nothing yet. Every byte this server sends or receives appears here.</p> : (
         <VirtualList
           className="log-rows"
           count={rows.length}

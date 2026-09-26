@@ -17,7 +17,7 @@
 //   FAIL_LIST_AFTER  answer tools/list this many times, then with an error
 //   LIST_CHANGED     after answering the first tools/list, announce
 //                    notifications/tools/list_changed; every later tools/list
-//                    carries a second tool. Counted per process, which is per
+//                    carries a second tool, and echo a second argument. Counted per process, which is per
 //                    session on stdio, the only front that sends it.
 //
 // Returns a JSON-RPC response, `undefined` when the frame warrants none, or
@@ -63,7 +63,9 @@ export function handleLegacy(msg) {
       tools: [{
         name: 'echo',
         description: 'Echoes its input.',
-        inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+        // After the change notice echo takes a second argument too, so a form
+        // open across a Refresh has a schema change to follow (R08-4).
+        inputSchema: { type: 'object', properties: { text: { type: 'string' }, ...(changed ? { loud: { type: 'boolean' } } : {}) }, required: ['text'] },
       }, ...(changed ? [{ name: 'added_later', description: 'Listed after the change notice.', inputSchema: { type: 'object' } }] : []), ...callTools(), ...askTools()],
     });
   }

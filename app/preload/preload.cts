@@ -40,4 +40,6 @@ contextBridge.exposeInMainWorld('mcpxShell', {
   },
   /** The system folder dialog, for a project whose config files to import. */
   chooseFolder: (): Promise<string | null> => ipcRenderer.invoke('choose-folder'),
+  /** Opens an http or https URL in the system browser, on the person's click (phase 08 decision 9). False when refused. */
+  openExternal: (url: string): Promise<boolean> => ipcRenderer.invoke('open-external', url),
 });

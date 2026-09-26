@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react';
 import type { CallView, ServerForm, ServerRow } from '../../../../packages/backend/dist/index.js';
 import { CallHistory } from '../calls/CallHistory';
+import { ServerRequestsPanel } from '../calls/ServerRequestsPanel';
 import type { BackendClient } from '../lib/client';
 import { commandLine, describeState } from '../lib/describe';
 import { SurfacePanel, type SelectedItem } from '../surface/SurfacePanel';
@@ -95,6 +96,7 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
         )}
       </div>
       {error && <p className="error">{error}</p>}
+      <ServerRequestsPanel client={client} serverId={server.id} />
       <SurfacePanel client={client} server={server} selected={selectedItem} onSelect={onSelectItem} onReadCall={onReadCall} />
       <CallHistory client={client} serverId={server.id} onRead={onReadCall} />
     </section>

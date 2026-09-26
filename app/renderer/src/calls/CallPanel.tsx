@@ -8,9 +8,8 @@ import type { CallView, ConfirmPrompt, Verdict } from '../../../../packages/back
 import type { NormalizedTool } from '../../../../packages/protocol/dist/index.js';
 import type { BackendClient } from '../lib/client';
 import { ANNOTATIONS_LINE, annotationRows } from '../lib/surface';
-import {
-  editorText, formatInput, getAt, isInputError, parseEditor, parseInput, planForm, setAt, type Args, type Field,
-} from '../lib/schemaForm';
+import { editorText, parseEditor, planForm, type Args } from '../lib/schemaForm';
+import { Fields } from './Fields';
 import { CallTranscript } from './CallTranscript';
 
 export type CallTarget =
@@ -18,6 +17,16 @@ export type CallTarget =
   | { kind: 'prompt'; name: string; arguments?: unknown }
   | { kind: 'resource'; uri: string }
   | { kind: 'template'; uriTemplate: string };
+
+/** The inputSchema in a tool entry's exact bytes (R07-7), or undefined when they do not parse to one. */
+function entryInputSchema(bytes: Uint8Array): unknown {
+  try {
+    const entry = JSON.parse(new TextDecoder().decode(bytes)) as { inputSchema?: unknown };
+    return entry && typeof entry.inputSchema === 'object' && entry.inputSchema !== null ? entry.inputSchema : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** A prompt's arguments are strings (the Prompt shape); as a schema, the same form serves them. */
 function promptSchema(args: unknown): Record<string, unknown> {
@@ -29,9 +38,10 @@ function promptSchema(args: unknown): Record<string, unknown> {
   };
 }
 
-export function CallPanel({ client, serverId, connected, target, onRead }: {
+export function CallPanel({ client, serverId, serverName, connected, target, onRead }: {
   client: BackendClient;
   serverId: string;
+  serverName?: string;
   connected: boolean;
   target: CallTarget;
   onRead: (view: CallView) => void;
@@ -39,7 +49,25 @@ export function CallPanel({ client, serverId, connected, target, onRead }: {
   // A prompt's schema built inline was a new object on every render, and each
   // verdict re-rendered, so validation re-ran without end (R07-1). Keyed on the
   // entry's own values, since `target` is rebuilt whenever the parent renders.
-  const source = target.kind === 'tool' ? target.tool.inputSchema : target.kind === 'prompt' ? target.arguments : undefined;
+  const toolName = target.kind === 'tool' ? target.tool.name : undefined;
+  // R07-7: the captured schema is canonicalized, keys sorted, so a form
+  // planned from it lists fields alphabetically. The entry's exact bytes from
+  // the list reply keep the server's order; the form is planned from those,
+  // and from the captured schema only when the bytes cannot be had.
+  const [rawSchema, setRawSchema] = useState<{ name: string; schema: unknown } | null>(null);
+  useEffect(() => {
+    if (toolName === undefined) return;
+    let stale = false;
+    client.request('surface.entry', { serverId, list: 'tools', key: toolName }).then((entry) => {
+      if (stale || !entry.found) return;
+      const schema = entryInputSchema(entry.bytes);
+      if (schema !== undefined) setRawSchema({ name: toolName, schema });
+    }, () => undefined);
+    return () => { stale = true; };
+  }, [client, serverId, toolName]);
+  const source = target.kind === 'tool'
+    ? (rawSchema !== null && rawSchema.name === toolName ? rawSchema.schema : target.tool.inputSchema)
+    : target.kind === 'prompt' ? target.arguments : undefined;
   const schema = useMemo(() => (target.kind === 'tool' ? source : target.kind === 'prompt' ? promptSchema(source) : undefined), [target.kind, source]);
   const uriTemplate = target.kind === 'template' ? target.uriTemplate : undefined;
   const [args, setArgs] = useState<Args>({});
@@ -150,7 +178,7 @@ export function CallPanel({ client, serverId, connected, target, onRead }: {
       {error && <p className="error">{error}</p>}
       {confirm && <ConfirmDialog prompt={confirm} busy={busy} onCancel={() => setConfirm(null)} onConfirm={() => send(true)} />}
       {callId !== null && (
-        <CallTranscript key={callId} client={client} callId={callId} onRead={onRead} onReplay={plan ? (a) => fromForm(a) : undefined} />
+        <CallTranscript key={callId} client={client} callId={callId} serverName={serverName} onRead={onRead} onReplay={plan ? (a) => fromForm(a) : undefined} />
       )}
     </div>
   );
@@ -164,83 +192,6 @@ function Hints({ annotations }: { annotations: unknown }) {
       <p className="muted">{ANNOTATIONS_LINE}</p>
       <p className="mono">{rows.map(([k, v]) => `${k}: ${v}`).join('  ')}</p>
     </div>
-  );
-}
-
-function Fields({ fields, args, onChange }: { fields: Field[]; args: Args; onChange: (a: Args) => void }) {
-  return <>{fields.map((f) => <FieldInput key={f.path.join('.')} field={f} args={args} onChange={onChange} />)}</>;
-}
-
-function FieldInput({ field: f, args, onChange }: { field: Field; args: Args; onChange: (a: Args) => void }) {
-  const current = getAt(args, f.path);
-  const shown = formatInput(f, current);
-  // What the user typed stays in the input ("1." on the way to "1.5", a list's
-  // trailing newline) until the value changes from elsewhere: the JSON editor.
-  const [draft, setDraft] = useState<string | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const committed = useRef<string | undefined>(JSON.stringify(current));
-  const now = JSON.stringify(current);
-  useEffect(() => {
-    if (now !== committed.current) { committed.current = now; setDraft(null); setProblem(null); }
-  }, [now]);
-  const label = (
-    <span>
-      <span className="mono">{f.label}</span>{f.required && <span className="required" title="Required"> *</span>}
-      {f.title && <small> {f.title}</small>}
-    </span>
-  );
-  const hint = f.description ? <small className="muted">{f.description}</small> : null;
-
-  if (f.kind === 'object') {
-    return (
-      <fieldset className="field-group"><legend>{label}</legend>{hint}
-        <Fields fields={f.fields} args={args} onChange={onChange} />
-      </fieldset>
-    );
-  }
-  if (f.kind === 'editor') {
-    return (
-      <div className="field">{label}{hint}
-        <small className="muted">In the JSON editor: {f.reason}</small>
-        {current !== undefined && <code className="mono">{JSON.stringify(current)}</code>}
-      </div>
-    );
-  }
-  if (shown === null) {
-    return <div className="field">{label}<small className="warn">The value in the JSON editor is not a {f.kind}; edit it there.</small></div>;
-  }
-  const commit = (t: string) => {
-    const v = parseInput(f, t);
-    setDraft(t);
-    if (isInputError(v)) { setProblem(v.error); return; }
-    setProblem(null);
-    committed.current = JSON.stringify(v);
-    onChange(setAt(args, f.path, v));
-  };
-  const value = draft ?? shown;
-  let input;
-  if (f.kind === 'boolean' || f.kind === 'enum') {
-    const options = f.kind === 'boolean' ? [true, false] : f.options;
-    input = (
-      <select value={value} onChange={(e) => commit(e.target.value)}>
-        <option value="">{f.required ? 'Choose' : 'Not set'}</option>
-        {options.map((o) => <option key={String(o)} value={f.kind === 'boolean' ? String(o) : JSON.stringify(o)}>{String(o)}</option>)}
-      </select>
-    );
-  } else if (f.kind === 'const') {
-    input = (
-      <label className="inline"><input type="checkbox" checked={current !== undefined} onChange={(e) => commit(e.target.checked ? JSON.stringify(f.value) : '')} /> <code className="mono">{JSON.stringify(f.value)}</code></label>
-    );
-  } else if (f.kind === 'array') {
-    input = <textarea className="mono" rows={3} value={value} placeholder="One per line" onChange={(e) => commit(e.target.value)} />;
-  } else {
-    input = <input className="mono" value={value} placeholder={f.kind === 'string' && f.format ? f.format : f.kind !== 'string' ? f.kind : ''} onChange={(e) => commit(e.target.value)} />;
-  }
-  return (
-    <label className="field">{label}{hint}{input}
-      {'default' in f && f.default !== undefined && current === undefined && <small className="muted">The server's default, {JSON.stringify(f.default)}, is not filled in: unset fields are not sent.</small>}
-      {problem && <small className="error">{problem}</small>}
-    </label>
   );
 }
 

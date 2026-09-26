@@ -24,6 +24,8 @@ declare global {
       onReadableClosed(listener: () => void): void;
       /** A folder the user chose in the system dialog, or null if they cancelled. */
       chooseFolder(): Promise<string | null>;
+      /** Opens an http or https URL in the system browser; false when refused. */
+      openExternal(url: string): Promise<boolean>;
     };
   }
 }

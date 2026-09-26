@@ -1,6 +1,7 @@
 import {
   canonicalJson,
   diffSurfaces,
+  surfaceChangeCount,
   hashPrompt,
   hashResource,
   hashResourceTemplate,
@@ -182,4 +183,109 @@ export function latestCapture(ws: Workspace, serverId: string): LatestCapture | 
     connectionId: row.connection_id,
     surface: { ...loadSnapshot(ws, row.snapshot_id), problems: JSON.parse(row.problems_json) },
   };
+}
+
+/**
+ * What an entry of the version history is (phase 09 decision 2). `revision`:
+ * the negotiated revision changed and the surface did not. `identity`: only
+ * `serverInfo` changed, so the entry is not a version.
+ */
+export type VersionKind = 'first' | 'surface' | 'revision' | 'identity';
+
+export interface VersionEntry {
+  /** Position in the timeline, oldest first. */
+  index: number;
+  snapshotId: number;
+  kind: VersionKind;
+  /** 1 for the first entry, one more for each surface or revision entry; null on an identity entry. */
+  version: number | null;
+  /** The version in force at this entry: its own number, or the one an identity entry sits under. */
+  underVersion: number;
+  /** Surface-level changes against the entry before (items, instructions, capabilities); 0 on the first. */
+  changes: number;
+  /** The earliest entry holding this same snapshot, when the surface went back to it. */
+  sameAs?: number;
+  revision: string;
+  era: Era;
+  serverName?: string;
+  serverVersion?: string;
+  firstObservedAt: number;
+  lastObservedAt: number;
+  observations: number;
+}
+
+export interface VersionTimeline {
+  entries: VersionEntry[];
+  /**
+   * Set when the newest UNSTABLE_RUN or more entries each lasted one capture:
+   * every recent capture produced a different version (decision 7).
+   */
+  unstable?: { entries: number; since: number; until: number };
+}
+
+export const UNSTABLE_RUN = 3;
+
+/**
+ * The version history (phase 09 decision 1): one entry per run of consecutive
+ * captures of one snapshot, oldest first, each classified against the entry
+ * before it. A surface that changes and changes back is three entries, not
+ * two: the return is a change the agent sees.
+ */
+export function versionTimeline(ws: Workspace, serverId: string): VersionTimeline {
+  const runs: { snapshotId: number; first: number; last: number; count: number }[] = [];
+  for (const o of ws.db.prepare('SELECT snapshot_id, observed_at FROM surface_observation WHERE server_id = ? ORDER BY observed_at, id').all(serverId) as { snapshot_id: number; observed_at: number }[]) {
+    const run = runs[runs.length - 1];
+    if (run && run.snapshotId === o.snapshot_id) {
+      run.last = o.observed_at;
+      run.count++;
+    } else {
+      runs.push({ snapshotId: o.snapshot_id, first: o.observed_at, last: o.observed_at, count: 1 });
+    }
+  }
+
+  const loaded = new Map<number, NormalizedSurface>();
+  const load = (id: number) => {
+    let s = loaded.get(id);
+    if (!s) loaded.set(id, (s = loadSnapshot(ws, id)));
+    return s;
+  };
+  const firstIndex = new Map<number, number>();
+  let version = 0;
+  const entries = runs.map((run, index): VersionEntry => {
+    const surface = load(run.snapshotId);
+    let kind: VersionKind = 'first';
+    let changes = 0;
+    if (index > 0) {
+      const diff = diffSurfaces(load(runs[index - 1]!.snapshotId), surface);
+      changes = surfaceChangeCount(diff);
+      // The hashes differ, so something did. A difference the diff cannot
+      // name (a repeated key's second entry) is still a surface change.
+      kind = changes > 0 ? 'surface'
+        : diff.revisionChanged ? 'revision'
+        : diff.identityChanged ? 'identity'
+        : 'surface';
+    }
+    if (kind !== 'identity') version++;
+    const seen = firstIndex.get(run.snapshotId);
+    if (seen === undefined) firstIndex.set(run.snapshotId, index);
+    return {
+      index, snapshotId: run.snapshotId, kind,
+      version: kind === 'identity' ? null : version,
+      underVersion: version,
+      changes,
+      ...(seen !== undefined ? { sameAs: seen } : {}),
+      revision: surface.revision, era: surface.era,
+      ...(surface.serverName !== undefined ? { serverName: surface.serverName } : {}),
+      ...(surface.serverVersion !== undefined ? { serverVersion: surface.serverVersion } : {}),
+      firstObservedAt: run.first, lastObservedAt: run.last, observations: run.count,
+    };
+  });
+
+  let run = 0;
+  while (run < entries.length && entries[entries.length - 1 - run]!.observations === 1) run++;
+  const timeline: VersionTimeline = { entries };
+  if (run >= UNSTABLE_RUN) {
+    timeline.unstable = { entries: run, since: entries[entries.length - run]!.firstObservedAt, until: entries[entries.length - 1]!.lastObservedAt };
+  }
+  return timeline;
 }

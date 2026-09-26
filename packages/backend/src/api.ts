@@ -3,10 +3,13 @@
 // message (P1), and these are the app's own, not protocol traffic.
 import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface, Verdict, CallProgress } from '../../protocol/dist/index.js';
 import type { CallRecord, CallSummary, PurgeResult, RoundRecord, ServerSummary, Transport, WorkspaceSettings } from '../../storage/dist/index.js';
-import type { CallChange, CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply } from './calls.js';
+import type { AwaitedInput, CallChange, CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply } from './calls.js';
+import type { ServerRequestRow } from './server-requests.js';
+import type { ServerAnswer } from '../../protocol/dist/index.js';
 
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
 export type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply, CallRecord, CallSummary, RoundRecord, Verdict, CallProgress };
+export type { AwaitedInput, ServerRequestRow, ServerAnswer };
 import type { CaptureStatus, ConnectionState, PartialCapture, SecretValues } from './connections.js';
 import type { Protection, Unlock, WorkspaceListing, WorkspaceNotice } from './workspaces.js';
 import type { ConfigLocation } from '../../platform/dist/index.js';
@@ -174,8 +177,20 @@ export interface Requests {
   'calls.start': { params: CallStart; result: StartReply };
   /** Cancel a running call: the era's cancellation goes out; the server may still finish. */
   'calls.cancel': { params: { callId: number }; result: null };
-  /** End a call waiting for input without answering it (phase 07 decision 6). */
+  /** End a call waiting for input without answering it: `capped` at the soft cap, `abandoned` elsewhere. */
   'calls.stop': { params: { callId: number }; result: null };
+  /**
+   * "Send answers and retry" (board 6.3): the answers under the server's keys,
+   * every key answered; none for a requestState-only result. Resolves once the
+   * retry is on its way; `call.changed` follows.
+   */
+  'calls.answer': { params: { callId: number; inputResponses?: Record<string, unknown> }; result: null };
+  /** "Keep answering" at the soft cap (D21, board 6.4). */
+  'calls.continue': { params: { callId: number }; result: null };
+  /** A server's requests to the client, newest first (legacy era; phase 08 decision 5). */
+  'requests.list': { params: { serverId: string; limit?: number }; result: ServerRequestRow[] };
+  /** The person's answer to one: a result, or a refusal with the error they chose. */
+  'requests.answer': { params: { requestId: number; answer: ServerAnswer }; result: null };
   /** A server's calls, newest first, with this session's live state. */
   'calls.list': { params: { serverId: string; before?: number; limit?: number }; result: CallListRow[] };
   'calls.get': { params: { callId: number }; result: CallView | null };
@@ -207,6 +222,8 @@ export interface Events {
   'surface.changed': { serverId: string };
   /** A call started, reported progress, or ended: read calls.get again. */
   'call.changed': { serverId: string; callId: number; reason: CallChange };
+  /** A server's request arrived or ended: list requests again, and the linked call's transcript. */
+  'request.changed': { serverId: string; requestId: number; callId: number | null };
   /** Retention deleted history: an open log or call list reloads (R05-9). */
   'log.purged': Record<string, never>;
   notice: WorkspaceNotice;

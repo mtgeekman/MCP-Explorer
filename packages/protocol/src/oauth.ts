@@ -313,30 +313,68 @@ export async function stepUpScope(granted: string | undefined, challenged: strin
 }
 
 /**
- * The loopback redirect (decision 8): one listener on 127.0.0.1, for one
- * sign-in. Port 0 lets the OS pick; a registration's stored port is asked for
- * again, and a busy one is a named failure, never a different port.
+ * The loopback redirect (decision 8): a listener for one sign-in, on the
+ * host and at the path its redirect URI names. The app's own registrations
+ * use http://127.0.0.1:<port>/callback, port 0 letting the OS pick; a
+ * registration's stored port, or a pre-registered client's redirect URI, is
+ * asked for again exactly, and a busy port is a named failure, never a
+ * different port.
  */
 export class LoopbackListener {
-  private server?: Server;
+  private servers: Server[] = [];
   private waiting?: { resolve: (cb: Callback) => void; reject: (e: unknown) => void; timer: NodeJS.Timeout };
   port = 0;
+  private uri?: string;
+
+  private constructor(private readonly path: string) {}
 
   static async open(port = 0): Promise<LoopbackListener> {
-    const l = new LoopbackListener();
-    await l.listen(port);
+    const l = new LoopbackListener('/callback');
+    await l.listen(['127.0.0.1'], port);
+    return l;
+  }
+
+  /**
+   * Listens where a redirect URI points: 127.0.0.1, [::1], or both for
+   * localhost, since a browser may resolve it to either (RFC 8252 §8.3).
+   */
+  static async forRedirect(redirectUri: string): Promise<LoopbackListener> {
+    const u = new URL(redirectUri);
+    const hosts = u.hostname === '[::1]' ? ['::1'] : u.hostname === 'localhost' ? ['127.0.0.1', '::1'] : [u.hostname];
+    const l = new LoopbackListener(u.pathname);
+    l.uri = redirectUri;
+    await l.listen(hosts, Number(u.port));
     return l;
   }
 
   get redirectUri(): string {
-    return `http://127.0.0.1:${this.port}/callback`;
+    return this.uri ?? `http://127.0.0.1:${this.port}${this.path}`;
   }
 
-  private listen(port: number): Promise<void> {
+  private async listen(hosts: string[], port: number): Promise<void> {
+    try {
+      for (const host of hosts) {
+        try {
+          await this.listenOn(host, port);
+        } catch (e) {
+          // localhost also listens on ::1 in case the browser resolves it
+          // there; a machine without IPv6 has no ::1 for either side.
+          const code = (e as NodeJS.ErrnoException).code;
+          if (hosts.length > 1 && host === '::1' && (code === 'EADDRNOTAVAIL' || code === 'EAFNOSUPPORT')) continue;
+          throw e;
+        }
+      }
+    } catch (e) {
+      await this.close();
+      throw e;
+    }
+  }
+
+  private listenOn(host: string, port: number): Promise<void> {
     return new Promise((resolve, reject) => {
       const server = createServer((req, res) => {
-        const url = new URL(req.url ?? '/', `http://127.0.0.1:${this.port}`);
-        if (req.method !== 'GET' || url.pathname !== '/callback' || !this.waiting) {
+        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
+        if (req.method !== 'GET' || url.pathname !== this.path || !this.waiting) {
           res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
           return res.end('Not found');
         }
@@ -348,8 +386,8 @@ export class LoopbackListener {
         w.resolve({ params: url.searchParams, loggedUrl: redactUrl(url.href).url });
       });
       server.once('error', (e: NodeJS.ErrnoException) => reject(e.code === 'EADDRINUSE' ? new AuthError({ kind: 'port-busy', port }) : e));
-      server.listen(port, '127.0.0.1', () => {
-        this.server = server;
+      server.listen(port, host, () => {
+        this.servers.push(server);
         this.port = (server.address() as AddressInfo).port;
         resolve();
       });
@@ -379,8 +417,8 @@ export class LoopbackListener {
 
   async close(): Promise<void> {
     this.cancel();
-    const s = this.server;
-    this.server = undefined;
-    if (s) await new Promise<void>((r) => s.close(() => r()));
+    const all = this.servers;
+    this.servers = [];
+    await Promise.all(all.map((s) => new Promise<void>((r) => s.close(() => r()))));
   }
 }

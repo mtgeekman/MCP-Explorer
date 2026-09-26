@@ -168,7 +168,7 @@ test('a mid-session surface change moves the hash and shows in the diff', async 
     const after = await captureSurface(conn.source);
     assert.notEqual(hashSurface(before), hashSurface(after), 'the surface really changed');
     const d = diffSurfaces(before, after);
-    assert.deepEqual(d.tools, [{ key: 'echo', kind: 'changed' }]);
+    assert.deepEqual(d.tools.map((t) => [t.key, t.kind, t.fields.map((f) => f.path)]), [['echo', 'changed', ['/description']]]);
     assert.equal(d.revisionChanged, undefined, 'the revision did not change, only the surface');
   } finally {
     await conn.close();

@@ -1,0 +1,84 @@
+{
+  "before": {
+    "revision": "2025-06-18",
+    "era": "legacy",
+    "capabilities": {
+      "tools": {
+        "listChanged": false
+      }
+    },
+    "tools": [
+      {
+        "description": "Echoes its input.",
+        "inputSchema": {
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "name": "echo"
+      }
+    ],
+    "prompts": [],
+    "resources": [],
+    "resourceTemplates": [],
+    "unavailable": [
+      "capabilities.extensions",
+      "prompt.icons",
+      "resource.icons",
+      "resourceTemplate.icons",
+      "tool.execution",
+      "tool.icons"
+    ],
+    "problems": [],
+    "serverName": "phase00-legacy-fixture",
+    "serverVersion": "0.0.0",
+    "instructions": "Phase 00 fixture. Legacy era."
+  },
+  "after": {
+    "revision": "2025-06-18",
+    "era": "legacy",
+    "capabilities": {
+      "tools": {
+        "listChanged": false
+      }
+    },
+    "tools": [
+      {
+        "description": "Repeats the text it is given.",
+        "inputSchema": {
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "name": "echo"
+      }
+    ],
+    "prompts": [],
+    "resources": [],
+    "resourceTemplates": [],
+    "unavailable": [
+      "capabilities.extensions",
+      "prompt.icons",
+      "resource.icons",
+      "resourceTemplate.icons",
+      "tool.execution",
+      "tool.icons"
+    ],
+    "problems": [],
+    "serverName": "phase00-legacy-fixture",
+    "serverVersion": "0.1.0",
+    "instructions": "Phase 00 fixture. Legacy era."
+  }
+}

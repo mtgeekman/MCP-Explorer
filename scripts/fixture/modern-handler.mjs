@@ -11,6 +11,11 @@
 //   - serverInfo in _meta rather than the result body
 //   - capabilities that can be made to lie (LIE_ABOUT)
 //   - a first probe that can answer -32022 (UNSUPPORTED_FIRST)
+//
+// Version history knobs (phase 09), read on every reply so two connects with
+// different values are two releases of one server:
+//   ECHO_DESCRIPTION  echo's description
+//   SERVER_VERSION    serverInfo.version
 
 import { callTools, mrtrTools, CALL_PROMPTS, CALL_RESOURCES, CALL_TEMPLATES, CALL_TOOLS_ON } from './call-handler.mjs';
 
@@ -24,13 +29,13 @@ const shuffleKeys = (o) =>
   : o;
 
 const volatile = () => ({ ttlMs: 1000 + Math.floor(Math.random() * 60000), cacheScope: Math.random() < 0.5 ? 'public' : 'private' });
-export const serverMeta = () => ({ _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'phase01-modern-fixture', version: '0.0.0' } } });
+export const serverMeta = () => ({ _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'phase01-modern-fixture', version: process.env.SERVER_VERSION ?? '0.0.0' } } });
 
 const TOOLS = [
   {
     name: 'echo',
     title: 'Echo',
-    description: 'Echoes its input.',
+    get description() { return process.env.ECHO_DESCRIPTION ?? 'Echoes its input.'; },
     inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'What to echo.' } }, required: ['text'] },
     outputSchema: { type: 'object', properties: { text: { type: 'string' } } },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

@@ -133,6 +133,13 @@ export function loadSnapshot(ws: Workspace, snapshotId: number): NormalizedSurfa
   return surface;
 }
 
+/** A snapshot, refused unless it is the given server's: the version views ask by server. */
+export function loadServerSnapshot(ws: Workspace, serverId: string, snapshotId: number): NormalizedSurface {
+  const owner = ws.db.prepare('SELECT server_id FROM surface_snapshot WHERE id = ?').get(snapshotId) as { server_id: string } | undefined;
+  if (owner?.server_id !== serverId) throw new SnapshotNotFoundError(`no snapshot ${snapshotId} for this server`);
+  return loadSnapshot(ws, snapshotId);
+}
+
 /** One entry per distinct surface, oldest first. */
 export function surfaceHistory(ws: Workspace, serverId: string): SnapshotSummary[] {
   const rows = ws.db.prepare(`
@@ -173,7 +180,8 @@ export interface LatestCapture {
 }
 
 export function latestCapture(ws: Workspace, serverId: string): LatestCapture | undefined {
-  const row = ws.db.prepare('SELECT snapshot_id, connection_id, observed_at, problems_json FROM surface_observation WHERE server_id = ? ORDER BY observed_at DESC, id DESC LIMIT 1').get(serverId) as
+  // The last one recorded, whatever the wall clock said (R09-2).
+  const row = ws.db.prepare('SELECT snapshot_id, connection_id, observed_at, problems_json FROM surface_observation WHERE server_id = ? ORDER BY id DESC LIMIT 1').get(serverId) as
     { snapshot_id: number; connection_id: number | null; observed_at: number; problems_json: string } | undefined;
   if (!row) return undefined;
   return {
@@ -182,4 +190,150 @@ export function latestCapture(ws: Workspace, serverId: string): LatestCapture | 
     connectionId: row.connection_id,
     surface: { ...loadSnapshot(ws, row.snapshot_id), problems: JSON.parse(row.problems_json) },
   };
+}
+
+/**
+ * What an entry of the version history is (phase 09 decision 2). `revision`:
+ * the negotiated revision changed and the surface did not. `identity`: only
+ * `serverInfo` changed, so the entry is not a version.
+ */
+export type VersionKind = 'first' | 'surface' | 'revision' | 'identity';
+
+export interface VersionEntry {
+  /** Position in the timeline, oldest first. */
+  index: number;
+  snapshotId: number;
+  kind: VersionKind;
+  /** 1 for the first entry, one more for each surface or revision entry; null on an identity entry. */
+  version: number | null;
+  /** The version in force at this entry: its own number, or the one an identity entry sits under. */
+  underVersion: number;
+  /** Surface-level changes against the entry before (items, instructions, capabilities); 0 on the first. */
+  changes: number;
+  /** The earliest entry holding this same snapshot, when the surface went back to it. */
+  sameAs?: number;
+  revision: string;
+  era: Era;
+  serverName?: string;
+  serverVersion?: string;
+  firstObservedAt: number;
+  lastObservedAt: number;
+  observations: number;
+}
+
+export interface VersionTimeline {
+  entries: VersionEntry[];
+  /**
+   * Set when the newest UNSTABLE_RUN or more entries each lasted one capture:
+   * every recent capture produced a different version (decision 7).
+   */
+  unstable?: { entries: number; since: number; until: number };
+}
+
+export const UNSTABLE_RUN = 3;
+
+/**
+ * The version history (phase 09 decision 1): one entry per run of consecutive
+ * captures of one snapshot, oldest first, each classified against the entry
+ * before it. A surface that changes and changes back is three entries, not
+ * two: the return is a change the agent sees.
+ */
+export function versionTimeline(ws: Workspace, serverId: string): VersionTimeline {
+  const runs: { snapshotId: number; first: number; last: number; count: number }[] = [];
+  // Record order, not the wall clock: a clock stepped back would otherwise
+  // split a run and invent versions (R09-2).
+  for (const o of ws.db.prepare('SELECT snapshot_id, observed_at FROM surface_observation WHERE server_id = ? ORDER BY id').all(serverId) as { snapshot_id: number; observed_at: number }[]) {
+    const run = runs[runs.length - 1];
+    if (run && run.snapshotId === o.snapshot_id) {
+      run.first = Math.min(run.first, o.observed_at);
+      run.last = Math.max(run.last, o.observed_at);
+      run.count++;
+    } else {
+      runs.push({ snapshotId: o.snapshot_id, first: o.observed_at, last: o.observed_at, count: 1 });
+    }
+  }
+
+  const digests = new Map<number, Digest>();
+  const load = (id: number) => {
+    let d = digests.get(id);
+    if (!d) digests.set(id, (d = digest(ws, id)));
+    return d;
+  };
+  const firstIndex = new Map<number, number>();
+  let version = 0;
+  const entries = runs.map((run, index): VersionEntry => {
+    const surface = load(run.snapshotId);
+    let kind: VersionKind = 'first';
+    let changes = 0;
+    if (index > 0) {
+      const prev = load(runs[index - 1]!.snapshotId);
+      changes = countChanges(prev, surface);
+      // The hashes differ, so something did. A difference the count cannot
+      // name (a repeated key's second entry) is still a surface change.
+      kind = changes > 0 ? 'surface'
+        : prev.revision !== surface.revision ? 'revision'
+        : prev.serverName !== surface.serverName || prev.serverVersion !== surface.serverVersion ? 'identity'
+        : 'surface';
+    }
+    if (kind !== 'identity') version++;
+    const seen = firstIndex.get(run.snapshotId);
+    if (seen === undefined) firstIndex.set(run.snapshotId, index);
+    return {
+      index, snapshotId: run.snapshotId, kind,
+      version: kind === 'identity' ? null : version,
+      underVersion: version,
+      changes,
+      ...(seen !== undefined ? { sameAs: seen } : {}),
+      revision: surface.revision, era: surface.era,
+      ...(surface.serverName !== null ? { serverName: surface.serverName } : {}),
+      ...(surface.serverVersion !== null ? { serverVersion: surface.serverVersion } : {}),
+      firstObservedAt: run.first, lastObservedAt: run.last, observations: run.count,
+    };
+  });
+
+  let run = 0;
+  while (run < entries.length && entries[entries.length - 1 - run]!.observations === 1) run++;
+  const timeline: VersionTimeline = { entries };
+  if (run >= UNSTABLE_RUN) {
+    timeline.unstable = { entries: run, since: entries[entries.length - run]!.firstObservedAt, until: entries[entries.length - 1]!.lastObservedAt };
+  }
+  return timeline;
+}
+
+/**
+ * What the timeline compares a snapshot by: its row and each item's stored
+ * hash, never the item bodies (R09-1). The hashes are the protocol package's,
+ * taken at record time, so this counts what diffSurfaces counts: a key
+ * repeated in a list keeps its last hash, as diffSurfaces' join does.
+ */
+interface Digest {
+  revision: string; era: Era; serverName: string | null; serverVersion: string | null;
+  instructions: string | null; capabilities: string;
+  items: Record<ItemList, Map<string, string>>;
+}
+
+function digest(ws: Workspace, snapshotId: number): Digest {
+  const row = ws.db.prepare('SELECT revision, era, server_name, server_version, instructions, capabilities_json FROM surface_snapshot WHERE id = ?').get(snapshotId) as SnapshotRow | undefined;
+  if (!row) throw new SnapshotNotFoundError(`no snapshot ${snapshotId} in this workspace`);
+  const items = {} as Digest['items'];
+  for (const list of LISTS) {
+    items[list] = new Map((ws.db.prepare(`SELECT key, item_hash FROM ${ITEM_TABLES[list].table} WHERE snapshot_id = ? ORDER BY ordinal`).all(snapshotId) as { key: string; item_hash: string }[])
+      .map((r) => [r.key, r.item_hash]));
+  }
+  return {
+    revision: row.revision, era: row.era, serverName: row.server_name, serverVersion: row.server_version,
+    instructions: row.instructions, capabilities: row.capabilities_json, items,
+  };
+}
+
+/** surfaceChangeCount of the diff between two snapshots, from their digests. */
+function countChanges(a: Digest, b: Digest): number {
+  let n = (a.instructions !== b.instructions ? 1 : 0) + (a.capabilities !== b.capabilities ? 1 : 0);
+  for (const list of LISTS) {
+    const before = a.items[list];
+    const after = b.items[list];
+    for (const [key, hash] of before) if (after.get(key) !== hash) n++;
+    for (const key of after.keys()) if (!before.has(key)) n++;
+  }
+  return n;
 }

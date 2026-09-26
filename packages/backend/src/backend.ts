@@ -2,9 +2,9 @@
 // and the wire log behind one message API. Plain Node, so every request is
 // testable without Electron (D17); the utility-process entry only wires ports.
 import { randomUUID } from 'node:crypto';
-import { buildContext, costContext, renderContext, O200K, uriTemplate, validateAgainst, type ContextServer } from '../../protocol/dist/index.js';
+import { buildContext, compareVersions, costContext, renderContext, O200K, uriTemplate, validateAgainst, type ContextServer } from '../../protocol/dist/index.js';
 import {
-  compact, deleteServer, latestCapture, readCall, repairInterrupted, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
+  compact, deleteServer, latestCapture, loadServerSnapshot, versionTimeline, readCall, repairInterrupted, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
   type PurgeResult, type ServerDefinition, type SecretStore,
 } from '../../storage/dist/index.js';
 import type { ServerRoot } from '../../platform/dist/index.js';
@@ -109,6 +109,12 @@ export class Backend {
         return rawEntry(this.ws().db, shown, list, key);
       },
       'context.get': ({ excluded }) => this.context(new Set(excluded ?? [])),
+      'versions.list': ({ serverId }) => { this.server(serverId); return versionTimeline(this.ws(), serverId); },
+      'versions.diff': ({ serverId, before, after }) => {
+        const { name } = this.server(serverId);
+        const ws = this.ws();
+        return compareVersions(loadServerSnapshot(ws, serverId, before), loadServerSnapshot(ws, serverId, after), { name, tokenizer: O200K });
+      },
       'calls.start': (params) => { this.server(params.serverId); return this.pipeline().start(params); },
       'calls.cancel': ({ callId }) => { this.pipeline().cancel(callId); return null; },
       'calls.stop': ({ callId }) => { this.pipeline().stop(callId); return null; },

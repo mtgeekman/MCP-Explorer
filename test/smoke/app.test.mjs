@@ -1,4 +1,4 @@
-// Phase 04 to 08 acceptance, driven through the real app with playwright-core. Run
+// Phase 04 to 09 acceptance, driven through the real app with playwright-core. Run
 // with `npm run test:smoke` after `npm run build`; it needs a display (CI
 // runs it under xvfb on Linux). Set MCPX_APP_EXE to drive a packaged build
 // instead of the built tree.
@@ -12,7 +12,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { addToRegistry, createWorkspaceDb, saveServer, openWorkspaceDb } from '../../packages/storage/dist/index.js';
+import { addToRegistry, createWorkspaceDb, saveServer, openWorkspaceDb, recordCapture } from '../../packages/storage/dist/index.js';
+import { connectStdio, captureSurface } from '../../packages/protocol/dist/index.js';
 import { isAlive } from '../../packages/platform/dist/index.js';
 import { fixtures, listen } from '../support/fixture-servers.mjs';
 
@@ -32,12 +33,14 @@ const legacy = join(fixtures, 'legacy-server.mjs');
 const win = process.platform === 'win32';
 
 /** A data directory holding one unencrypted workspace with these servers, as the app would have left it. */
-function seed(servers) {
+function seed(servers, captures = []) {
   const dataDir = mkdtempSync(join(work, 'data-'));
   const id = randomUUID();
   const path = join(dataDir, `${id}.db`);
   const ws = createWorkspaceDb({ path, workspaceId: id, name: 'Smoke', custody: { kind: 'none' }, secrets: noSecrets });
   for (const s of servers) saveServer(ws, s);
+  // Earlier captures, as earlier sessions would have left them (phase 09): [serverId, surface, at].
+  for (const [serverId, surface, at] of captures) recordCapture(ws, serverId, surface, { now: () => at });
   ws.close();
   addToRegistry(join(dataDir, 'workspaces.json'), { id, path, custody: 'none', createdAt: Date.now(), name: 'Smoke' });
   return { dataDir, path, id };
@@ -408,9 +411,10 @@ test('calls: a read-only tool runs from the form without a confirm, and its resu
     await openWorkspace(page);
     await connect(page, 'calls');
     await openCall(page, 'add');
-    const inputs = page.locator('.call-form input');
-    await inputs.nth(0).fill('20');
-    await inputs.nth(1).fill('22');
+    // By name: the modern fixture shuffles schema keys, and the form keeps the server's order (R07-7).
+    const input = (name) => page.locator('.call-form label.field', { has: page.locator('span.mono', { hasText: new RegExp(`^${name}$`) }) }).locator('input');
+    await input('a').fill('20');
+    await input('b').fill('22');
     await page.locator('.call-editor textarea').filter({ hasText: '"b": 22' }).waitFor();
     await page.locator('.ok-line', { hasText: 'match the schema' }).waitFor();
     await shot(page, '07-1-form');
@@ -818,6 +822,80 @@ test('R08-4: a tool form open across a Refresh follows the new schema', async ()
     await page.getByRole('tab', { name: 'Tools 2' }).waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => document.querySelectorAll('.call-form label.field').length === 2, undefined, { timeout: 10_000 });
     assert.equal(await labels(), 'text,loud');
+  } finally {
+    await app.close();
+  }
+});
+
+/** One capture of a fixture under these knobs, outside the app: an earlier session's. */
+async function fixtureSurface(script, env) {
+  const conn = await connectStdio({ command: process.execPath, args: [script], env: { ...process.env, ...env } });
+  try { return await captureSurface(conn.source); } finally { await conn.close(); }
+}
+
+test('versions: a changed description is a new version whose diff opens on what the model sees; a version bump is identity only (board 7)', async () => {
+  const id = randomUUID();
+  const env = { MUTATE_AFTER: '1', SERVER_VERSION: '1.0.1' };
+  const day = 86_400_000;
+  const { dataDir } = seed([{ id, name: 'versioned', transport: 'stdio', command: process.execPath, args: [modern], env }], [
+    [id, await fixtureSurface(modern, { SERVER_VERSION: '1.0.0' }), Date.now() - 2 * day],
+    [id, await fixtureSurface(modern, { SERVER_VERSION: '1.0.1' }), Date.now() - day],
+  ]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connectAndCapture(page, 'versioned', 2);
+    const rows = page.locator('.versions-table tr');
+    await rows.nth(1).waitFor();
+    assert.equal(await rows.count(), 2, 'the connect captured the identity entry again: still two rows');
+    await page.getByRole('button', { name: 'Refresh' }).click();
+    await rows.nth(2).waitFor({ timeout: 20_000 });
+    assert.deepEqual(await rows.locator('.version-title').allInnerTexts(), ['Version 2', 'Identity only', 'Version 1'], 'newest first');
+    assert.equal(await rows.nth(1).getAttribute('data-kind'), 'identity');
+    assert.match(await rows.nth(1).innerText(), /Version changed, surface identical: version 1\.0\.0 to 1\.0\.1/);
+    assert.match(await rows.nth(1).innerText(), /2 captures/);
+
+    await rows.nth(0).click();
+    const diff = page.locator('.version-diff');
+    await diff.locator('.diff-line.removed').waitFor();
+    assert.equal(await diff.getByRole('tab', { name: 'What the model sees' }).getAttribute('aria-selected'), 'true', 'the diff opens on what the model sees (7.1B)');
+    assert.match(await diff.locator('.diff-line.added').innerText(), /Echoes its input\. \(revised\)/);
+    assert.equal(await diff.locator('.diff-line.added mark').innerText(), ' (revised)');
+    assert.match(await diff.locator('.token-line').innerText(), /^\+\d+ tokens \(\d+ to \d+, o200k_base\)$/);
+    assert.equal(await page.locator('.compare-with select').inputValue(), '1', 'compared with the entry before it');
+
+    await diff.getByRole('tab', { name: 'By item' }).click();
+    const item = diff.locator('.field-table tbody tr');
+    assert.equal(await item.count(), 1, 'exactly one change');
+    assert.deepEqual((await item.locator('td').allInnerTexts()).slice(1, 3), ['echo', '/description']);
+    await diff.getByRole('tab', { name: 'Raw snapshots' }).click();
+    await diff.getByText('Not wire bytes').waitFor();
+    assert.ok(await diff.locator('.diff-line.added', { hasText: '(revised)' }).isVisible());
+
+    await rows.nth(1).click();
+    await page.locator('.version-diff .token-line', { hasText: 'No token change' }).waitFor();
+    assert.ok(await page.getByText('Nothing the model sees changed.').isVisible());
+    await page.locator('.compare-with select').selectOption('2');
+    await page.locator('.version-diff .diff-line.added', { hasText: '(revised)' }).waitFor();
+  } finally {
+    await app.close();
+  }
+});
+
+test('versions: every recent capture a different version is flagged unstable (decision 7)', async () => {
+  const id = randomUUID();
+  const hour = 3_600_000;
+  const now = Date.now();
+  const captures = [];
+  for (const [i, v] of ['1', '2', '3', '4'].entries()) captures.push([id, await fixtureSurface(modern, { SERVER_VERSION: v }), now - (4 - i) * hour]);
+  const { dataDir } = seed([{ id, name: 'flaky', transport: 'stdio', command: process.execPath, args: [modern] }], captures);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await page.locator('.server-row', { hasText: 'flaky' }).click();
+    await page.locator('.versions .warn').waitFor();
+    assert.equal(await page.locator('.versions .warn').innerText(), 'Unstable: the last 4 captures each produced a different version, over 3 hours.');
+    assert.equal(await page.locator('.versions-table tr.identity').count(), 3, 'identity rows stay compact');
   } finally {
     await app.close();
   }

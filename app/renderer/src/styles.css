@@ -305,3 +305,35 @@ table.calls tr.on td, table.calls tr:hover td { background: var(--bg); }
 .refusal { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
 .earlier-request { margin: 4px 0; }
 .linklike { background: none; border: none; padding: 0; text-align: left; cursor: pointer; color: inherit; }
+
+/* Version history and diff (phase 09, board 7). */
+.versions { margin-top: 16px; }
+.versions-table tr.identity td { border-bottom-style: dashed; color: var(--muted); font-size: 12.5px; padding-top: 2px; padding-bottom: 2px; }
+.versions-table .version-title { font-weight: 500; white-space: nowrap; }
+.versions-table tr.identity .version-title { font-weight: 400; font-style: italic; }
+.version-open { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.compare-with { display: flex; align-items: center; gap: 8px; }
+.token-line { font-weight: 500; margin: 8px 0; }
+.text-diff { border: 1px solid var(--line); border-radius: 5px; overflow-x: auto; }
+.text-diff > p { margin: 4px 8px; font-family: var(--font); }
+.hunk-head { padding: 2px 8px; color: var(--muted); background: var(--bg); border-top: 1px solid var(--line); }
+.diff-line { display: flex; white-space: pre; }
+.diff-line .ln { width: 44px; flex: none; padding-right: 6px; text-align: right; color: var(--muted); user-select: none; }
+.diff-line .sign { width: 16px; flex: none; text-align: center; user-select: none; }
+.diff-line.removed { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.diff-line.added { background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.diff-line mark { color: inherit; border-radius: 2px; }
+.diff-line.removed mark { background: color-mix(in srgb, var(--bad) 30%, transparent); }
+.diff-line.added mark { background: color-mix(in srgb, var(--ok) 30%, transparent); }
+.diff-whole { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.diff-whole pre { margin: 0; max-height: 480px; overflow: auto; border: 1px solid var(--line); border-radius: 5px; padding: 6px; }
+.token-table { margin-top: 8px; width: auto; }
+.token-table td { cursor: default; }
+.field-table th { text-align: left; font-weight: 500; color: var(--muted); padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.field-table td { cursor: default; vertical-align: top; }
+.field-table .value { max-width: 320px; white-space: pre-wrap; word-break: break-word; }
+.change { font-size: 12px; margin-left: 4px; }
+.change.added { color: var(--ok); }
+.change.removed { color: var(--bad); }
+.change.changed { color: var(--busy); }
+.versions-table .nowrap { white-space: nowrap; }

@@ -51,6 +51,14 @@ export {
   type RawUnit,
 } from './history.js';
 export {
+  listCalls,
+  readCall,
+  repairInterrupted,
+  type CallSummary,
+  type CallRecord,
+  type RoundRecord,
+} from './call-history.js';
+export {
   recordCapture,
   loadSnapshot,
   surfaceHistory,

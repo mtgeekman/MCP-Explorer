@@ -33,6 +33,20 @@ const KEYS = `
   SELECT f.id, f.at, 1 FROM frame f JOIN connection c ON c.id = f.connection_id WHERE c.server_id = @server AND f.unit_id IS NULL
 `;
 
+/**
+ * The largest unit a list or a live event carries whole: 256 KB (phase 07
+ * decision 9). A bigger one travels without its bytes, to every window, and
+ * is fetched whole with log.get when someone selects it.
+ */
+export const LIST_BYTES_LIMIT = 256 * 1024;
+const HEAD_BYTES = 512;
+
+/** A unit as a list or a live event carries it: whole, or without its bytes when large. */
+export function listed(u: LogUnit): LogUnit {
+  if (u.bytes === null || u.bytes.length <= LIST_BYTES_LIMIT) return u;
+  return { ...u, bytes: null, omitted: { head: u.bytes.slice(0, HEAD_BYTES) } };
+}
+
 /** A page of a server's log, oldest first, older than `before` when given. */
 export function logPage(db: Database, serverId: string, before: LogCursor | undefined, limit: number): LogUnit[] {
   const cursor = before ? [before.at, before.reserialized ? 1 : 0, before.id] : [Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER];
@@ -44,7 +58,7 @@ export function logPage(db: Database, serverId: string, before: LogCursor | unde
   `).all({ server: serverId, at: cursor[0], reserialized: cursor[1], id: cursor[2], limit }) as { id: number; reserialized: number }[];
   const byKey = db.prepare(`SELECT * FROM (${UNION}) WHERE id = ? AND reserialized = ?`);
   const rows = keys.reverse().map((k) => byKey.get(k.id, k.reserialized) as Row);
-  return withFrames(db, rows);
+  return withFrames(db, rows).map(listed);
 }
 
 /** One unit by id, or null. `reserialized` picks a pre-schema-3 frame, whose ids are a separate sequence. */

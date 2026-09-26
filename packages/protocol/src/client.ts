@@ -179,6 +179,11 @@ export interface Connection {
   era: Era;
   revision: string;
   source: SurfaceSource;
+  /**
+   * Sends one tools/call, prompts/get or resources/read as the user asked, and
+   * reports what came back exactly as the server sent it. Never retries (P2).
+   */
+  call(request: CallRequest): Promise<CallOutcome>;
   /** stdio only: the process the app spawned, the root of its tree (D36). */
   pid?: number;
   /** stdio only: when that process was seen to spawn, milliseconds since the epoch. */
@@ -209,6 +214,11 @@ function makeClient(
   // subscription at connect. Both are calls the user did not make (P2).
   const client = new Client(info, {
     capabilities: CLIENT_CAPABILITIES,
+    // P2: by default the SDK answers input_required through registered
+    // handlers and retries on its own, and retries a requestState-only result
+    // after 250 ms with no human at all. Off, such a result is refused rather
+    // than retried; call() asks for it raw with allowInputRequired.
+    inputRequired: { autoFulfill: false },
     ...(opts.negotiate
       ? { versionNegotiation: { mode: 'auto', probe: { timeoutMs: opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS } } }
       : {}),
@@ -235,12 +245,14 @@ const LIST_CHANGED: [string, ChangedList][] = [
   ['notifications/resources/list_changed', 'resources'],
 ];
 
-function tap(inner: any, listener?: FrameListener, onFrameError: FrameErrorListener = warnFrameError): any {
-  if (!listener) return inner;
+function tap(inner: any, listener: FrameListener | undefined, onFrameError: FrameErrorListener = warnFrameError, calls?: CallTracker): any {
+  if (!listener && !calls) return inner;
   // A listener that throws must not cost the protocol the frame. Called before
   // the SDK's handler, an exception here made the transport drop the message
   // (the request then hung) or reject the send; it is reported instead.
   const onFrame: FrameListener = (direction, frame) => {
+    calls?.see(direction, frame);
+    if (!listener) return;
     try {
       listener(direction, frame);
     } catch (error) {
@@ -282,37 +294,240 @@ function tap(inner: any, listener?: FrameListener, onFrameError: FrameErrorListe
 /**
  * A list endpoint the server does not advertise is absent, not an error.
  *
- * Two SDK behaviours this has to account for, both measured rather than assumed:
+ * One page per call, read raw: the page is the response the tap saw, and
+ * captureSurface walks the cursors. Not the SDK's listTools() and friends,
+ * for three reasons, each measured:
  *
- * 1. `listTools()` and friends ALREADY walk every page internally and return
- *    the aggregate with no `nextCursor` -- 250 tools came back from one call
- *    across 36 observed `tools/list` frames. Every page still passes through
- *    the transport tap, so P1 holds. captureSurface's own page walk therefore
- *    sees a single complete page here; it remains the guarantee for any
- *    SurfaceSource that is not this SDK.
- * 2. The SDK caches cacheable results and honours the server's `ttlMs`
- *    (SEP-2549), so a second list within the TTL is served WITHOUT a round
- *    trip. That silently breaks version history: a re-capture after a
- *    `list_changed` notification would return the stale surface and the change
- *    would never be recorded. A capture must reflect the server now, so every
- *    list is issued with `cacheMode: 'bypass'`.
+ * 1. They validate the whole reply, so ONE malformed entry (a string
+ *    readOnlyHint, an inputSchema that is not an object) failed the entire
+ *    list and the capture showed no tools at all (phase 07; pinned by
+ *    test/capture-raw.test.mjs). The malformed entry is what an explorer is
+ *    for.
+ * 2. listTools() drops a tool whose `x-mcp-header` declarations it finds
+ *    invalid, with only a console warning.
+ * 3. They answer from the SDK's response cache within the server's `ttlMs`
+ *    (SEP-2549) unless told to bypass it, and a capture must reflect the
+ *    server now. request() never consults that cache.
  */
 function lister(
   client: any,
-  method: 'listTools' | 'listPrompts' | 'listResources' | 'listResourceTemplates',
+  calls: CallTracker,
+  method: 'tools/list' | 'prompts/list' | 'resources/list' | 'resources/templates/list',
   field: 'tools' | 'prompts' | 'resources' | 'resourceTemplates',
   supported: boolean,
 ): ((cursor?: string) => Promise<Page<Record<string, unknown>>>) | undefined {
   if (!supported) return undefined;
   return async (cursor?: string) => {
-    // bypass: fetch without consulting or writing the response cache. See above.
-    const result = await client[method](cursor === undefined ? {} : { cursor }, { cacheMode: 'bypass' });
-    return { items: (result?.[field] ?? []) as Record<string, unknown>[], nextCursor: result?.nextCursor };
+    const r = await rawRequest(client, calls, method, cursor === undefined ? {} : { cursor }, {});
+    if (!r.response) throw r.failure;
+    if ('error' in r.response) {
+      const e = (r.response.error ?? {}) as { code?: unknown; message?: unknown };
+      throw new Error(`MCP error ${String(e.code)}: ${String(e.message)}`);
+    }
+    const result = (r.response.result ?? {}) as Record<string, unknown>;
+    if (result.resultType === 'input_required') {
+      throw new Error(`the server answered ${method} with input_required, which the specification allows only on tools/call, prompts/get and resources/read`);
+    }
+    const items = result[field];
+    if (!Array.isArray(items)) throw new Error(`the ${method} result has no ${field} array`);
+    return { items: items as Record<string, unknown>[], nextCursor: typeof result.nextCursor === 'string' ? result.nextCursor : undefined };
+  };
+}
+
+export type CallKind = 'tool' | 'prompt' | 'resource';
+
+export interface CallRequest {
+  kind: CallKind;
+  /** The tool or prompt name, or the resource URI. */
+  target: string;
+  /** A tool's or prompt's arguments. Sent as given; nothing is filled in. */
+  args?: Record<string, unknown>;
+  /** Aborting sends the cancellation the era uses; the server may still finish. */
+  signal?: AbortSignal;
+  onProgress?: (progress: CallProgress) => void;
+  /** Phase 08: a retry's answers, keyed as the server asked. */
+  inputResponses?: Record<string, unknown>;
+  /** Phase 08: echoed byte-exact, and only when the server sent one (D16). */
+  requestState?: string;
+}
+
+export interface CallProgress {
+  progress: number;
+  total?: number;
+  message?: string;
+}
+
+/**
+ * What a call came to. A result or error is the JSON-RPC response as it
+ * arrived, before the SDK decoded it: `resultType` intact, unknown content
+ * types kept. `sdkRejected` is the SDK's objection to a result it would not
+ * return, which the app reports and does not act on.
+ */
+export type CallOutcome =
+  | { kind: 'result'; requestId: string | number; result: Record<string, unknown>; sdkRejected?: string }
+  | { kind: 'error'; requestId: string | number; error: { code?: unknown; message?: unknown; data?: unknown } }
+  /** The user cancelled before a response came. */
+  | { kind: 'cancelled'; requestId: string | number }
+  /** No response: the session ended, or the request could not be sent. */
+  | { kind: 'failed'; requestId?: string | number; message: string };
+
+export const CALL_METHOD: Record<CallKind, string> = { tool: 'tools/call', prompt: 'prompts/get', resource: 'resources/read' };
+
+/**
+ * setTimeout's ceiling, about 24.8 days: the SDK has no "never", and a larger
+ * value fires at once. Phase 07 decision 2: a call does not time out, because
+ * a timeout sends a cancellation the user did not ask for (P2).
+ */
+const NO_TIMEOUT_MS = 2 ** 31 - 1;
+
+/** Accepts any result, so the SDK's result schema never stands between the server and the app. */
+const PASS_THROUGH = {
+  '~standard': { version: 1, vendor: 'mcp-explorer', validate: (value: unknown) => ({ value }) },
+};
+
+const idKey = (id: unknown) => JSON.stringify(id);
+
+/**
+ * Pairs a call with its request id and its response as the tap saw them. The
+ * SDK assigns the id and hands the frame to the transport synchronously inside
+ * request(), so the frame passes here before request() returns; an armed slot
+ * takes the id of the next outgoing request with its method.
+ */
+class CallTracker {
+  private armed: { method: string; id?: string | number } | undefined;
+  private readonly responses = new Map<string, Record<string, unknown>>();
+  private readonly watched = new Set<string>();
+
+  see(direction: FrameDirection, frame: unknown): void {
+    const m = frame as { id?: unknown; method?: unknown } | null;
+    if (!m || typeof m !== 'object' || m.id === undefined || m.id === null) return;
+    if (direction === 'out' && this.armed && m.method === this.armed.method && this.armed.id === undefined) {
+      this.armed.id = m.id as string | number;
+      this.watched.add(idKey(m.id));
+    } else if (direction === 'in' && m.method === undefined && this.watched.has(idKey(m.id))) {
+      this.responses.set(idKey(m.id), m as Record<string, unknown>);
+    }
+  }
+
+  /**
+   * Runs send() with the slot armed and returns the id it produced. No id means
+   * no frame went out: the SDK refused the request first (not connected).
+   */
+  send<T>(method: string, send: () => T): { id?: string | number; sent: T } {
+    if (this.armed) throw new Error('a call is already being sent');
+    this.armed = { method };
+    try {
+      const sent = send();
+      return { ...(this.armed.id === undefined ? {} : { id: this.armed.id }), sent };
+    } finally {
+      this.armed = undefined;
+    }
+  }
+
+  /** Whether the response for this id has arrived. */
+  has(id: string | number): boolean {
+    return this.responses.has(idKey(id));
+  }
+
+  /** The response the tap saw for this id, if any; forgets the id either way. */
+  take(id: string | number): Record<string, unknown> | undefined {
+    const key = idKey(id);
+    const response = this.responses.get(key);
+    this.responses.delete(key);
+    this.watched.delete(key);
+    return response;
+  }
+}
+
+/**
+ * The params a call sends, before the SDK adds its `_meta`: the one place they
+ * are built, so the confirm shows what call() will send (phase 07 decision 5).
+ */
+export function callParams(req: Pick<CallRequest, 'kind' | 'target' | 'args' | 'inputResponses' | 'requestState'>): Record<string, unknown> {
+  const params: Record<string, unknown> = req.kind === 'resource' ? { uri: req.target } : { name: req.target };
+  if (req.kind !== 'resource' && req.args !== undefined) params.arguments = req.args;
+  if (req.inputResponses !== undefined) params.inputResponses = req.inputResponses;
+  if (req.requestState !== undefined) params.requestState = req.requestState;
+  return params;
+}
+
+async function callOn(client: any, calls: CallTracker, req: CallRequest): Promise<CallOutcome> {
+  const method = CALL_METHOD[req.kind];
+  const params = callParams(req);
+  const onProgress = req.onProgress;
+  const options = {
+    allowInputRequired: true,
+    timeout: NO_TIMEOUT_MS,
+    ...(req.signal ? { signal: req.signal } : {}),
+    ...(onProgress ? {
+      onprogress: (p: CallProgress) => onProgress({
+        progress: p.progress,
+        ...(p.total === undefined ? {} : { total: p.total }),
+        ...(p.message === undefined ? {} : { message: p.message }),
+      }),
+    } : {}),
+  };
+
+  const r = await rawRequest(client, calls, method, params, options);
+  if (r.requestId === undefined) return { kind: 'failed', message: messageOf(r.failure) };
+  const requestId = r.requestId;
+  // A response the SDK accepted before the abort is the outcome: the cancel
+  // came too late to send anything (R07-4). One arriving after the abort the
+  // SDK ignores, and so does this; the wire log still has it.
+  const response = r.response;
+  if (r.abortedFirst) return { kind: 'cancelled', requestId };
+  if (response && 'error' in response) return { kind: 'error', requestId, error: (response.error ?? {}) as { code?: unknown; message?: unknown; data?: unknown } };
+  if (response) {
+    const result = (response.result && typeof response.result === 'object' ? response.result : {}) as Record<string, unknown>;
+    return { kind: 'result', requestId, result, ...(r.sdkError === undefined ? {} : { sdkRejected: messageOf(r.sdkError) }) };
+  }
+  return { kind: 'failed', requestId, message: messageOf(r.failure) };
+}
+
+/**
+ * One request through the SDK, answered by the response the tap saw for its
+ * id: the server's message before the SDK decoded or validated it. The SDK
+ * still does everything else a request needs (the id, `_meta`, progress,
+ * cancellation). `failure` says why there is no response.
+ */
+async function rawRequest(client: any, calls: CallTracker, method: string, params: Record<string, unknown>, options: Record<string, unknown>): Promise<{
+  requestId?: string | number; response?: Record<string, unknown>; sdkError?: unknown; failure: unknown;
+  /** The request's signal aborted before its response arrived: the request was cancelled. */
+  abortedFirst?: true;
+}> {
+  let sent: { id?: string | number; sent: Promise<unknown> };
+  try {
+    sent = calls.send(method, () => client.request({ method, params }, PASS_THROUGH, options) as Promise<unknown>);
+  } catch (e) {
+    return { failure: e };
+  }
+  let abortedFirst = false;
+  const signal = options.signal as AbortSignal | undefined;
+  const id = sent.id;
+  const onAbort = () => { abortedFirst = id === undefined || !calls.has(id); };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  let sdkError: unknown;
+  try {
+    await sent.sent;
+  } catch (e) {
+    sdkError = e;
+  }
+  signal?.removeEventListener('abort', onAbort);
+  if (sent.id === undefined) return { failure: sdkError ?? new Error(`the ${method} request never reached the transport`) };
+  // The tap saw the response before the SDK's handler did, so by now it is
+  // here if it came.
+  const response = calls.take(sent.id);
+  return {
+    requestId: sent.id,
+    ...(response ? { response } : {}),
+    ...(sdkError === undefined ? {} : { sdkError }),
+    ...(abortedFirst ? { abortedFirst: true as const } : {}),
+    failure: sdkError ?? new Error('no response arrived'),
   };
 }
 
 /** Everything after the transport is connected is identical across transports. */
-async function describe(client: any): Promise<Connection> {
+async function describe(client: any, calls: CallTracker): Promise<Connection> {
   const revision: string = client.getNegotiatedProtocolVersion?.() ?? '2025-06-18';
   const capabilities = client.getServerCapabilities?.() ?? {};
   const caps = capabilities as Record<string, unknown>;
@@ -323,12 +538,12 @@ async function describe(client: any): Promise<Connection> {
     serverInfo: client.getServerVersion?.(),
     instructions: client.getInstructions?.(),
     capabilities,
-    listTools: lister(client, 'listTools', 'tools', caps.tools !== undefined),
-    listPrompts: lister(client, 'listPrompts', 'prompts', caps.prompts !== undefined),
-    listResources: lister(client, 'listResources', 'resources', caps.resources !== undefined),
-    listResourceTemplates: lister(client, 'listResourceTemplates', 'resourceTemplates', caps.resources !== undefined),
+    listTools: lister(client, calls, 'tools/list', 'tools', caps.tools !== undefined),
+    listPrompts: lister(client, calls, 'prompts/list', 'prompts', caps.prompts !== undefined),
+    listResources: lister(client, calls, 'resources/list', 'resources', caps.resources !== undefined),
+    listResourceTemplates: lister(client, calls, 'resources/templates/list', 'resourceTemplates', caps.resources !== undefined),
   };
-  return { era: source.era, revision, source, close: () => client.close() };
+  return { era: source.era, revision, source, call: (req) => callOn(client, calls, req), close: () => client.close() };
 }
 
 export type HttpTransportKind = 'streamable-http' | 'sse';
@@ -415,31 +630,63 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
     if (body instanceof Uint8Array) emit({ direction: 'out', kind: 'wire', bytes: body, http: request });
     else appEvent(emit, { event: 'request-body-not-recorded', bodyType: body.unrecorded, ...request });
 
-    const response = await base(input, init);
+    // On the modern era a cancelled call over Streamable HTTP is an aborted
+    // request with no notifications/cancelled (cancellation.mdx), so the abort
+    // is recorded as an event of its own (P1). The SDK's signal also carries
+    // the transport's own, which aborts on close, so the listener lives only
+    // until the response is read whole: after that an abort ends nothing (R07-2).
+    const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    const onAbort = () => appEvent(emit, { event: 'request-aborted', exchange, method, url });
+    const done = () => signal?.removeEventListener('abort', onAbort);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    let response: Response;
+    try {
+      response = await base(input, init);
+    } catch (e) {
+      done();
+      throw e;
+    }
     const http: HttpDetails = { exchange, status: response.status, statusText: response.statusText, headers: loggedHeaders(response.headers, secretNames) };
     const rebuilt = (body: BodyInit | null) => new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 
     if (!response.body) {
+      done();
       emit({ direction: 'in', kind: 'wire', bytes: new Uint8Array(0), http });
       return response;
     }
     if (!/^\s*text\/event-stream\b/i.test(response.headers.get('content-type') ?? '')) {
-      const bytes = new Uint8Array(await response.arrayBuffer());
+      let bytes: Uint8Array<ArrayBuffer>;
+      try {
+        bytes = new Uint8Array(await response.arrayBuffer());
+      } finally {
+        done();
+      }
       emit({ direction: 'in', kind: 'wire', bytes, http });
       return rebuilt(bytes);
     }
     const events = new SseEventSplitter();
     const event = (bytes: Uint8Array) => emit({ direction: 'in', kind: 'wire', bytes, http: { ...http, framing: 'sse-event' } });
-    const logged = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    // Transformer.cancel is in the streams standard and in Node, not yet in the TypeScript lib.
+    const logging: Transformer<Uint8Array, Uint8Array> & { cancel?: (reason: unknown) => void } = {
       transform(chunk, controller) {
         for (const e of events.push(chunk)) event(e);
         controller.enqueue(chunk);
       },
       flush() {
+        done();
         const rest = events.flush();
         if (rest) event(rest);
       },
-    }));
+      // The stream ended by error (the server dropped the connection mid-event)
+      // or was cancelled: flush never runs, so the bytes that did arrive are
+      // logged here (P1), and the listener goes as it would at a clean end.
+      cancel() {
+        done();
+        const rest = events.flush();
+        if (rest) event(rest);
+      },
+    };
+    const logged = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(logging));
     return rebuilt(logged);
   };
 }
@@ -513,6 +760,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   // No sibling-probe problem here: only the stdio transport spawns anything.
   // The taps are still required, or negotiation traffic bypasses P1's logger.
   const emit = unitSink(opts.onUnit, opts.onUnitError);
+  const calls = new CallTracker();
   const secretHeaders = opts.secretHeaders ?? {};
   // One logging fetch for every attempt, so exchange numbers keep counting.
   const fetchOption = emit ? { fetch: loggingFetch(emit, Object.keys(secretHeaders)) } : {};
@@ -521,7 +769,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
     const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged });
     const transport = new Transport(new URL(opts.url), { requestInit: { headers: { ...opts.headers, ...secretHeaders } }, ...fetchOption });
     try {
-      await client.connect(tap(transport, opts.onFrame, opts.onFrameError));
+      await client.connect(tap(transport, opts.onFrame, opts.onFrameError, calls));
       return client;
     } catch (e) {
       // An SSE transport holds its event stream open; a failed attempt must not leak it.
@@ -561,7 +809,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   } catch (e) {
     throw classifyHttp(e);
   }
-  return describe(client);
+  return describe(client, calls);
 }
 
 function classifyHttp(e: unknown): ConnectError {
@@ -686,10 +934,11 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   });
 
   const era = opts.era ?? 'auto';
+  const calls = new CallTracker();
   const client = makeClient(Client, { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' }, { negotiate: era === 'auto', probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged });
 
   try {
-    await client.connect(tap(inner, opts.onFrame, opts.onFrameError));
+    await client.connect(tap(inner, opts.onFrame, opts.onFrameError, calls));
   } catch (e) {
     const failure = classifyStdio(e, watch);
     // A server that answered is still running, and must be ended here. The
@@ -710,7 +959,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   }
 
   client.onclose = () => opts.onClose?.({ exit: watch.exit });
-  return { ...(await describe(client)), pid: watch.pid, startedAt: watch.spawnedAt };
+  return { ...(await describe(client, calls)), pid: watch.pid, startedAt: watch.spawnedAt };
 }
 
 function classifyStdio(e: unknown, watch: ProcessWatch): ConnectFailure {

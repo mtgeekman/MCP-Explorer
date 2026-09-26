@@ -9,8 +9,9 @@ import { formatBytes } from './raw.ts';
  * The largest unit the pane parses and indents: 10 MB, the SDK's stdio line
  * cap, so anything that can arrive can be read here (decided 2026-09-25, phase
  * 06 decision 5; it was 2 MB). The raw view holds any size whole (board 4.2B).
- * Pretty-printing near this size can stall the pane; Phase 07's large results
- * are where that gets measured.
+ * Measured in phase 07 (Windows, 2026-09-25): readable() takes 23 ms on a
+ * 9.5 MB string and 70 ms on 6.6 MB of small rows; a 9.5 MB tool result is
+ * shown in the pane and the transcript 1.3 s after Call (smoke test).
  */
 export const READABLE_LIMIT = 10 * 1024 * 1024;
 

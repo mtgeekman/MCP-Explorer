@@ -6,3 +6,4 @@ export * from './client.js';
 export * from './wire.js';
 export * from './tokens.js';
 export * from './context.js';
+export * from './validate.js';

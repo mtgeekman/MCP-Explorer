@@ -2,16 +2,17 @@
 // and the wire log behind one message API. Plain Node, so every request is
 // testable without Electron (D17); the utility-process entry only wires ports.
 import { randomUUID } from 'node:crypto';
-import { buildContext, costContext, renderContext, O200K, type ContextServer } from '../../protocol/dist/index.js';
+import { buildContext, costContext, renderContext, O200K, uriTemplate, validateAgainst, type ContextServer } from '../../protocol/dist/index.js';
 import {
-  compact, deleteServer, latestCapture, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
-  type ServerDefinition, type SecretStore,
+  compact, deleteServer, latestCapture, readCall, repairInterrupted, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
+  type PurgeResult, type ServerDefinition, type SecretStore,
 } from '../../storage/dist/index.js';
 import type { ServerRoot } from '../../platform/dist/index.js';
 import { ConnectionManager } from './connections.js';
 import { WorkspaceManager, type OpenWorkspace } from './workspaces.js';
-import { logPage, logUnit } from './log.js';
+import { listed, logPage, logUnit } from './log.js';
 import { rawEntry } from './entry.js';
+import { CallPipeline, curlFor, type CallExport } from './calls.js';
 import { listConfigLocations, readConfigs, saveImported } from './importer.js';
 import type { ContextView, ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow, SurfaceView } from './api.js';
 
@@ -32,6 +33,7 @@ const DEFAULT_PAGE = 500;
 export class Backend {
   private readonly workspaces: WorkspaceManager;
   private connections: ConnectionManager | undefined;
+  private calls: CallPipeline | undefined;
   private readonly listeners = new Set<<E extends keyof Events>(name: E, data: Events[E]) => void>();
   private readonly handlers: { [M in Method]: Handler<M> };
 
@@ -82,7 +84,7 @@ export class Backend {
       'settings.update': ({ changes }) => updateSettings(this.ws(), changes),
       'history.size': () => ({ fileBytes: fileBytes(this.ws().db), usedBytes: usedBytes(this.ws().db) }),
       'history.previewPurge': () => previewPurge(this.ws(), this.opts.now),
-      'history.purge': () => purgeHistory(this.ws(), this.opts.now),
+      'history.purge': () => this.purged(purgeHistory(this.ws(), this.opts.now)),
       'history.compact': () => compact(this.ws()),
       'import.locations': ({ projectRoots }) => listConfigLocations(projectRoots),
       'import.read': ({ locations }) => readConfigs(locations),
@@ -105,6 +107,17 @@ export class Backend {
         return rawEntry(this.ws().db, shown, list, key);
       },
       'context.get': ({ excluded }) => this.context(new Set(excluded ?? [])),
+      'calls.start': (params) => { this.server(params.serverId); return this.pipeline().start(params); },
+      'calls.cancel': ({ callId }) => { this.pipeline().cancel(callId); return null; },
+      'calls.stop': ({ callId }) => { this.pipeline().stop(callId); return null; },
+      'calls.list': ({ serverId, before, limit }) => { this.server(serverId); return this.pipeline().list(serverId, { before, limit }); },
+      'calls.get': ({ callId }) => this.pipeline().view(callId),
+      'calls.validate': ({ schema, value }) => validateAgainst(schema, value),
+      'calls.export': ({ callId }) => this.exportCall(callId),
+      'resources.template': async ({ uriTemplate: template, values }) => {
+        const t = await uriTemplate(template);
+        return { variables: t.variables, ...(values ? { uri: t.expand(values) } : {}) };
+      },
     };
   }
 
@@ -136,28 +149,66 @@ export class Backend {
     return open.ws;
   }
 
+  /** Tells open views when a purge deleted anything (R05-9). */
+  private purged(result: PurgeResult): PurgeResult {
+    if (result.callsDeleted + result.unitsDeleted + result.framesDeleted + result.connectionsDeleted > 0) this.emit('log.purged', {});
+    return result;
+  }
+
+  private pipeline(): CallPipeline {
+    if (!this.calls) throw new NoWorkspaceError('no workspace is open');
+    return this.calls;
+  }
+
+  private exportCall(callId: number): CallExport {
+    const call = readCall(this.ws(), callId);
+    if (!call) throw new Error(`no call ${callId} in this workspace`);
+    const unitId = call.roundRecords[0]?.requestUnitId ?? null;
+    const unit = unitId === null ? null : logUnit(this.ws().db, unitId);
+    if (!unit || unit.bytes === null) return { bytes: null, reason: unitId === null ? 'The request never reached the wire.' : 'The request was purged from the wire log.' };
+    // Over HTTP+SSE the answer arrives on the event stream, not in the POST's
+    // response, so a curl of the POST would show only its 202 (R07-9).
+    if (this.server(call.serverId).transport === 'sse') {
+      return { bytes: unit.bytes, reason: 'No curl command: over HTTP+SSE the answer arrives on the event stream, not in the response to this POST.' };
+    }
+    const curl = curlFor(unit);
+    return { bytes: unit.bytes, ...(curl ?? {}) };
+  }
+
   private conns(): ConnectionManager {
     if (!this.connections) throw new NoWorkspaceError('no workspace is open');
     return this.connections;
   }
 
   private startConnections(open: OpenWorkspace): void {
+    // A call or session a crash left open is closed before anything new starts
+    // (phase 07 decision 7). Safe while one process opens a workspace at a time.
+    repairInterrupted(open.ws);
     this.connections = new ConnectionManager(open.ws, {
       now: this.opts.now,
       probeTimeoutMs: this.opts.probeTimeoutMs,
       closeGraceMs: this.opts.closeGraceMs,
       events: {
-        state: (serverId, state) => this.emit('connection.state', { serverId, state }),
+        state: (serverId, state) => {
+          if (state.status !== 'connected' && state.status !== 'closing') this.calls?.sessionEnded(serverId);
+          this.emit('connection.state', { serverId, state });
+        },
         unit: (_serverId, _connectionId, unitId) => this.emit('log.unit', this.liveUnit(unitId)),
         processes: (roots) => this.opts.onProcesses?.(roots),
         surface: (serverId) => this.emit('surface.changed', { serverId }),
       },
     });
+    const conns = this.connections;
+    this.calls = new CallPipeline(open.ws, {
+      session: (id) => conns.session(id),
+      partialCapture: (id) => conns.partialCapture(id),
+    }, { changed: (serverId, callId, reason) => this.emit('call.changed', { serverId, callId, reason }), purged: (result) => void this.purged(result) });
   }
 
   private async closeConnections(): Promise<void> {
     const c = this.connections;
     this.connections = undefined;
+    this.calls = undefined;
     await c?.closeAll();
   }
 
@@ -210,7 +261,7 @@ export class Backend {
     // Read back as stored: the opt-out may have withheld the bytes (D30).
     const unit = logUnit(this.ws().db, id);
     if (!unit) throw new Error(`unit ${id} was recorded and cannot be read back`);
-    return unit;
+    return listed(unit);
   }
 }
 

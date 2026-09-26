@@ -56,14 +56,24 @@ export function migrate(db: Database, path: string, migrations: readonly Migrati
 
   for (const m of migrations) {
     if (m.version <= from) continue;
+    // SQLite's table-rebuild procedure: foreign keys off outside the
+    // transaction (the pragma is a no-op inside one), checked before commit.
+    const fkWasOn = m.rebuildsParent ? db.pragma('foreign_keys', { simple: true }) === 1 : false;
+    if (fkWasOn) db.pragma('foreign_keys = OFF');
     try {
       db.transaction(() => {
         db.exec(m.sql);
+        if (m.rebuildsParent) {
+          const broken = db.pragma('foreign_key_check') as unknown[];
+          if (broken.length > 0) throw new Error(`${broken.length} foreign key violations after the rebuild`);
+        }
         db.pragma(`user_version = ${m.version}`);
       })();
     } catch (err) {
       const where = backupPath ? `; the pre-upgrade copy is ${backupPath}` : '';
       throw new MigrationFailedError(`schema migration ${m.version} (${m.name}) failed; the workspace is still at schema ${userVersion(db)}${where}`, { cause: err });
+    } finally {
+      if (fkWasOn) db.pragma('foreign_keys = ON');
     }
   }
   return { from, to: head, backupPath };

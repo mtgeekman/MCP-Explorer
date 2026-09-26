@@ -18,7 +18,7 @@ import type { Workspace } from './workspace-db.js';
 export const RESULT_METHODS: readonly string[] = ['tools/call', 'prompts/get', 'resources/read'];
 
 export type CallKind = 'tool' | 'prompt' | 'resource';
-export type CallStatus = 'completed' | 'error' | 'abandoned' | 'capped';
+export type CallStatus = 'completed' | 'error' | 'abandoned' | 'capped' | 'cancelled' | 'interrupted';
 
 const METHOD_FOR_KIND: Record<CallKind, string> = { tool: 'tools/call', prompt: 'prompts/get', resource: 'resources/read' };
 

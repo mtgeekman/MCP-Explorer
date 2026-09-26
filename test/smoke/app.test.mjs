@@ -1,4 +1,4 @@
-// Phase 04, 05 and 06 acceptance, driven through the real app with playwright-core. Run
+// Phase 04, 05, 06 and 07 acceptance, driven through the real app with playwright-core. Run
 // with `npm run test:smoke` after `npm run build`; it needs a display (CI
 // runs it under xvfb on Linux). Set MCPX_APP_EXE to drive a packaged build
 // instead of the built tree.
@@ -381,6 +381,251 @@ test('context: two servers sharing a tool name show the collision, and leaving o
     assert.match(await page.locator('.tokenizer-label').innerText(), /o200k_base tokens/);
     await page.getByRole('checkbox', { name: 'Include two legacy' }).uncheck();
     await page.getByText('None. Every tool name in the block is unique.').waitFor();
+  } finally {
+    await app.close();
+  }
+});
+
+// --- phase 07: calling tools ----------------------------------------------------------
+
+/** Where to write screenshots of the call views, for a person to look at; none unless MCPX_SHOTS is set. */
+const shot = async (page, name) => {
+  if (process.env.MCPX_SHOTS) await page.screenshot({ path: join(process.env.MCPX_SHOTS, `${name}.png`) });
+};
+
+async function openCall(page, tool) {
+  await page.locator('.surface-items button', { hasText: new RegExp(`^${tool}`) }).first().click();
+  await page.getByRole('tab', { name: 'Call', exact: true }).click();
+}
+
+const callButton = (page) => page.locator('.call-panel > .actions').getByRole('button', { name: 'Call', exact: true });
+const transcriptStatus = (page, text) => page.locator('.call-panel .transcript .call-status', { hasText: text });
+
+test('calls: a read-only tool runs from the form without a confirm, and its result is read in the pane', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await openCall(page, 'add');
+    const inputs = page.locator('.call-form input');
+    await inputs.nth(0).fill('20');
+    await inputs.nth(1).fill('22');
+    await page.locator('.call-editor textarea').filter({ hasText: '"b": 22' }).waitFor();
+    await page.locator('.ok-line', { hasText: 'match the schema' }).waitFor();
+    await shot(page, '07-1-form');
+    await callButton(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    assert.equal(await page.locator('.modal').count(), 0, 'add is declared read-only: no confirm');
+    await page.locator('.readable-pane .part-text', { hasText: '42' }).waitFor();
+    await page.locator('.readable-pane .ok-line', { hasText: 'Matches the outputSchema' }).waitFor();
+    await shot(page, '07-2-result');
+    await page.locator('.call-history td', { hasText: 'add' }).first().waitFor();
+  } finally {
+    await app.close();
+  }
+});
+
+test('calls: a tool not declared read-only asks first; "Do not send" sends nothing', async () => {
+  const { dataDir, path, id } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await openCall(page, 'hint_destructive');
+    await callButton(page).click();
+    const modal = page.locator('.modal');
+    await modal.waitFor();
+    assert.match(await modal.innerText(), /destructiveHint: true/);
+    assert.match(await modal.innerText(), /"name": "hint_destructive"/);
+    await shot(page, '07-3-confirm');
+    await modal.getByRole('button', { name: 'Do not send' }).click();
+    assert.equal(await page.locator('.call-panel .transcript').count(), 0);
+    await callButton(page).click();
+    await page.locator('.modal').getByRole('button', { name: 'Send', exact: true }).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+  } finally {
+    await app.close();
+  }
+  const ws = openWorkspaceDb({ path, workspaceId: id, custody: { kind: 'none' }, secrets: noSecrets });
+  try {
+    assert.equal(ws.db.prepare("SELECT count(*) AS n FROM frame WHERE method = 'tools/call' AND direction = 'out'").get().n, 1, 'only the confirmed call went out');
+  } finally {
+    ws.close();
+  }
+});
+
+test('calls: progress shows while a call runs, and Cancel ends it cancelled', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [legacy], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await openCall(page, 'slow');
+    await page.locator('.call-editor textarea').fill('{"steps": 200, "delayMs": 50}');
+    await callButton(page).click();
+    await page.locator('.call-panel .progress', { hasText: /Progress \d+ of 200/ }).waitFor({ timeout: 10_000 });
+    await shot(page, '07-4-progress');
+    await page.locator('.call-panel .transcript').getByRole('button', { name: 'Cancel' }).click();
+    await transcriptStatus(page, 'Cancelled').waitFor({ timeout: 10_000 });
+  } finally {
+    await app.close();
+  }
+});
+
+test('calls: every content type renders, and one no revision defines is labelled, not dropped', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await openCall(page, 'media');
+    await callButton(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    const pane = page.locator('.readable-pane');
+    await pane.locator('img').waitFor();
+    await pane.locator('audio').waitFor();
+    await pane.getByText('which no MCP revision defines').waitFor();
+    await pane.getByText('The MCP client library refused this result', { exact: false }).first().waitFor();
+    await shot(page, '07-5-media');
+  } finally {
+    await app.close();
+  }
+});
+
+test('calls: a prompt is got from its argument form, and a template resource is read from its variables', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [legacy], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await page.getByRole('tab', { name: /^Prompts/ }).click();
+    await page.locator('.surface-items button', { hasText: 'review' }).click();
+    await page.getByRole('tab', { name: 'Get', exact: true }).click();
+    await page.locator('.call-form label', { hasText: 'language' }).locator('input').fill('rust');
+    await page.locator('.call-panel > .actions').getByRole('button', { name: 'Get', exact: true }).click();
+    await page.locator('.readable-pane .part-text', { hasText: 'Review this rust code' }).waitFor({ timeout: 10_000 });
+    await page.getByRole('tab', { name: /^Templates/ }).click();
+    await page.locator('.surface-items button', { hasText: 'fixture://notes/{day}' }).click();
+    await page.getByRole('tab', { name: 'Read', exact: true }).click();
+    await page.locator('.call-form label', { hasText: 'day' }).locator('input').fill('monday');
+    await page.locator('.call-panel > .actions').getByRole('button', { name: 'Read', exact: true }).click();
+    await page.locator('.readable-pane .part-text', { hasText: 'Notes for monday.' }).waitFor({ timeout: 10_000 });
+    await shot(page, '07-6-template');
+  } finally {
+    await app.close();
+  }
+});
+
+test('calls: a 9.5 MB result is shown whole, raw in the transcript and readable in the pane (time printed)', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await openCall(page, 'big');
+    await page.locator('.call-form input').first().fill(String(Math.floor(9.5 * 1024 * 1024)));
+    const started = Date.now();
+    await callButton(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 60_000 });
+    await page.locator('.readable-pane .part-text').waitFor({ timeout: 60_000 });
+    const shownMs = Date.now() - started;
+    await page.locator('.call-panel .transcript .entry-source', { hasText: /^Response/ }).waitFor({ timeout: 60_000 });
+    const rawMs = Date.now() - started;
+    process.stdout.write(`# 9.5 MB result: readable pane ${shownMs} ms, raw response ${rawMs} ms after Call\n`);
+    await shot(page, '07-7-big');
+    // The wire log row for it arrived without its bytes, and selecting it loads them.
+    const row = page.locator('.log-line', { hasText: 'tools/call' }).last();
+    await row.click();
+    await page.locator('.log-row.selected .raw-viewer').waitFor({ timeout: 60_000 });
+  } finally {
+    await app.close();
+  }
+});
+
+/** Counts the requests the page sends the backend, by method, from now on. */
+async function countRequests(page) {
+  await page.evaluate(() => {
+    const w = window;
+    w.__requests = [];
+    if (w.__hooked) return;
+    w.__hooked = true;
+    const post = MessagePort.prototype.postMessage;
+    MessagePort.prototype.postMessage = function (m, ...rest) {
+      if (m && m.kind === 'request') w.__requests.push(m.method);
+      return post.call(this, m, ...rest);
+    };
+  });
+  return async (method) => page.evaluate((m) => window.__requests.filter((x) => x === m).length, method);
+}
+
+test('R07-1: a prompt\'s argument form validates once after typing stops, not forever', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [legacy], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await page.getByRole('tab', { name: /^Prompts/ }).click();
+    await page.locator('.surface-items button', { hasText: 'review' }).click();
+    await page.getByRole('tab', { name: 'Get', exact: true }).click();
+    await page.locator('.call-form label', { hasText: 'language' }).locator('input').fill('rust');
+    await page.waitForTimeout(1000);
+    const count = await countRequests(page);
+    await page.waitForTimeout(2000);
+    assert.equal(await count('calls.validate'), 0, 'nothing changed, so nothing is validated again');
+  } finally {
+    await app.close();
+  }
+});
+
+test('R07-5: progress updates the transcript without re-listing the call history', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [legacy], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'calls');
+    await openCall(page, 'slow');
+    await page.locator('.call-editor textarea').fill('{"steps": 40, "delayMs": 25}');
+    const count = await countRequests(page);
+    await callButton(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(300);
+    const lists = await count('calls.list');
+    assert.ok(lists <= 3, `the call list was fetched ${lists} times for one call with 40 progress notifications`);
+    assert.ok(await count('calls.get') >= 10, 'the transcript still follows progress');
+  } finally {
+    await app.close();
+  }
+});
+
+test('R07-6: a large result in the pane is not re-serialized when something else re-renders the app', async () => {
+  const { dataDir } = seed([
+    { id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } },
+    { id: randomUUID(), name: 'other', transport: 'stdio', command: process.execPath, args: [modern], env: { EXIT_AFTER_MS: '6000' } },
+  ]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'other');
+    await connect(page, 'calls');
+    await openCall(page, 'big');
+    await page.locator('.call-form input').first().fill(String(2 * 1024 * 1024));
+    await callButton(page).click();
+    await page.locator('.readable-pane .part-text').waitFor({ timeout: 30_000 });
+    await page.evaluate(() => {
+      const w = window;
+      w.__bigStringify = 0;
+      const stringify = JSON.stringify;
+      JSON.stringify = function (...a) {
+        const out = stringify.apply(this, a);
+        if (typeof out === 'string' && out.length > 1_000_000) w.__bigStringify++;
+        return out;
+      };
+    });
+    // The other server exits on its own; its state change re-renders the app.
+    await page.locator('.server-row', { hasText: 'other' }).getByText('Connected').waitFor({ state: 'detached', timeout: 20_000 });
+    assert.ok(await page.locator('.readable-pane .part-text').isVisible(), 'the result is still in the pane');
+    assert.equal(await page.evaluate(() => window.__bigStringify), 0);
   } finally {
     await app.close();
   }

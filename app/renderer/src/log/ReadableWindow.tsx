@@ -16,6 +16,10 @@ export function ReadableWindow({ client }: { client: BackendClient }) {
       setError(null);
       if (!selection) return setContent(null);
       const failed = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
+      if ('callId' in selection) {
+        client.request('calls.get', selection).then((view) => (view ? setContent({ kind: 'call', view }) : setError('That call is no longer in the history.')), failed);
+        return;
+      }
       if ('id' in selection) {
         client.request('log.get', selection).then((unit) => setContent(unit ? { kind: 'unit', unit } : null), failed);
         return;

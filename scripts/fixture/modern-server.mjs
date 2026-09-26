@@ -2,11 +2,13 @@
 // All response logic lives in modern-handler.mjs, shared with the HTTP servers.
 import { appendFileSync } from 'node:fs';
 import { readFrames, writer } from './stdio-lines.mjs';
-import { handleModern } from './modern-handler.mjs';
+import { handleModern, serverMeta } from './modern-handler.mjs';
+import { answerer } from './call-handler.mjs';
 
 if (process.env.SPAWN_LOG) appendFileSync(process.env.SPAWN_LOG, `${Date.now()} pid=${process.pid}\n`);
 
 const { send } = writer(process.stdout);
+const answer = answerer(handleModern, () => ({ resultType: 'complete', ...serverMeta() }));
 
 // STDERR_FLOOD: write more to stderr than an OS pipe buffer holds (~64KB)
 // before answering. A parent that pipes stderr without reading it leaves the
@@ -50,6 +52,5 @@ readFrames(process.stdin, (msg, line) => {
   // EXIT_ON=<method>: crash with exit code 3 on receiving that method, as a
   // server with a bug in one handler would, after the session is up.
   if (process.env.EXIT_ON && msg.method === process.env.EXIT_ON) process.exit(3);
-  const response = handleModern(msg);
-  if (response !== undefined) send(response);
+  void answer(msg, send).then((response) => { if (response !== undefined) send(response); });
 });

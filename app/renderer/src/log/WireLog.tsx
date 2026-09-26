@@ -32,6 +32,10 @@ export function WireLog({ client, serverId, selected, onSelect }: {
   const list = useRef<VirtualListHandle | null>(null);
   const loading = useRef(false);
 
+  // A purge deletes what the log shows; it reloads from what is left (R05-9).
+  const [generation, setGeneration] = useState(0);
+  useEffect(() => client.on((name) => { if (name === 'log.purged') setGeneration((g) => g + 1); }), [client]);
+
   useEffect(() => {
     let live = true;
     setUnits([]);
@@ -51,7 +55,20 @@ export function WireLog({ client, serverId, selected, onSelect }: {
       if (follow) requestAnimationFrame(() => list.current?.scrollToBottom());
     });
     return () => { live = false; off(); };
-  }, [client, serverId]);
+  }, [client, serverId, generation]);
+
+  // A large unit arrives without its bytes (decision 9); selecting it loads
+  // them into the selection only, so they go when it does (R07-10).
+  // The newest click wins: a slow load does not replace a later selection.
+  const selecting = useRef(0);
+  const select = useCallback(async (u: LogUnit | null) => {
+    const mine = ++selecting.current;
+    if (!u?.omitted) return onSelect(u);
+    // Frames from before schema 3 number apart from units; the flag says which.
+    const whole = await client.request('log.get', { id: u.id, reserialized: Boolean(u.reserialized) });
+    if (mine !== selecting.current) return;
+    onSelect(whole);
+  }, [client, onSelect]);
 
   const loadEarlier = useCallback(async () => {
     if (complete || loading.current || units.length === 0) return;
@@ -86,7 +103,7 @@ export function WireLog({ client, serverId, selected, onSelect }: {
           count={rows.length}
           rowHeight={ROW}
           expanded={selectedIndex >= 0 ? selectedIndex : undefined}
-          expandedHeight={selectedIndex >= 0 ? expandedHeight(rows[selectedIndex].unit) : 0}
+          expandedHeight={selectedIndex >= 0 && selected ? expandedHeight(selected) : 0}
           handleRef={list}
           onScrollTop={loadEarlier}
           render={(i) => {
@@ -94,7 +111,7 @@ export function WireLog({ client, serverId, selected, onSelect }: {
             const isSelected = i === selectedIndex;
             return (
               <div className={`log-row ${r.unit.kind} ${isSelected ? 'selected' : ''}`}>
-                <button className="log-line" onClick={() => onSelect(isSelected ? null : r.unit)} aria-expanded={isSelected}>
+                <button className="log-line" onClick={() => void select(isSelected ? null : r.unit)} aria-expanded={isSelected}>
                   <span className="t mono">{clock(r.unit.at)}</span>
                   <span className={`dir ${r.unit.direction}`}>{r.arrow}</span>
                   <span className="kind">{r.unit.kind === 'wire' ? '' : r.unit.kind}</span>
@@ -103,8 +120,8 @@ export function WireLog({ client, serverId, selected, onSelect }: {
                   <span className="size mono">{formatBytes(r.unit.byteLength)}</span>
                   <span className="preview mono">{r.preview}</span>
                 </button>
-                {isSelected && (r.unit.bytes
-                  ? <RawViewer bytes={r.unit.bytes} height={expandedHeight(r.unit) - ROW - 2} />
+                {isSelected && selected && (selected.bytes
+                  ? <RawViewer bytes={selected.bytes} height={expandedHeight(selected) - ROW - 2} />
                   : <p className="muted pad">Withheld: this workspace does not keep results.</p>)}
               </div>
             );

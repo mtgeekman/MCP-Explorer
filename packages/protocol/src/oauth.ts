@@ -343,6 +343,9 @@ export class LoopbackListener {
    */
   static async forRedirect(redirectUri: string): Promise<LoopbackListener> {
     const u = new URL(redirectUri);
+    // URL.port is '' for no port and for :80 alike; either would bind a port
+    // the OS picks, not the one the authorization server redirects to (R11-12).
+    if (u.port === '') throw new Error(`the redirect URI ${redirectUri} names no port other than 80; a loopback redirect needs one`);
     const hosts = u.hostname === '[::1]' ? ['::1'] : u.hostname === 'localhost' ? ['127.0.0.1', '::1'] : [u.hostname];
     const l = new LoopbackListener(u.pathname);
     l.uri = redirectUri;

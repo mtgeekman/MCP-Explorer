@@ -2,7 +2,7 @@
 // test/session-lib.test.mjs can read them: the log level control per era, the
 // listen stream, task actions, the notifications timeline, the health report,
 // completions, and the -32021 refusal.
-import type { HealthReport, ListenView, LiveCall, NotificationRow, SessionInfo } from '../../../../packages/backend/dist/index.js';
+import type { HealthReport, ListenView, LiveCall, LogUnit, NotificationRow, SessionInfo } from '../../../../packages/backend/dist/index.js';
 import { LOG_LEVELS, requiredCapabilities, revisionIndex, unavailableFields, type LogLevel } from '../../../../packages/protocol/dist/index.js';
 
 export { LOG_LEVELS };
@@ -94,6 +94,15 @@ export function notificationSummary(n: NotificationRow): string {
     case 'notifications/cancelled': return `cancelled request ${JSON.stringify(p.requestId)}${typeof p.reason === 'string' ? `: ${p.reason}` : ''}`;
     default: return n.method.endsWith('/list_changed') ? 'list changed' : '';
   }
+}
+
+/**
+ * Whether a newly logged unit is a reason to read the timeline again: only
+ * while it is open, and only for an inbound notification of its own server
+ * (R10-5). A chatty server must not make a hidden panel query the log.
+ */
+export function reloadsTimeline(open: boolean, serverId: string, unit: Pick<LogUnit, 'serverId' | 'direction' | 'frames'>): boolean {
+  return open && unit.serverId === serverId && unit.direction === 'in' && unit.frames.some((f) => f.method !== null && f.jsonrpcId === null);
 }
 
 /**

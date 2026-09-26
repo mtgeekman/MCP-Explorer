@@ -370,7 +370,10 @@ function lister(
 ): ((cursor?: string) => Promise<Page<Record<string, unknown>>>) | undefined {
   if (!supported) return undefined;
   return async (cursor?: string) => {
-    const r = await rawRequest(client, calls, method, cursor === undefined ? {} : { cursor }, {});
+    // No timeout: the SDK's 60 s default sends notifications/cancelled, a
+    // request the user did not make (P2). A list that never answers holds the
+    // capture until the user disconnects.
+    const r = await rawRequest(client, calls, method, cursor === undefined ? {} : { cursor }, { timeout: NO_TIMEOUT_MS });
     if (!r.response) throw r.failure;
     if ('error' in r.response) {
       const e = (r.response.error ?? {}) as { code?: unknown; message?: unknown };

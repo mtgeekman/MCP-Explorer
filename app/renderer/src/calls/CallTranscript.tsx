@@ -119,7 +119,7 @@ function ExportBox({ exported, onClose }: { exported: CallExport; onClose: () =>
         <span className="header-spacer" />
         <button onClick={onClose}>Close</button>
       </div>
-      {!text && <p className="muted">{exported.reason}</p>}
+      {exported.reason && <p className="muted">{exported.reason}</p>}
       {text && (
         <>
           <p className="muted">The request exactly as it was sent. Replaying it elsewhere sends the same id.</p>
@@ -130,7 +130,7 @@ function ExportBox({ exported, onClose }: { exported: CallExport; onClose: () =>
       {exported.curl && (
         <>
           <p className="muted">
-            curl, for this HTTP server.{exported.secretVariables?.length ? ` Set ${exported.secretVariables.join(', ')} first: secret values are never in the log, so they are not here.` : ''}
+            curl for a POSIX shell (Git Bash, WSL, macOS, Linux), for this HTTP server.{exported.secretVariables?.length ? ` Set ${exported.secretVariables.join(', ')} first: secret values are never in the log, so they are not here.` : ''}
           </p>
           <pre className="mono json">{exported.curl}</pre>
           <button onClick={() => copy(exported.curl!)}>Copy curl</button>

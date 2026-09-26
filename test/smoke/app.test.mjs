@@ -1074,3 +1074,57 @@ test('OAuth: a refused refresh on Connect says to sign in again, and offers it',
     await app.close();
   }
 });
+
+// Pane sizes: the wire log's height and the readable pane's width follow a
+// drag, the log collapses to its header, and all of it survives a restart.
+test('panes: the wire log and the readable pane resize by drag, the log collapses, and the sizes survive a restart', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'panes', transport: 'stdio', command: process.execPath, args: [modern] }]);
+  const height = (page) => page.locator('.log-slot').evaluate((el) => el.getBoundingClientRect().height);
+  const width = (page) => page.locator('.readable-pane').evaluate((el) => el.getBoundingClientRect().width);
+  const dragBy = async (page, selector, dx, dy) => {
+    const box = await page.locator(selector).boundingBox();
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + dx / 2, y + dy / 2);
+    await page.mouse.move(x + dx, y + dy);
+    await page.mouse.up();
+  };
+  let grown;
+  let wide;
+  {
+    const { app, page } = await launch(dataDir);
+    try {
+      await openWorkspace(page);
+      await connect(page, 'panes');
+      const before = await height(page);
+      await dragBy(page, '.splitter.y', 0, -150);
+      grown = await height(page);
+      assert.ok(Math.abs(grown - (before + 150)) <= 2, `the log grew by the drag: ${before} to ${grown}`);
+      const w0 = await width(page);
+      await dragBy(page, '.splitter.x', -100, 0);
+      wide = await width(page);
+      assert.ok(Math.abs(wide - (w0 + 100)) <= 2, `the readable pane grew by the drag: ${w0} to ${wide}`);
+      await page.locator('.log-toggle').click();
+      assert.equal(await height(page), 32, 'collapsed to its header');
+      assert.equal(await page.locator('.wire-log .log-rows').count(), 0, 'no rows while collapsed');
+      await shot(page, 'panes-collapsed');
+    } finally {
+      await app.close();
+    }
+  }
+  {
+    const { app, page } = await launch(dataDir);
+    try {
+      await openWorkspace(page);
+      await page.locator('.server-row', { hasText: 'panes' }).click();
+      assert.equal(await height(page), 32, 'still collapsed after a restart');
+      assert.ok(Math.abs((await width(page)) - wide) <= 2, 'the readable width survived the restart');
+      await page.locator('.log-toggle').click();
+      assert.ok(Math.abs((await height(page)) - grown) <= 2, 'Expand restores the height it had');
+    } finally {
+      await app.close();
+    }
+  }
+});

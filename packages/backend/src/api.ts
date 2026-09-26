@@ -3,15 +3,15 @@
 // message (P1), and these are the app's own, not protocol traffic.
 import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface, Verdict, CallProgress, VersionComparison, TextComparison, TokenDelta, ToolTokenDelta, SurfaceDiff, ItemChange, FieldChange, TextDiff, Hunk, DiffLine } from '../../protocol/dist/index.js';
 import type { CallRecord, CallSummary, PurgeResult, RoundRecord, ServerSummary, Transport, WorkspaceSettings, VersionTimeline, VersionEntry, VersionKind } from '../../storage/dist/index.js';
-import type { AwaitedInput, CallChange, CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply } from './calls.js';
+import type { AwaitedInput, CallChange, CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, LiveTask, StartReply, TaskOp } from './calls.js';
 import type { ServerRequestRow } from './server-requests.js';
-import type { ServerAnswer, LogLevel, SubscriptionFilter, UtilityMethod, UtilityOutcome, ListenEnd } from '../../protocol/dist/index.js';
+import type { CallOutcome, ServerAnswer, LogLevel, SubscriptionFilter, UtilityMethod, UtilityOutcome, ListenEnd } from '../../protocol/dist/index.js';
 import type { SessionInfo, ListenView } from './session-controls.js';
 import type { NotificationRow } from './notifications.js';
 
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
 export type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply, CallRecord, CallSummary, RoundRecord, Verdict, CallProgress };
-export type { AwaitedInput, ServerRequestRow, ServerAnswer };
+export type { AwaitedInput, ServerRequestRow, ServerAnswer, LiveTask, TaskOp };
 export type { LogLevel, SubscriptionFilter, UtilityMethod, UtilityOutcome, ListenEnd, SessionInfo, ListenView, NotificationRow };
 export type { VersionTimeline, VersionEntry, VersionKind, VersionComparison, TextComparison, TokenDelta, ToolTokenDelta, SurfaceDiff, ItemChange, FieldChange, TextDiff, Hunk, DiffLine };
 import type { CaptureStatus, ConnectionState, PartialCapture, SecretValues } from './connections.js';
@@ -193,6 +193,10 @@ export interface Requests {
    * retry is on its way; `call.changed` follows.
    */
   'calls.answer': { params: { callId: number; inputResponses?: Record<string, unknown> }; result: null };
+  /** A task call: ask for its status, or on legacy its result; one request, one round (phase 10 decision 2). */
+  'calls.task': { params: { callId: number; op: TaskOp }; result: null };
+  /** Legacy: every task the server holds (tasks/list), sent once. */
+  'session.tasks': { params: { serverId: string; cursor?: string }; result: CallOutcome };
   /** "Keep answering" at the soft cap (D21, board 6.4). */
   'calls.continue': { params: { callId: number }; result: null };
   /** A server's requests to the client, newest first (legacy era; phase 08 decision 5). */

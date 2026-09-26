@@ -28,11 +28,13 @@
 //                  subscriber of that uri only
 //   end_listen     a tool that closes every open listen with its result
 //   cancel_listen  a tool that ends every open listen with notifications/cancelled
+//   tasks          (tasks.mjs) on modern, and on legacy at LEGACY_REVISION=2025-11-25
 //                  instead, the other ending the spec describes
 //
 // Notices sent outside a request go through setBroadcast's writer: stdout on
 // stdio, the GET event stream on legacy HTTP.
 import { LEVELS } from './levels.mjs';
+import { handleTask, taskTools, legacyTask, modernTask, TASK_CAPABILITIES } from './tasks.mjs';
 
 export const EXTRAS_ON = () => Boolean(process.env.EXTRAS);
 
@@ -83,8 +85,14 @@ export function withExtras(handle, era, extra = () => ({})) {
   return async (msg, send) => {
     const { id, method, params = {} } = msg;
     const ok = (result) => ({ jsonrpc: '2.0', id, result: { ...extra(), ...result } });
-    const err = (code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
+    const err = (code, message, data) => ({ jsonrpc: '2.0', id, error: data === undefined ? { code, message } : { code, message, data } });
 
+    if (tasksOn(era)) {
+      const answered = await handleTask(era, msg, ok, err, (t) => announceTask(era, t), send);
+      // null: a message handled that owes no response.
+      if (answered === null) return undefined;
+      if (answered !== undefined) return answered;
+    }
     if (era === 'legacy' && method === 'ping') return ok({});
     if (era === 'legacy' && method === 'logging/setLevel') {
       if (!LEVELS.includes(params.level)) return err(-32602, `unknown level ${JSON.stringify(params.level)}`);
@@ -156,8 +164,19 @@ export function withExtras(handle, era, extra = () => ({})) {
     }
 
     const response = await handle(msg, send);
-    return decorate(method, response);
+    return decorate(method, response, era);
   };
+}
+
+/** Legacy tasks are 2025-11-25 core; modern tasks are the extension. */
+const tasksOn = (era) => era === 'modern' || process.env.LEGACY_REVISION === '2025-11-25';
+
+/** A task's status changed: legacy notifications/tasks/status, modern notifications/tasks to listens naming it. */
+function announceTask(era, t) {
+  if (era === 'legacy') return broadcast(note('notifications/tasks/status', legacyTask(t)));
+  for (const l of listens.values()) {
+    if (l.filter.taskIds?.includes(t.id)) l.send(note('notifications/tasks', { ...modernTask(t), _meta: { [SUBSCRIPTION_KEY]: l.id } }));
+  }
 }
 
 /** A change notice: unasked on legacy, and on modern only to the listens that asked for it. */
@@ -169,18 +188,19 @@ function announce(era, flag, message) {
 }
 
 /** Adds the extras to a handshake's capabilities and to each list. */
-function decorate(method, response) {
+function decorate(method, response, era) {
   const result = response?.result;
   if (!result || typeof result !== 'object') return response;
   if (method === 'initialize' || method === 'server/discover') {
     const caps = result.capabilities ?? {};
     const merged = { ...caps };
-    for (const [k, v] of Object.entries(CAPABILITIES)) merged[k] = { ...(caps[k] ?? {}), ...v };
+    const extra = { ...CAPABILITIES, ...(tasksOn(era) ? TASK_CAPABILITIES[era] : {}) };
+    for (const [k, v] of Object.entries(extra)) merged[k] = { ...(caps[k] ?? {}), ...v };
     return { ...response, result: { ...result, capabilities: merged } };
   }
   const list = LIST_EXTRAS[method];
   if (list && Array.isArray(result[list[0]]) && result.nextCursor === undefined) {
-    const added = method === 'tools/list' && mutated ? [...list[1], MUTATED_TOOL] : list[1];
+    const added = method === 'tools/list' ? [...list[1], ...(mutated ? [MUTATED_TOOL] : []), ...(tasksOn(era) ? taskTools(era) : [])] : list[1];
     return { ...response, result: { ...result, [list[0]]: [...result[list[0]], ...added] } };
   }
   return response;

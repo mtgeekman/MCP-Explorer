@@ -21,6 +21,8 @@ export interface CallSummary {
 
 export interface RoundRecord {
   seq: number;
+  /** The round's own method when it is not the call's: a task request (migration 8). */
+  method: string | null;
   /** Null when the round was recorded with no arguments. */
   arguments: unknown;
   /** Null when withheld under the results opt-out (D30), or when the round ended without one. */
@@ -77,13 +79,13 @@ export function readCall(ws: Workspace, callId: number): CallRecord | undefined 
   const row = ws.db.prepare(`${SELECT_CALL} WHERE c.id = ?`).get(callId) as CallRow | undefined;
   if (!row) return undefined;
   const rounds = ws.db.prepare(`
-    SELECT seq, arguments_json, result_json, result_type, input_requests_json, input_responses_json, request_state, error_json, started_at, finished_at,
+    SELECT seq, method, arguments_json, result_json, result_type, input_requests_json, input_responses_json, request_state, error_json, started_at, finished_at,
       (SELECT f.unit_id FROM frame f WHERE f.call_id = r.call_id AND f.round_seq = r.seq AND f.direction = 'out' ORDER BY f.id LIMIT 1) AS request_unit,
       (SELECT f.unit_id FROM frame f WHERE f.call_id = r.call_id AND f.round_seq = r.seq AND f.direction = 'in' ORDER BY f.id LIMIT 1) AS response_unit,
       (SELECT f.result_withheld FROM frame f WHERE f.call_id = r.call_id AND f.round_seq = r.seq AND f.direction = 'in' ORDER BY f.id LIMIT 1) AS withheld
     FROM call_round r WHERE r.call_id = ? ORDER BY seq
   `).all(callId) as {
-    seq: number; arguments_json: string | null; result_json: string | null; result_type: string | null; input_requests_json: string | null;
+    seq: number; method: string | null; arguments_json: string | null; result_json: string | null; result_type: string | null; input_requests_json: string | null;
     input_responses_json: string | null; request_state: Buffer | null; error_json: string | null; started_at: number; finished_at: number | null;
     request_unit: number | null; response_unit: number | null; withheld: number | null;
   }[];
@@ -91,6 +93,7 @@ export function readCall(ws: Workspace, callId: number): CallRecord | undefined 
     ...summary(row),
     roundRecords: rounds.map((r) => ({
       seq: r.seq,
+      method: r.method,
       arguments: parse(r.arguments_json),
       result: parse(r.result_json),
       resultType: r.result_type,

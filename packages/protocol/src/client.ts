@@ -8,6 +8,7 @@ import { eraOf } from './model.js';
 import type { Page, SurfaceSource } from './capture.js';
 import { StringDecoder } from 'node:string_decoder';
 import { LineSplitter, SseEventSplitter, type HttpDetails, type UnitListener, type WireUnit } from './wire.js';
+import { encodeHeaderValue } from './mcp-headers.js';
 
 /**
  * Subclassing StdioClientTransport is what opts out of the SDK's disposable
@@ -206,6 +207,13 @@ export interface Connection {
    * ends at once as failed.
    */
   listen(filter: SubscriptionFilter): ListenHandle;
+  /**
+   * One request about a task, as the user asked. Legacy: through request().
+   * Modern: SDK 2.0.0 refuses the task methods locally, so this module frames
+   * the request itself with the SDK's own _meta envelope and sends it on the
+   * tapped transport (P1 holds), pairing the reply by id.
+   */
+  task(request: TaskRequest): Promise<CallOutcome>;
   /** stdio only: the process the app spawned, the root of its tree (D36). */
   pid?: number;
   /** stdio only: when that process was seen to spawn, milliseconds since the epoch. */
@@ -365,6 +373,10 @@ function tap(inner: any, listener: FrameListener | undefined, onFrameError: Fram
       return typeof v === 'function' ? v.bind(t) : v;
     },
     set(t: any, p: string | symbol, v: unknown) {
+      if (p === 'onclose' && calls) {
+        // The session is over: replies to requests framed here will not come.
+        return Reflect.set(t, p, (...a: unknown[]) => { calls.end(); return (v as ((...x: unknown[]) => unknown) | undefined)?.(...a); });
+      }
       if (p === 'onmessage') {
         assigned = v;
         // Installed even when v is empty: a frame arriving between handlers
@@ -448,6 +460,13 @@ export interface CallRequest {
   inputResponses?: Record<string, unknown>;
   /** Phase 08: echoed byte-exact, and only when the server sent one (D16). */
   requestState?: string;
+  /**
+   * Legacy (2025-11-25): run the tool call as a task, `params.task`. On the
+   * modern era the server decides per request and there is no such field.
+   */
+  task?: { ttl?: number };
+  /** Extra HTTP request headers for this request, such as Mcp-Param-* (phase 10 decision 11). */
+  headers?: Record<string, string>;
 }
 
 export interface CallProgress {
@@ -527,6 +546,31 @@ export interface ListenHandle {
 
 export const SUBSCRIPTION_ID_META_KEY = 'io.modelcontextprotocol/subscriptionId';
 
+/** The tasks extension's identifier (2026-07-28; SEP-2663). */
+export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
+
+/**
+ * A request about a task, sent once on the user's word; nothing polls (phase
+ * 10 decision 2). Legacy (2025-11-25 core): get, result, cancel, list. Modern
+ * (the tasks extension): get, update, cancel.
+ */
+export type TaskMethod = 'tasks/get' | 'tasks/result' | 'tasks/cancel' | 'tasks/list' | 'tasks/update';
+
+export interface TaskRequest {
+  method: TaskMethod;
+  params: Record<string, unknown>;
+}
+
+const TASK_METHODS_BY_ERA: Record<Era, ReadonlySet<TaskMethod>> = {
+  legacy: new Set<TaskMethod>(['tasks/get', 'tasks/result', 'tasks/cancel', 'tasks/list']),
+  modern: new Set<TaskMethod>(['tasks/get', 'tasks/update', 'tasks/cancel']),
+};
+
+/** Why this task request cannot go to a server on this era, or undefined when it can. */
+export function taskRefusal(method: TaskMethod, era: Era, revision: string): string | undefined {
+  return TASK_METHODS_BY_ERA[era].has(method) ? undefined : method + ' does not exist on ' + revision;
+}
+
 /** A utility request's outcome, and how long it took from send to response. */
 export type UtilityOutcome = CallOutcome & { elapsedMs: number };
 
@@ -568,6 +612,8 @@ class CallTracker {
   private readonly responses = new Map<string, Record<string, unknown>>();
   private readonly watched = new Set<string>();
   private readonly cancels = new Map<string, (reason: unknown) => void>();
+  /** Replies this module is waiting on for requests it framed itself. */
+  private readonly waiters = new Map<string, { resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }>();
 
   see(direction: FrameDirection, frame: unknown): void {
     const m = frame as { id?: unknown; method?: unknown; params?: { requestId?: unknown; reason?: unknown } } | null;
@@ -578,6 +624,10 @@ class CallTracker {
     if (direction === 'out' && this.armed && m.method === this.armed.method && this.armed.id === undefined) {
       this.armed.id = m.id as string | number;
       this.watched.add(idKey(m.id));
+    } else if (direction === 'in' && m.method === undefined && this.waiters.has(idKey(m.id))) {
+      const waiter = this.waiters.get(idKey(m.id))!;
+      this.waiters.delete(idKey(m.id));
+      waiter.resolve(m as Record<string, unknown>);
     } else if (direction === 'in' && m.method === undefined && this.watched.has(idKey(m.id))) {
       this.responses.set(idKey(m.id), m as Record<string, unknown>);
     }
@@ -598,6 +648,17 @@ class CallTracker {
     }
   }
 
+  /** Resolves with the reply to a request this module framed itself; rejects when the session ends first. */
+  expect(id: string | number): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => this.waiters.set(idKey(id), { resolve, reject }));
+  }
+
+  /** The session ended: every reply still awaited will never come. */
+  end(): void {
+    for (const w of this.waiters.values()) w.reject(new Error('the session ended before a response arrived'));
+    this.waiters.clear();
+  }
+
   /** Calls back when the server cancels the request we sent under this id. */
   watchCancel(id: string | number, onCancel: (reason: unknown) => void): void {
     this.cancels.set(idKey(id), onCancel);
@@ -615,6 +676,7 @@ class CallTracker {
   /** The response the tap saw for this id, if any; forgets the id either way. */
   take(id: string | number): Record<string, unknown> | undefined {
     const key = idKey(id);
+    this.waiters.delete(key);
     const response = this.responses.get(key);
     this.responses.delete(key);
     this.watched.delete(key);
@@ -626,11 +688,12 @@ class CallTracker {
  * The params a call sends, before the SDK adds its `_meta`: the one place they
  * are built, so the confirm shows what call() will send (phase 07 decision 5).
  */
-export function callParams(req: Pick<CallRequest, 'kind' | 'target' | 'args' | 'inputResponses' | 'requestState'>): Record<string, unknown> {
+export function callParams(req: Pick<CallRequest, 'kind' | 'target' | 'args' | 'inputResponses' | 'requestState' | 'task'>): Record<string, unknown> {
   const params: Record<string, unknown> = req.kind === 'resource' ? { uri: req.target } : { name: req.target };
   if (req.kind !== 'resource' && req.args !== undefined) params.arguments = req.args;
   if (req.inputResponses !== undefined) params.inputResponses = req.inputResponses;
   if (req.requestState !== undefined) params.requestState = req.requestState;
+  if (req.kind === 'tool' && req.task !== undefined) params.task = req.task;
   return params;
 }
 
@@ -642,6 +705,7 @@ async function callOn(session: Session, req: CallRequest): Promise<CallOutcome> 
     allowInputRequired: true,
     timeout: NO_TIMEOUT_MS,
     ...(req.signal ? { signal: req.signal } : {}),
+    ...(req.headers ? { headers: req.headers } : {}),
     ...(onProgress ? {
       onprogress: (p: CallProgress) => onProgress({
         progress: p.progress,
@@ -728,6 +792,8 @@ interface Session {
   revision: string;
   /** Modern era: added to every request's _meta once the user sets it (phase 10 decision 5). */
   logLevel?: LogLevel;
+  /** How many task requests this module framed itself (modern era), for their ids. */
+  framed: number;
 }
 
 /**
@@ -793,10 +859,46 @@ function listenOn(session: Session, filter: SubscriptionFilter): ListenHandle {
   };
 }
 
+async function taskOn(session: Session, req: TaskRequest): Promise<CallOutcome> {
+  const refusal = taskRefusal(req.method, session.era, session.revision);
+  if (refusal) return { kind: 'failed', message: refusal };
+  if (session.era === 'legacy') return outcomeOf(await rawRequest(session, req.method, req.params, { timeout: NO_TIMEOUT_MS }));
+  const client = session.client;
+  if (typeof client._envelopeOutbound !== 'function' || !client.transport) {
+    return { kind: 'failed', message: 'this SDK offers no way to frame a modern task request' };
+  }
+  // A string id: the SDK's own are numbers, so the two can never collide, and
+  // the SDK, finding no handler for the reply, reports it and does nothing else.
+  const id = 'mcpx-task-' + String(++session.framed);
+  const message = client._envelopeOutbound({ jsonrpc: '2.0', id, method: req.method, params: withLogLevel(session, req.params) });
+  const response = session.calls.expect(id);
+  try {
+    await client.transport.send(message);
+  } catch (e) {
+    session.calls.take(id);
+    return { kind: 'failed', requestId: id, message: messageOf(e) };
+  }
+  try {
+    const r = await response;
+    if ('error' in r) return { kind: 'error', requestId: id, error: (r.error ?? {}) as { code?: unknown; message?: unknown; data?: unknown } };
+    return { kind: 'result', requestId: id, result: (r.result && typeof r.result === 'object' ? r.result : {}) as Record<string, unknown> };
+  } catch (e) {
+    return { kind: 'failed', requestId: id, message: messageOf(e) };
+  }
+}
+
 /** Everything after the transport is connected is identical across transports. */
 async function describe(client: any, calls: CallTracker): Promise<Connection> {
   const revision: string = client.getNegotiatedProtocolVersion?.() ?? '2025-06-18';
-  const session: Session = { client, calls, era: eraOf(revision), revision };
+  const session: Session = { client, calls, era: eraOf(revision), revision, framed: 0 };
+  // The tasks extension is declared on the modern era only: a legacy server
+  // has no extensions field to read it in. The SDK reads its capabilities
+  // afresh for every request's _meta envelope, and allows no registration
+  // after connect, so they are set in place: an SDK internal, pinned by
+  // test/phase10-tasks.test.mjs.
+  if (session.era === 'modern' && client._capabilities && typeof client._capabilities === 'object') {
+    client._capabilities = { ...client._capabilities, extensions: { ...(client._capabilities.extensions ?? {}), [TASKS_EXTENSION]: {} } };
+  }
   const capabilities = client.getServerCapabilities?.() ?? {};
   const caps = capabilities as Record<string, unknown>;
 
@@ -818,6 +920,7 @@ async function describe(client: any, calls: CallTracker): Promise<Connection> {
     get logLevel() { return session.logLevel; },
     setLogLevel: (level) => setLogLevelOn(session, level),
     listen: (filter) => listenOn(session, filter),
+    task: (req) => taskOn(session, req),
     close: () => client.close(),
   };
 }
@@ -972,6 +1075,32 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
 }
 
 /**
+ * The tasks extension requires Mcp-Name to equal the taskId on a modern task
+ * request over Streamable HTTP. The SDK's transport derives Mcp-Name from a
+ * name or uri only, and refuses a caller's own, so it is added here, on the
+ * way out, before the logging fetch records the request. Only a modern
+ * request (its body carries the _meta protocol-version claim) that names a
+ * task and has no Mcp-Name yet.
+ */
+export function taskNameFetch(base: typeof fetch): typeof fetch {
+  return (input: string | URL | Request, init?: RequestInit) => {
+    if (typeof init?.body !== 'string' || !init.body.includes('"tasks/')) return base(input, init);
+    let message: { method?: unknown; params?: { taskId?: unknown; _meta?: Record<string, unknown> } };
+    try {
+      message = JSON.parse(init.body);
+    } catch {
+      return base(input, init);
+    }
+    const taskId = message?.params?.taskId;
+    const modern = typeof message?.params?._meta?.['io.modelcontextprotocol/protocolVersion'] === 'string';
+    if (typeof message?.method !== 'string' || !message.method.startsWith('tasks/') || typeof taskId !== 'string' || !modern) return base(input, init);
+    const headers = new Headers(init.headers);
+    if (!headers.has('mcp-name')) headers.set('mcp-name', encodeHeaderValue(taskId));
+    return base(input, { ...init, headers });
+  };
+}
+
+/**
  * Which handshake to use. `auto` probes with `server/discover` and falls back
  * to `initialize` per the spec's probe order; `legacy` sends `initialize`
  * straight away, for a server whose era is pinned as legacy (D20).
@@ -1043,7 +1172,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   const calls = new CallTracker();
   const secretHeaders = opts.secretHeaders ?? {};
   // One logging fetch for every attempt, so exchange numbers keep counting.
-  const fetchOption = emit ? { fetch: loggingFetch(emit, Object.keys(secretHeaders)) } : {};
+  const fetchOption = { fetch: taskNameFetch(emit ? loggingFetch(emit, Object.keys(secretHeaders)) : fetch) };
 
   const attempt = async (negotiate: boolean) => {
     const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged, onServerRequest: opts.onServerRequest });

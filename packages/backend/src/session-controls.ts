@@ -3,7 +3,7 @@
 // one-off utility requests (ping, completions). Every request here is one the
 // user asked for; nothing is re-sent, re-opened or polled on its own (P2).
 import type {
-  Connection, ListenEnd, ListenHandle, LogLevel, ServerNotification, SubscriptionFilter, UtilityMethod, UtilityOutcome,
+  CallOutcome, Connection, ListenEnd, ListenHandle, LogLevel, ServerNotification, SubscriptionFilter, UtilityMethod, UtilityOutcome,
 } from '../../protocol/dist/index.js';
 
 /** The modern listen stream as the user sees it. */
@@ -72,6 +72,11 @@ export class SessionControls {
   /** Ping, a completion, or any other utility request: sent once. */
   request(serverId: string, method: UtilityMethod, params?: Record<string, unknown>): Promise<UtilityOutcome> {
     return this.require(serverId).conn.request({ method, ...(params ? { params } : {}) });
+  }
+
+  /** Legacy: tasks/list, once. */
+  tasks(serverId: string, cursor?: string): Promise<CallOutcome> {
+    return this.require(serverId).conn.task({ method: 'tasks/list', params: cursor === undefined ? {} : { cursor } });
   }
 
   /**

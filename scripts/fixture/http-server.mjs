@@ -13,6 +13,7 @@
 //                of a dead server would.
 //   WIRE_LOG     append every response body written, as hex, one per line.
 //   HEADER_LOG   append the Authorization header each request carried.
+//   MCP_HEADER_LOG  append each POST's Mcp-* headers as one JSON line (phase 10).
 //   LEGACY       serve the legacy-era handler instead of the modern one; its
 //                hostile modes die by dropping the connection, or hang.
 //   STREAMING    (phase 10) answer every POST that carries a request with an
@@ -82,6 +83,10 @@ const server = createServer((req, res) => {
   req.on('data', (c) => { body += c; });
   req.on('end', async () => {
     if (process.env.FRAME_LOG) appendFileSync(process.env.FRAME_LOG, `IN  ${body}\n`);
+    if (process.env.MCP_HEADER_LOG) {
+      const mcp = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k.startsWith('mcp-')));
+      appendFileSync(process.env.MCP_HEADER_LOG, `${JSON.stringify(mcp)}\n`);
+    }
     if (process.env.HTML_REPLY) {
       res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
       return writeBody(res, Buffer.from('<!doctype html>\n<title>502 Bad Gateway</title>\n<h1>Bad Gateway</h1>\n', 'utf8'));

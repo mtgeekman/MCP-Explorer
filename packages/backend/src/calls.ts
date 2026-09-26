@@ -150,6 +150,8 @@ interface Running {
   taskInput?: boolean;
   /** Mcp-Param-* headers every round of this call carries. */
   headers?: Record<string, string>;
+  /** Legacy: the call was made as a task (params.task), so a task handle in its result is one. */
+  askedTask?: boolean;
 }
 
 /** A person's answers could not be sent as given. */
@@ -205,6 +207,7 @@ export class CallPipeline {
       serverId: req.serverId, recorder: s.recorder, conn: s.conn, abort: new AbortController(), live: { status: 'running' },
       kind: req.kind, target: req.target, ...(req.args === undefined ? {} : { args: req.args }), capBase: 0,
       ...(headers ? { headers } : {}),
+      ...(req.kind === 'tool' && req.asTask ? { askedTask: true } : {}),
     };
     this.running.set(callId, run);
     this.send(callId, run, s.recorder.beginRound(callId, run.args), undefined, req.kind === 'tool' ? req.asTask : undefined);
@@ -398,7 +401,10 @@ export class CallPipeline {
       if (o.kind === 'result') {
         const r = o.result;
         const inputRequired = r.resultType === 'input_required';
-        const handle = taskHandle(r, run.conn.era);
+        // Legacy: CreateTaskResult answers only a call made as a task; any other
+        // result with a `task` field is an ordinary result (R10-7). Modern: the
+        // server decides, and resultType says so.
+        const handle = run.conn.era === 'legacy' && !run.askedTask ? undefined : taskHandle(r, run.conn.era);
         run.recorder.finishRound(callId, seq, {
           result: r,
           ...(typeof r.resultType === 'string' ? { resultType: r.resultType } : handle ? { resultType: 'task' } : {}),

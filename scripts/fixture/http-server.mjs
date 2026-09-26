@@ -17,14 +17,12 @@
 //                hostile modes die by dropping the connection, or hang.
 import { createServer } from 'node:http';
 import { appendFileSync } from 'node:fs';
-import { handleModern } from './modern-handler.mjs';
-import { handleLegacy, DIE, SILENT } from './legacy-handler.mjs';
-import { answerer } from './call-handler.mjs';
-import { serverMeta } from './modern-handler.mjs';
+import { DIE, SILENT } from './legacy-handler.mjs';
+import { eraAnswerer } from './answer.mjs';
 
 // CALL_TOOLS calls are answered here too; a progress notification is dropped,
 // since a JSON body carries one message. Progress is exercised over stdio.
-const handle = answerer(process.env.LEGACY ? handleLegacy : handleModern, () => (process.env.LEGACY ? {} : { resultType: 'complete', ...serverMeta() }));
+const handle = eraAnswerer(process.env.LEGACY ? 'legacy' : 'modern');
 
 const endpoint = '/mcp';
 

@@ -94,6 +94,8 @@ export interface ConnectOptions {
   onListChanged?: ListChangedListener;
   /** Legacy era: the server's own requests (sampling, elicitation, roots, any other), for a person to answer. */
   onServerRequest?: ServerRequestListener;
+  /** Every notification the server sends, as the tap saw it, whatever the SDK does with it. */
+  onNotification?: NotificationListener;
 }
 
 /**
@@ -186,6 +188,16 @@ export interface Connection {
    * reports what came back exactly as the server sent it. Never retries (P2).
    */
   call(request: CallRequest): Promise<CallOutcome>;
+  /** Sends one utility request as the user asked: ping, a completion, a subscription. Never retried. */
+  request(request: UtilityRequest): Promise<UtilityOutcome>;
+  /** The log level the user set this session; undefined until one is set. */
+  readonly logLevel: LogLevel | undefined;
+  /**
+   * Sets the log level (phase 10 decision 5). Legacy: sends logging/setLevel
+   * and resolves with its outcome. Modern: holds the level for every later
+   * request's _meta, sends nothing, and resolves undefined.
+   */
+  setLogLevel(level: LogLevel | undefined): Promise<UtilityOutcome | undefined>;
   /** stdio only: the process the app spawned, the root of its tree (D36). */
   pid?: number;
   /** stdio only: when that process was seen to spawn, milliseconds since the epoch. */
@@ -287,6 +299,19 @@ function makeClient(
   return client;
 }
 
+/** A notification from the server: method and params as sent. */
+export interface ServerNotification {
+  method: string;
+  params: unknown;
+}
+/**
+ * Told of every notification the server sends. Read from the tap, not the
+ * SDK's dispatch: on the modern era the SDK drops some it does not model
+ * (notifications/tasks/status, notifications/elicitation/complete), and an
+ * explorer shows them anyway. Only reports; nothing is sent back.
+ */
+export type NotificationListener = (notification: ServerNotification) => void;
+
 export type ChangedList = 'tools' | 'prompts' | 'resources';
 /** Told which list a server says changed. The app never re-lists on its own (P2). */
 export type ListChangedListener = (list: ChangedList) => void;
@@ -297,13 +322,14 @@ const LIST_CHANGED: [string, ChangedList][] = [
   ['notifications/resources/list_changed', 'resources'],
 ];
 
-function tap(inner: any, listener: FrameListener | undefined, onFrameError: FrameErrorListener = warnFrameError, calls?: CallTracker): any {
-  if (!listener && !calls) return inner;
+function tap(inner: any, listener: FrameListener | undefined, onFrameError: FrameErrorListener = warnFrameError, calls?: CallTracker, onNotification?: NotificationListener): any {
+  if (!listener && !calls && !onNotification) return inner;
   // A listener that throws must not cost the protocol the frame. Called before
   // the SDK's handler, an exception here made the transport drop the message
   // (the request then hung) or reject the send; it is reported instead.
   const onFrame: FrameListener = (direction, frame) => {
     calls?.see(direction, frame);
+    if (onNotification && direction === 'in') reportNotification(frame, onNotification);
     if (!listener) return;
     try {
       listener(direction, frame);
@@ -343,6 +369,17 @@ function tap(inner: any, listener: FrameListener | undefined, onFrameError: Fram
   });
 }
 
+/** A listener that throws must not cost the connection the frame; it is warned about instead. */
+function reportNotification(frame: unknown, listener: NotificationListener): void {
+  const m = frame as { id?: unknown; method?: unknown; params?: unknown } | null;
+  if (!m || typeof m !== 'object' || typeof m.method !== 'string' || (m.id !== undefined && m.id !== null)) return;
+  try {
+    listener({ method: m.method, params: m.params });
+  } catch (error) {
+    process.emitWarning('a notification listener failed: ' + messageOf(error), 'MCPExplorerFrameLogWarning');
+  }
+}
+
 /**
  * A list endpoint the server does not advertise is absent, not an error.
  *
@@ -362,8 +399,7 @@ function tap(inner: any, listener: FrameListener | undefined, onFrameError: Fram
  *    server now. request() never consults that cache.
  */
 function lister(
-  client: any,
-  calls: CallTracker,
+  session: Session,
   method: 'tools/list' | 'prompts/list' | 'resources/list' | 'resources/templates/list',
   field: 'tools' | 'prompts' | 'resources' | 'resourceTemplates',
   supported: boolean,
@@ -373,7 +409,7 @@ function lister(
     // No timeout: the SDK's 60 s default sends notifications/cancelled, a
     // request the user did not make (P2). A list that never answers holds the
     // capture until the user disconnects.
-    const r = await rawRequest(client, calls, method, cursor === undefined ? {} : { cursor }, { timeout: NO_TIMEOUT_MS });
+    const r = await rawRequest(session, method, cursor === undefined ? {} : { cursor }, { timeout: NO_TIMEOUT_MS });
     if (!r.response) throw r.failure;
     if ('error' in r.response) {
       const e = (r.response.error ?? {}) as { code?: unknown; message?: unknown };
@@ -427,6 +463,39 @@ export type CallOutcome =
   | { kind: 'failed'; requestId?: string | number; message: string };
 
 export const CALL_METHOD: Record<CallKind, string> = { tool: 'tools/call', prompt: 'prompts/get', resource: 'resources/read' };
+
+/** The syslog levels MCP logging uses, least severe first (every revision). */
+export const LOG_LEVELS = ['debug', 'info', 'notice', 'warning', 'error', 'critical', 'alert', 'emergency'] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+export const LOG_LEVEL_META_KEY = 'io.modelcontextprotocol/logLevel';
+
+/**
+ * A protocol request the user asked for that is not a call: each one is sent
+ * once, on a click, with no timeout (P2; phase 10).
+ */
+export type UtilityMethod = 'ping' | 'logging/setLevel' | 'completion/complete' | 'resources/subscribe' | 'resources/unsubscribe';
+
+export interface UtilityRequest {
+  method: UtilityMethod;
+  params?: Record<string, unknown>;
+  signal?: AbortSignal;
+}
+
+/** A utility request's outcome, and how long it took from send to response. */
+export type UtilityOutcome = CallOutcome & { elapsedMs: number };
+
+/**
+ * The methods 2026-07-28 removed: ping, logging/setLevel and
+ * resources/(un)subscribe (its changelog items 4 and 5). Each would otherwise
+ * fail inside the SDK with no frame sent.
+ */
+const ABSENT_ON_MODERN: ReadonlySet<UtilityMethod> = new Set<UtilityMethod>(['ping', 'logging/setLevel', 'resources/subscribe', 'resources/unsubscribe']);
+
+/** Why this request cannot go to a server on this era, or undefined when it can. */
+export function utilityRefusal(method: UtilityMethod, era: Era, revision: string): string | undefined {
+  if (era === 'modern' && ABSENT_ON_MODERN.has(method)) return method + ' does not exist on ' + revision;
+  return undefined;
+}
 
 /**
  * setTimeout's ceiling, about 24.8 days: the SDK has no "never", and a larger
@@ -506,7 +575,7 @@ export function callParams(req: Pick<CallRequest, 'kind' | 'target' | 'args' | '
   return params;
 }
 
-async function callOn(client: any, calls: CallTracker, req: CallRequest): Promise<CallOutcome> {
+async function callOn(session: Session, req: CallRequest): Promise<CallOutcome> {
   const method = CALL_METHOD[req.kind];
   const params = callParams(req);
   const onProgress = req.onProgress;
@@ -523,7 +592,12 @@ async function callOn(client: any, calls: CallTracker, req: CallRequest): Promis
     } : {}),
   };
 
-  const r = await rawRequest(client, calls, method, params, options);
+  const r = await rawRequest(session, method, params, options);
+  return outcomeOf(r);
+}
+
+/** What a raw request came to, as a call outcome. */
+function outcomeOf(r: RawResponse): CallOutcome {
   if (r.requestId === undefined) return { kind: 'failed', message: messageOf(r.failure) };
   const requestId = r.requestId;
   // A response the SDK accepted before the abort is the outcome: the cancel
@@ -545,14 +619,17 @@ async function callOn(client: any, calls: CallTracker, req: CallRequest): Promis
  * still does everything else a request needs (the id, `_meta`, progress,
  * cancellation). `failure` says why there is no response.
  */
-async function rawRequest(client: any, calls: CallTracker, method: string, params: Record<string, unknown>, options: Record<string, unknown>): Promise<{
+interface RawResponse {
   requestId?: string | number; response?: Record<string, unknown>; sdkError?: unknown; failure: unknown;
   /** The request's signal aborted before its response arrived: the request was cancelled. */
   abortedFirst?: true;
-}> {
+}
+
+async function rawRequest(session: Session, method: string, params: Record<string, unknown>, options: Record<string, unknown>): Promise<RawResponse> {
+  const { client, calls } = session;
   let sent: { id?: string | number; sent: Promise<unknown> };
   try {
-    sent = calls.send(method, () => client.request({ method, params }, PASS_THROUGH, options) as Promise<unknown>);
+    sent = calls.send(method, () => client.request({ method, params: withLogLevel(session, params) }, PASS_THROUGH, options) as Promise<unknown>);
   } catch (e) {
     return { failure: e };
   }
@@ -581,9 +658,52 @@ async function rawRequest(client: any, calls: CallTracker, method: string, param
   };
 }
 
+/** One connected session: the SDK client, the tap's call tracker, and what the user set for it. */
+interface Session {
+  client: any;
+  calls: CallTracker;
+  era: Era;
+  revision: string;
+  /** Modern era: added to every request's _meta once the user sets it (phase 10 decision 5). */
+  logLevel?: LogLevel;
+}
+
+/**
+ * Modern era: the user's log level rides on every request as
+ * _meta["io.modelcontextprotocol/logLevel"]; without the key a server sends
+ * no log messages for that request. The SDK never sets it, and a key given
+ * here wins over its envelope. Legacy params go out untouched.
+ */
+function withLogLevel(session: Session, params: Record<string, unknown>): Record<string, unknown> {
+  if (session.era !== 'modern' || session.logLevel === undefined) return params;
+  const meta = (params._meta && typeof params._meta === 'object' ? params._meta : {}) as Record<string, unknown>;
+  return { ...params, _meta: { ...meta, [LOG_LEVEL_META_KEY]: session.logLevel } };
+}
+
+async function utilityOn(session: Session, req: UtilityRequest): Promise<UtilityOutcome> {
+  const refusal = utilityRefusal(req.method, session.era, session.revision);
+  if (refusal) return { kind: 'failed', message: refusal, elapsedMs: 0 };
+  const started = performance.now();
+  const r = await rawRequest(session, req.method, req.params ?? {}, { timeout: NO_TIMEOUT_MS, ...(req.signal ? { signal: req.signal } : {}) });
+  return { ...outcomeOf(r), elapsedMs: performance.now() - started };
+}
+
+async function setLogLevelOn(session: Session, level: LogLevel | undefined): Promise<UtilityOutcome | undefined> {
+  if (session.era === 'modern') {
+    session.logLevel = level;
+    return undefined;
+  }
+  // Legacy has no way to unset a level: the protocol's lowest is still a level.
+  if (level === undefined) return { kind: 'failed', message: 'a legacy server has no way to turn logging off once a level is set', elapsedMs: 0 };
+  const outcome = await utilityOn(session, { method: 'logging/setLevel', params: { level } });
+  if (outcome.kind === 'result') session.logLevel = level;
+  return outcome;
+}
+
 /** Everything after the transport is connected is identical across transports. */
 async function describe(client: any, calls: CallTracker): Promise<Connection> {
   const revision: string = client.getNegotiatedProtocolVersion?.() ?? '2025-06-18';
+  const session: Session = { client, calls, era: eraOf(revision), revision };
   const capabilities = client.getServerCapabilities?.() ?? {};
   const caps = capabilities as Record<string, unknown>;
 
@@ -593,12 +713,19 @@ async function describe(client: any, calls: CallTracker): Promise<Connection> {
     serverInfo: client.getServerVersion?.(),
     instructions: client.getInstructions?.(),
     capabilities,
-    listTools: lister(client, calls, 'tools/list', 'tools', caps.tools !== undefined),
-    listPrompts: lister(client, calls, 'prompts/list', 'prompts', caps.prompts !== undefined),
-    listResources: lister(client, calls, 'resources/list', 'resources', caps.resources !== undefined),
-    listResourceTemplates: lister(client, calls, 'resources/templates/list', 'resourceTemplates', caps.resources !== undefined),
+    listTools: lister(session, 'tools/list', 'tools', caps.tools !== undefined),
+    listPrompts: lister(session, 'prompts/list', 'prompts', caps.prompts !== undefined),
+    listResources: lister(session, 'resources/list', 'resources', caps.resources !== undefined),
+    listResourceTemplates: lister(session, 'resources/templates/list', 'resourceTemplates', caps.resources !== undefined),
   };
-  return { era: source.era, revision, source, call: (req) => callOn(client, calls, req), close: () => client.close() };
+  return {
+    era: source.era, revision, source,
+    call: (req) => callOn(session, req),
+    request: (req) => utilityOn(session, req),
+    get logLevel() { return session.logLevel; },
+    setLogLevel: (level) => setLogLevelOn(session, level),
+    close: () => client.close(),
+  };
 }
 
 export type HttpTransportKind = 'streamable-http' | 'sse';
@@ -627,6 +754,8 @@ export interface HttpConnectOptions {
   onListChanged?: ListChangedListener;
   /** Legacy era: the server's own requests, for a person to answer. */
   onServerRequest?: ServerRequestListener;
+  /** Every notification the server sends, as the tap saw it. */
+  onNotification?: NotificationListener;
   probeTimeoutMs?: number;
 }
 
@@ -826,7 +955,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
     const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged, onServerRequest: opts.onServerRequest });
     const transport = new Transport(new URL(opts.url), { requestInit: { headers: { ...opts.headers, ...secretHeaders } }, ...fetchOption });
     try {
-      await client.connect(tap(transport, opts.onFrame, opts.onFrameError, calls));
+      await client.connect(tap(transport, opts.onFrame, opts.onFrameError, calls, opts.onNotification));
       return client;
     } catch (e) {
       // An SSE transport holds its event stream open; a failed attempt must not leak it.
@@ -995,7 +1124,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   const client = makeClient(Client, { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' }, { negotiate: era === 'auto', probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged, onServerRequest: opts.onServerRequest });
 
   try {
-    await client.connect(tap(inner, opts.onFrame, opts.onFrameError, calls));
+    await client.connect(tap(inner, opts.onFrame, opts.onFrameError, calls, opts.onNotification));
   } catch (e) {
     const failure = classifyStdio(e, watch);
     // A server that answered is still running, and must be ended here. The
@@ -1016,7 +1145,9 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
   }
 
   client.onclose = () => opts.onClose?.({ exit: watch.exit });
-  return { ...(await describe(client, calls)), pid: watch.pid, startedAt: watch.spawnedAt };
+  // Assigned, not spread: a spread would read the logLevel getter once and
+  // keep that value forever.
+  return Object.assign(await describe(client, calls), { pid: watch.pid, startedAt: watch.spawnedAt });
 }
 
 function classifyStdio(e: unknown, watch: ProcessWatch): ConnectFailure {

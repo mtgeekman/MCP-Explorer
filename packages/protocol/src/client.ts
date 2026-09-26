@@ -520,7 +520,8 @@ export type CallOutcome =
   /** The user cancelled before a response came. */
   | { kind: 'cancelled'; requestId: string | number }
   /** No response: the session ended, or the request could not be sent. */
-  | { kind: 'failed'; requestId?: string | number; message: string };
+  /** `auth`, over HTTP: the failure was a 401 or a 403 `insufficient_scope` (phase 11 decision 10). */
+  | { kind: 'failed'; requestId?: string | number; message: string; auth?: AuthChallenge };
 
 export const CALL_METHOD: Record<CallKind, string> = { tool: 'tools/call', prompt: 'prompts/get', resource: 'resources/read' };
 
@@ -782,7 +783,9 @@ async function callOn(session: Session, req: CallRequest): Promise<CallOutcome> 
 
 /** What a raw request came to, as a call outcome. */
 function outcomeOf(r: RawResponse): CallOutcome {
-  if (r.requestId === undefined) return { kind: 'failed', message: messageOf(r.failure) };
+  const auth = authChallengeOf(r.failure, undefined);
+  const authed = auth ? { auth } : {};
+  if (r.requestId === undefined) return { kind: 'failed', message: messageOf(r.failure), ...authed };
   const requestId = r.requestId;
   // A response the SDK accepted before the abort is the outcome: the cancel
   // came too late to send anything (R07-4). One arriving after the abort the
@@ -794,7 +797,7 @@ function outcomeOf(r: RawResponse): CallOutcome {
     const result = (response.result && typeof response.result === 'object' ? response.result : {}) as Record<string, unknown>;
     return { kind: 'result', requestId, result, ...(r.sdkError === undefined ? {} : { sdkRejected: messageOf(r.sdkError) }) };
   }
-  return { kind: 'failed', requestId, message: messageOf(r.failure) };
+  return { kind: 'failed', requestId, message: messageOf(r.failure), ...authed };
 }
 
 /**
@@ -1371,7 +1374,14 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
     throw classifyHttp(e, challenge);
   }
   const conn = await describe(client, calls, opts.kind ?? 'streamable-http');
-  return Object.assign(conn, { authChallenge: (err: unknown) => authChallengeOf(err, challenge) });
+  // A 401's details are in its WWW-Authenticate header, which only the
+  // challenge fetch saw; the SDK's UnauthorizedError carries none of them.
+  const call = conn.call;
+  const withChallenge = async (req: CallRequest): Promise<CallOutcome> => {
+    const outcome = await call(req);
+    return outcome.kind === 'failed' && outcome.auth?.status === 401 && challenge?.status === 401 ? { ...outcome, auth: challenge } : outcome;
+  };
+  return Object.assign(conn, { call: withChallenge, authChallenge: (err: unknown) => authChallengeOf(err, challenge) });
 }
 
 function classifyHttp(e: unknown, challenge: AuthChallenge | undefined): ConnectError {

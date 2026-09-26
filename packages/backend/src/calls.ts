@@ -1,15 +1,17 @@
 // The call pipeline (plan phase 07): a tool call, a prompt get or a resource
 // read, started by the user, confirmed when the tool is not declared
 // read-only (D7), recorded as a sequence of rounds (D23), cancellable, and
-// never retried on its own (P2). The human half of MRTR is phase 08: here a
-// call answered with input_required stops at round 1 and waits.
+// never retried on its own (P2). A call answered with input_required waits
+// for the person's answers, and only their "Send answers and retry" sends the
+// next round (phase 08 decision 6); after the workspace's soft cap of rounds
+// it pauses and asks whether to go on (D21, decision 8).
 import {
   CALL_METHOD, callParams, validateAgainst,
   type CallKind, type CallOutcome, type CallProgress, type Connection, type NormalizedSurface, type Verdict,
 } from '../../protocol/dist/index.js';
 import {
-  latestCapture, listCalls, readCall, readSettings,
-  type CallRecord, type CallStatus, type CallSummary, type HistoryRecorder, type PurgeResult, type Workspace,
+  latestCapture, listCalls, listServerRequests, readCall, readSettings,
+  type CallRecord, type CallStatus, type CallSummary, type HistoryRecorder, type PurgeResult, type ServerRequestRecord, type Workspace,
 } from '../../storage/dist/index.js';
 import type { LogUnit } from './api.js';
 
@@ -40,10 +42,28 @@ export type StartReply = { started: true; callId: number } | { started: false; c
 export interface LiveCall {
   status: 'running' | 'awaiting-input';
   progress?: CallProgress;
+  /** While awaiting input: what the server asked for, held here even when storage withholds it (D30). */
+  input?: AwaitedInput;
+  /** The soft cap stopped the call here (D21, board 6.4): Keep answering or Stop. */
+  paused?: { rounds: number; cap: number };
+}
+
+/** The last round's InputRequiredResult, as the person answers it. */
+export interface AwaitedInput {
+  /** The round that asked. */
+  round: number;
+  /** The requests by the server's keys; null when the server sent none (a requestState-only result). */
+  inputRequests: Record<string, unknown> | null;
+  /** Whether a requestState came, which the retry echoes. Its value never leaves the backend. */
+  hasRequestState: boolean;
+  /** Why the result cannot be answered, when it is malformed: it can only be stopped. */
+  malformed?: string;
 }
 
 export interface CallView {
   call: CallRecord;
+  /** Requests the server sent the client during this call (legacy era; D23 amended). */
+  serverRequests: ServerRequestRecord[];
   live?: LiveCall;
   /** This session's result when the stored one is withheld under the opt-out (D30). */
   sessionResult?: unknown;
@@ -53,8 +73,8 @@ export interface CallView {
   outputCheck?: Verdict;
 }
 
-/** Why call.changed fired. Only 'progress' leaves the call's status as it was. */
-export type CallChange = 'started' | 'progress' | 'waiting' | 'ended';
+/** Why call.changed fired. 'progress' and 'request' (a server request linked to it arrived or ended) leave the call's status as it was. */
+export type CallChange = 'started' | 'progress' | 'waiting' | 'ended' | 'request';
 
 export interface CallEvents {
   /** A call started, progressed, began waiting for input, or ended: read calls.get again. */
@@ -92,6 +112,21 @@ interface Running {
   conn: Connection;
   abort: AbortController;
   live: LiveCall;
+  kind: CallKind;
+  target: string;
+  args?: Record<string, unknown>;
+  /** The last round's inputRequests and requestState exactly as the tap saw them. */
+  awaited?: { round: number; inputRequests?: Record<string, unknown>; requestState?: string };
+  /** The round at which the call started, or was last continued past the cap. */
+  capBase: number;
+}
+
+/** A person's answers could not be sent as given. */
+export class AnswerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AnswerError';
+  }
 }
 
 /** What storage does not keep for this session's calls, newest last: withheld results and the SDK's objections. */
@@ -99,7 +134,8 @@ const SESSION_RESULTS = 50;
 
 export class CallPipeline {
   private readonly running = new Map<number, Running>();
-  private readonly session = new Map<number, { result?: unknown; sdkRejected?: string }>();
+  /** Per call, what storage does not keep, and the round it came from. */
+  private readonly session = new Map<number, { round: number; result?: unknown; sdkRejected?: string }>();
 
   constructor(private readonly ws: Workspace, private readonly sessions: CallSessions, private readonly events: Partial<CallEvents> = {}) {}
 
@@ -132,16 +168,84 @@ export class CallPipeline {
     }
 
     const callId = s.recorder.beginCall(req.kind, req.target);
-    const seq = s.recorder.beginRound(callId, req.args);
-    const run: Running = { serverId: req.serverId, recorder: s.recorder, conn: s.conn, abort: new AbortController(), live: { status: 'running' } };
+    const run: Running = {
+      serverId: req.serverId, recorder: s.recorder, conn: s.conn, abort: new AbortController(), live: { status: 'running' },
+      kind: req.kind, target: req.target, ...(req.args === undefined ? {} : { args: req.args }), capBase: 0,
+    };
     this.running.set(callId, run);
-    const outcome = s.conn.call({
-      kind: req.kind, target: req.target, args: req.args, signal: run.abort.signal,
-      onProgress: (progress) => { run.live.progress = progress; this.events.changed?.(req.serverId, callId, 'progress'); },
-    });
+    this.send(callId, run, s.recorder.beginRound(callId, run.args));
     this.events.changed?.(req.serverId, callId, 'started');
-    void outcome.then((o) => this.settle(callId, seq, run, o));
     return { started: true, callId };
+  }
+
+  /**
+   * Sends a round: the first, or a retry carrying the person's answers and
+   * the server's requestState exactly as it came (D16). The retry repeats the
+   * call's own arguments; the SDK gives it a new id.
+   */
+  private send(callId: number, run: Running, seq: number, retry?: { inputResponses?: Record<string, unknown>; requestState?: string }): void {
+    const outcome = run.conn.call({
+      kind: run.kind, target: run.target, args: run.args, signal: run.abort.signal,
+      ...(retry?.inputResponses === undefined ? {} : { inputResponses: retry.inputResponses }),
+      ...(retry?.requestState === undefined ? {} : { requestState: retry.requestState }),
+      onProgress: (progress) => { run.live.progress = progress; this.events.changed?.(run.serverId, callId, 'progress'); },
+    });
+    void outcome.then((o) => this.settle(callId, seq, run, o));
+  }
+
+  /**
+   * The person's "Send answers and retry" (board 6.3). Every request the
+   * server made needs an answer under its own key (decision 6); a
+   * requestState-only result is retried with no answers. Nothing is filled
+   * in: the answers go as given.
+   */
+  answer(callId: number, inputResponses?: Record<string, unknown>): void {
+    const run = this.running.get(callId);
+    if (!run || run.live.status !== 'awaiting-input' || !run.awaited) throw new Error(`call ${callId} is not waiting for input`);
+    if (run.live.paused) throw new AnswerError(`call ${callId} is paused at the round limit: keep answering or stop it first`);
+    if (run.live.input?.malformed) throw new AnswerError(`call ${callId} cannot be answered: ${run.live.input.malformed}`);
+    if (this.sessions.session(run.serverId)?.conn !== run.conn) throw new AnswerError(`the session call ${callId} ran on has ended`);
+    const asked = run.awaited.inputRequests;
+    if (asked === undefined) {
+      if (inputResponses !== undefined && Object.keys(inputResponses).length > 0) throw new AnswerError('the server asked for no input; the retry carries its requestState alone');
+    } else {
+      const given = inputResponses ?? {};
+      const missing = Object.keys(asked).filter((k) => !Object.hasOwn(given, k));
+      const extra = Object.keys(given).filter((k) => !Object.hasOwn(asked, k));
+      if (missing.length) throw new AnswerError(`no answer for ${missing.join(', ')}`);
+      if (extra.length) throw new AnswerError(`the server did not ask for ${extra.join(', ')}`);
+      // answerRound stores them as JSON after the round begins; a value JSON
+      // cannot hold (a BigInt, a cycle) must fail before that (re-review 1).
+      try {
+        JSON.stringify(given);
+      } catch (e) {
+        throw new AnswerError(`the answers cannot be stored as JSON: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    // The round begins before anything changes: if it cannot, the call is
+    // still waiting and can still be stopped (R08-6).
+    const seq = run.recorder.beginRound(callId, run.args);
+    if (asked !== undefined) run.recorder.answerRound(callId, run.awaited.round, inputResponses ?? {});
+    const requestState = run.awaited.requestState;
+    run.awaited = undefined;
+    run.live = { status: 'running' };
+    this.send(callId, run, seq, { ...(asked === undefined ? {} : { inputResponses: inputResponses ?? {} }), ...(requestState === undefined ? {} : { requestState }) });
+    this.events.changed?.(run.serverId, callId, 'started');
+  }
+
+  /** "Keep answering" at the soft cap: the call may take as many rounds again before it pauses next. */
+  continue(callId: number): void {
+    const run = this.running.get(callId);
+    if (!run?.live.paused) throw new Error(`call ${callId} is not paused at the round limit`);
+    run.capBase = run.live.paused.rounds;
+    const { paused: _, ...rest } = run.live;
+    run.live = rest;
+    this.events.changed?.(run.serverId, callId, 'waiting');
+  }
+
+  /** Calls running on this connection and not waiting for input: a server's request may belong to one of them. */
+  runningOn(connectionId: number): number[] {
+    return [...this.running].filter(([, r]) => r.recorder.connectionId === connectionId && r.live.status === 'running').map(([id]) => id);
   }
 
   /** The user's Cancel: the era's cancellation goes out, and the server may still finish (board 6.5). */
@@ -151,11 +255,11 @@ export class CallPipeline {
     run.abort.abort('cancelled by the user');
   }
 
-  /** The user stops a call waiting for input (decision 6): nothing is sent, and it ends abandoned. */
+  /** The user stops a call waiting for input: nothing is sent. At the soft cap it ends capped, elsewhere abandoned (decision 8). */
   stop(callId: number): void {
     const run = this.running.get(callId);
     if (!run || run.live.status !== 'awaiting-input') throw new Error(`call ${callId} is not waiting for input`);
-    this.end(callId, run, 'abandoned');
+    this.end(callId, run, run.live.paused ? 'capped' : 'abandoned');
   }
 
   /**
@@ -180,8 +284,12 @@ export class CallPipeline {
     if (!call) return null;
     const run = this.running.get(callId);
     const kept = this.session.get(callId);
-    const first = call.roundRecords[0];
-    const result = (first?.result ?? kept?.result) as { structuredContent?: unknown; isError?: unknown } | undefined;
+    // The call's result is its last round's: earlier rounds asked for input.
+    const last = call.roundRecords[call.roundRecords.length - 1];
+    // A result kept in memory is shown only as its own round's: during a
+    // retry it belongs to the round that asked, not the one running (R08-3).
+    const keptResult = last && kept?.round === last.seq ? kept.result : undefined;
+    const result = (last?.result ?? keptResult) as { structuredContent?: unknown; isError?: unknown } | undefined;
     let outputCheck: Verdict | undefined;
     if (call.kind === 'tool' && result && result.structuredContent !== undefined) {
       const schema = latestCapture(this.ws, call.serverId)?.surface.tools.find((t) => t.name === call.target)?.outputSchema;
@@ -189,9 +297,10 @@ export class CallPipeline {
     }
     return {
       call,
+      serverRequests: listServerRequests(this.ws, { callId }),
       ...(run ? { live: { ...run.live } } : {}),
-      ...(first && first.result === null && kept?.result !== undefined ? { sessionResult: kept.result } : {}),
-      ...(kept?.sdkRejected ? { sdkRejected: kept.sdkRejected } : {}),
+      ...(last && last.result === null && keptResult !== undefined ? { sessionResult: keptResult } : {}),
+      ...(kept?.sdkRejected && kept.round === last?.seq ? { sdkRejected: kept.sdkRejected } : {}),
       ...(outputCheck ? { outputCheck } : {}),
     };
   }
@@ -210,11 +319,10 @@ export class CallPipeline {
         // Memory holds only what storage does not: a result withheld under the
         // opt-out (D30), and the SDK's objection, which has no column (R07-3).
         const withheld = !readSettings(this.ws).persistResults;
-        if (withheld || o.sdkRejected) this.keep(callId, { ...(withheld ? { result: r } : {}), ...(o.sdkRejected ? { sdkRejected: o.sdkRejected } : {}) });
+        if (withheld || o.sdkRejected) this.keep(callId, { round: seq, ...(withheld ? { result: r } : {}), ...(o.sdkRejected ? { sdkRejected: o.sdkRejected } : {}) });
         if (inputRequired && this.sessions.session(run.serverId)?.conn === run.conn) {
-          // Decision 6: round 1 is recorded and the call waits. Phase 08 answers it.
-          run.live = { status: 'awaiting-input' };
-          this.events.changed?.(run.serverId, callId, 'waiting');
+          // The round is recorded and the call waits for the person (decision 6).
+          this.await(callId, seq, run, r);
           return;
         }
         this.end(callId, run, inputRequired ? 'interrupted' : 'completed');
@@ -237,16 +345,41 @@ export class CallPipeline {
     }
   }
 
+  /** Holds what the retry needs, exactly as the tap saw it, and pauses at the soft cap (D21). */
+  private await(callId: number, seq: number, run: Running, r: Record<string, unknown>): void {
+    const requests = r.inputRequests;
+    const state = r.requestState;
+    const input: AwaitedInput = { round: seq, inputRequests: null, hasRequestState: typeof state === 'string' };
+    if (requests !== undefined && (typeof requests !== 'object' || requests === null || Array.isArray(requests))) {
+      input.malformed = 'inputRequests is not an object of requests by key.';
+    } else if (requests !== undefined) {
+      input.inputRequests = requests as Record<string, unknown>;
+    }
+    if (state !== undefined && typeof state !== 'string') input.malformed = 'requestState is not a string.';
+    if (requests === undefined && state === undefined) input.malformed = 'The result carries neither inputRequests nor requestState; the specification requires one.';
+    run.awaited = {
+      round: seq,
+      ...(input.inputRequests ? { inputRequests: input.inputRequests } : {}),
+      ...(typeof state === 'string' ? { requestState: state } : {}),
+    };
+    const cap = readSettings(this.ws).mrtrSoftCap;
+    run.live = { status: 'awaiting-input', input, ...(seq - run.capBase >= cap ? { paused: { rounds: seq, cap } } : {}) };
+    this.events.changed?.(run.serverId, callId, 'waiting');
+  }
+
   private end(callId: number, run: Running, status: CallStatus): void {
     this.running.delete(callId);
     try {
-      this.events.purged?.(run.recorder.finishCall(callId, status));
+      // Not inside the optional call: with no listener its argument is never
+      // evaluated, and the call would never be finished in storage.
+      const purged = run.recorder.finishCall(callId, status);
+      this.events.purged?.(purged);
     } finally {
       this.events.changed?.(run.serverId, callId, 'ended');
     }
   }
 
-  private keep(callId: number, entry: { result?: unknown; sdkRejected?: string }): void {
+  private keep(callId: number, entry: { round: number; result?: unknown; sdkRejected?: string }): void {
     this.session.set(callId, entry);
     while (this.session.size > SESSION_RESULTS) this.session.delete(this.session.keys().next().value!);
   }

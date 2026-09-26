@@ -111,15 +111,15 @@ export function SurfacePanel({ client, server, selected, onSelect, onReadCall }:
             ? (surface.instructions === undefined
               ? <p className="muted">None sent. The server gave no instructions.</p>
               : <pre className="mono instructions">{surface.instructions}</pre>)
-            : <ListTab client={client} serverId={server.id} connected={live} list={tab} surface={surface} selected={selected} onSelect={onSelect} onReadCall={onReadCall} />}
+            : <ListTab client={client} serverId={server.id} serverName={server.name} connected={live} list={tab} surface={surface} selected={selected} onSelect={onSelect} onReadCall={onReadCall} />}
         </>
       )}
     </section>
   );
 }
 
-function ListTab({ client, serverId, connected, list, surface, selected, onSelect, onReadCall }: {
-  client: BackendClient; serverId: string; connected: boolean; list: EntryList; surface: NonNullable<SurfaceView['capture']>['surface'];
+function ListTab({ client, serverId, serverName, connected, list, surface, selected, onSelect, onReadCall }: {
+  client: BackendClient; serverId: string; serverName: string; connected: boolean; list: EntryList; surface: NonNullable<SurfaceView['capture']>['surface'];
   selected: SelectedItem | null; onSelect: (item: SelectedItem | null) => void; onReadCall: (view: CallView) => void;
 }) {
   const state = listState(surface, list);
@@ -147,7 +147,7 @@ function ListTab({ client, serverId, connected, list, surface, selected, onSelec
       <div className="surface-entry">
         {current === null
           ? <p className="muted pad">Choose an entry to see it exactly as the server listed it.</p>
-          : <Entry key={current} client={client} serverId={serverId} connected={connected} list={list} entryKey={current}
+          : <Entry key={current} client={client} serverId={serverId} serverName={serverName} connected={connected} list={list} entryKey={current}
             item={items.find((i) => entryKey(list, i) === current)} onReadCall={onReadCall} />}
       </div>
     </div>
@@ -164,8 +164,8 @@ function callTarget(list: EntryList, item: Record<string, unknown>): CallTarget 
 }
 
 /** An entry opens on its definition (board 5.1A); the call view is one click over (board 6.1). */
-function Entry({ client, serverId, connected, list, entryKey: key, item, onReadCall }: {
-  client: BackendClient; serverId: string; connected: boolean; list: EntryList; entryKey: string;
+function Entry({ client, serverId, serverName, connected, list, entryKey: key, item, onReadCall }: {
+  client: BackendClient; serverId: string; serverName: string; connected: boolean; list: EntryList; entryKey: string;
   item: Record<string, unknown> | undefined; onReadCall: (view: CallView) => void;
 }) {
   const [mode, setMode] = useState<'definition' | 'call'>('definition');
@@ -177,7 +177,7 @@ function Entry({ client, serverId, connected, list, entryKey: key, item, onReadC
       </div>
       {mode === 'definition' || !item
         ? <EntryRaw client={client} serverId={serverId} list={list} entryKey={key} />
-        : <CallPanel client={client} serverId={serverId} connected={connected} target={callTarget(list, item)} onRead={onReadCall} />}
+        : <CallPanel client={client} serverId={serverId} serverName={serverName} connected={connected} target={callTarget(list, item)} onRead={onReadCall} />}
     </>
   );
 }

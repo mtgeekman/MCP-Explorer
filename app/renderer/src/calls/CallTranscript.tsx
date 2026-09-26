@@ -1,17 +1,23 @@
 // One call as a sequence (D16, D23): each round's request and response as the
 // exact bytes that crossed the wire (D10, D34), live progress with Cancel
-// (board 6.5), and a call waiting for input with Stop (decision 6). The
-// readable pane is where the result is read.
+// (board 6.5), a call waiting for input with its answers (board 6.3) or
+// paused at the soft cap (board 6.4), and the requests a legacy server sent
+// during it. The readable pane is where the result is read.
 import { useEffect, useState } from 'react';
-import type { CallExport, CallView, LogUnit, RoundRecord } from '../../../../packages/backend/dist/index.js';
+import type { CallExport, CallView, RoundRecord } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
 import { progressText, statusLabel } from '../lib/content';
+import { urlElicitationsInError } from '../lib/inputRequests';
 import { clock } from '../lib/logrows';
-import { RawViewer } from '../log/RawViewer';
+import { InputSet, UrlBox } from './InputRequests';
+import { EarlierRequest } from './ServerRequestsPanel';
+import { UnitBytes } from './UnitBytes';
 
-export function CallTranscript({ client, callId, onRead, onReplay }: {
+export function CallTranscript({ client, callId, serverName, onRead, onReplay }: {
   client: BackendClient;
   callId: number;
+  /** Named when the call pauses at the soft cap (D21). */
+  serverName?: string;
   onRead: (view: CallView) => void;
   onReplay?: (args: Record<string, unknown>) => void;
 }) {
@@ -67,12 +73,33 @@ export function CallTranscript({ client, callId, onRead, onReplay }: {
       {view.live?.status === 'running' && (
         <p className="progress">{view.live.progress ? `Progress ${progressText(view.live.progress)}` : 'Waiting for the server.'} Cancel tells the server to stop; it may still finish.</p>
       )}
-      {view.live?.status === 'awaiting-input' && (
-        <p className="warn">The server answered input_required. Nothing is retried: answering comes in a later version. Stop ends the call without a reply.</p>
+      {view.live?.status === 'awaiting-input' && view.live.paused && (
+        <div className="pause-box">
+          <p>
+            <strong>{serverName ?? 'The server'}</strong> has asked for input {view.live.paused.rounds} times on {call.target}. The app pauses a call every {view.live.paused.cap} rounds (Settings, "Rounds before pausing a call"), because a server may ask forever.
+          </p>
+          <div className="actions left">
+            <button className="primary" onClick={() => act(() => client.request('calls.continue', { callId }))}>Keep answering</button>
+            <button onClick={() => act(() => client.request('calls.stop', { callId }))}>Stop the call</button>
+          </div>
+        </div>
+      )}
+      {view.live?.status === 'awaiting-input' && !view.live.paused && view.live.input?.malformed && (
+        <p className="warn">The server answered input_required, and the result is malformed: {view.live.input.malformed} It cannot be answered; Stop ends the call.</p>
+      )}
+      {view.live?.status === 'awaiting-input' && !view.live.paused && view.live.input && !view.live.input.malformed && (
+        <InputSet key={view.live.input.round} client={client} callId={callId} input={view.live.input} />
       )}
       {error && <p className="error">{error}</p>}
       {exported && <ExportBox exported={exported} onClose={() => setExported(null)} />}
       {call.roundRecords.map((r) => <Round key={r.seq} client={client} round={r} />)}
+      {view.serverRequests.length > 0 && (
+        <div className="round">
+          <h4>Requests from the server during this call</h4>
+          {view.serverRequests.some((r) => r.status === 'pending') && <p className="warn">Waiting for your answer under "Requests from the server" on this server's page.</p>}
+          {view.serverRequests.map((r) => <EarlierRequest key={r.id} client={client} row={r} />)}
+        </div>
+      )}
     </section>
   );
 }
@@ -85,27 +112,14 @@ function Round({ client, round }: { client: BackendClient; round: RoundRecord })
       {round.responseUnitId !== null
         ? <UnitBytes client={client} unitId={round.responseUnitId} label="Response" missing="" />
         : <p className="muted">{round.finishedAt === null ? 'No response yet.' : round.error ? `No response: ${JSON.stringify(round.error)}` : 'No response was recorded.'}</p>}
+      {round.inputResponses !== null && <p className="muted">Answered, and the answers went in round {round.seq + 1}'s request.</p>}
+      {urlElicitationsInError(round.error).map((e, i) => (
+        <div key={i}>
+          <p className="warn">The server needs you to visit a page first (error -32042). Visit it, then call again.</p>
+          <UrlBox url={e.url} message={e.message} />
+        </div>
+      ))}
     </div>
-  );
-}
-
-function UnitBytes({ client, unitId, label, missing }: { client: BackendClient; unitId: number | null; label: string; missing: string }) {
-  const [unit, setUnit] = useState<LogUnit | null | undefined>(undefined);
-  useEffect(() => {
-    if (unitId === null) return;
-    let stale = false;
-    client.request('log.get', { id: unitId }).then((u) => { if (!stale) setUnit(u); }, () => { if (!stale) setUnit(null); });
-    return () => { stale = true; };
-  }, [client, unitId]);
-  if (unitId === null) return <p className="muted">{missing}</p>;
-  if (unit === undefined) return <p className="muted">Loading {label.toLowerCase()}</p>;
-  if (unit === null) return <p className="muted">{label}: purged from the wire log.</p>;
-  if (unit.bytes === null) return <p className="muted">{label}: withheld, this workspace does not keep results. The wire log still shows it happened.</p>;
-  return (
-    <>
-      <p className="muted entry-source">{label}: exact bytes, wire log unit {unit.id}</p>
-      <RawViewer bytes={unit.bytes} height={Math.min(320, 40 + 18 * Math.ceil(unit.byteLength / 120))} />
-    </>
   );
 }
 

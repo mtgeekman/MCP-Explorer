@@ -15,6 +15,30 @@
 //   schema_*        input schemas the form engine must render or hand to the
 //                   editor, never a third outcome (D9)
 //
+// Phase 08, the server asking the human for input. Modern era (MRTR_TOOLS,
+// listed by the modern handler only): each answers input_required and checks
+// the retry itself, so a test reads the verdict in the final result.
+//   mrtr_both       sampling and form elicitation in ONE result; completes
+//                   only when both keys are answered and requestState comes
+//                   back exactly as issued (it holds escapes and non-ASCII)
+//   mrtr_loop       asks again on every retry: the server the soft cap is for
+//                   (D21). `rounds` makes it complete after that many
+//   mrtr_url        URL-mode elicitation
+//   mrtr_roots      a roots/list input request
+//   mrtr_empty      input_required with neither field, which the spec forbids
+//   (prompt) confirm_prompt  input_required on prompts/get
+// Legacy era (ASK_TOOLS, listed by the legacy handler only): each sends a
+// genuine server-to-client request mid-call and answers the call with what
+// the client replied, so an unanswered request leaves the call hanging.
+//   ask_sampling    sampling/createMessage; `cancelAfterMs` cancels it
+//   ask_elicit      elicitation/create, form mode
+//   ask_elicit_url  elicitation/create, URL mode
+//   ask_roots       roots/list
+//   ask_twice       sampling and elicitation at once, both outstanding
+//   ask_unknown     a method no revision defines
+// ROOTS_ON_INIT: a legacy server sends roots/list as soon as the client says
+// it is initialized, outside any call, as real servers do.
+//
 // The handler is async: `send` writes a notification (progress) before the
 // response. A call cancelled by notifications/cancelled is never answered, as
 // the cancellation utility asks of a receiver.
@@ -77,8 +101,37 @@ const TOOLS = [
   ...Object.entries(HOSTILE_SCHEMAS).map(([name, inputSchema]) => ({ name, description: `Echoes its arguments. Input schema: ${name}.`, annotations: ro, inputSchema })),
 ];
 
+const MRTR_TOOL_LIST = [
+  { name: 'mrtr_both', description: 'Asks for sampling and elicitation in one input_required result.', inputSchema: obj({ topic: { type: 'string' } }) },
+  { name: 'mrtr_loop', description: 'Asks again on every retry.', inputSchema: obj({ rounds: { type: 'integer', minimum: 1 } }) },
+  { name: 'mrtr_url', description: 'Asks the user to visit a URL.', inputSchema: obj({}) },
+  { name: 'mrtr_roots', description: 'Asks for the client roots.', inputSchema: obj({}) },
+  { name: 'mrtr_empty', description: 'Answers input_required with neither inputRequests nor requestState.', inputSchema: obj({}) },
+];
+
+const ASK_TOOL_LIST = [
+  { name: 'ask_sampling', description: 'Sends sampling/createMessage to the client mid-call.', inputSchema: obj({ cancelAfterMs: { type: 'integer', minimum: 0 } }) },
+  { name: 'ask_elicit', description: 'Sends a form elicitation/create to the client mid-call.', inputSchema: obj({}) },
+  { name: 'ask_elicit_url', description: 'Sends a URL-mode elicitation/create to the client mid-call.', inputSchema: obj({}) },
+  { name: 'ask_roots', description: 'Sends roots/list to the client mid-call.', inputSchema: obj({}) },
+  { name: 'ask_twice', description: 'Sends sampling and elicitation at once.', inputSchema: obj({}) },
+  { name: 'ask_unknown', description: 'Sends a request whose method no revision defines.', inputSchema: obj({}) },
+];
+
+/** The modern-era input_required tools; the modern handler lists them. */
+export const mrtrTools = () => (CALL_TOOLS_ON() ? MRTR_TOOL_LIST : []);
+/** The legacy-era server-request tools; the legacy handler lists them. */
+export const askTools = () => (CALL_TOOLS_ON() ? ASK_TOOL_LIST : []);
+
+/**
+ * The requestState mrtr_both issues. Escapes, a line separator and non-ASCII,
+ * so a client that re-encodes or normalizes it is caught by the comparison.
+ */
+export const BOTH_STATE = 'both|r=1|éü中|"quoted"|back\\slash| |tab\t|end';
+
 export const CALL_PROMPTS = [
   { name: 'review', description: 'Asks for a review of some code.', arguments: [{ name: 'language', required: true }, { name: 'focus', description: 'What to look at.' }] },
+  { name: 'confirm_prompt', description: 'Answers prompts/get with input_required first (modern era).', arguments: [] },
 ];
 
 export const CALL_RESOURCES = [
@@ -118,8 +171,110 @@ export function answerer(handle, extra = () => ({})) {
 export function isCallMessage(msg) {
   if (!CALL_TOOLS_ON()) return false;
   if (msg.method === 'notifications/cancelled') return true;
-  if (msg.method === 'tools/call') return TOOLS.some((t) => t.name === msg.params?.name);
+  if (msg.method === undefined && msg.id !== undefined && awaiting.has(key(msg.id))) return true;
+  if (msg.method === 'notifications/initialized') return Boolean(process.env.ROOTS_ON_INIT);
+  if (msg.method === 'tools/call') return [...TOOLS, ...MRTR_TOOL_LIST, ...ASK_TOOL_LIST].some((t) => t.name === msg.params?.name);
   return msg.method === 'prompts/get' || msg.method === 'resources/read';
+}
+
+// Server-to-client requests this fixture sent and is waiting on, by id.
+const awaiting = new Map();
+let serverRequests = 0;
+
+/**
+ * Sends a request to the client and resolves with the client's response
+ * message (result or error), or with undefined once `cancelAfterMs` passes,
+ * after sending notifications/cancelled for it.
+ */
+function ask(send, method, params, cancelAfterMs) {
+  const id = `srv-${++serverRequests}`;
+  return new Promise((resolve) => {
+    awaiting.set(key(id), resolve);
+    send({ jsonrpc: '2.0', id, method, params });
+    if (cancelAfterMs !== undefined) {
+      setTimeout(() => {
+        if (!awaiting.delete(key(id))) return;
+        send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id, reason: 'the fixture gave up waiting' } });
+        resolve(undefined);
+      }, cancelAfterMs);
+    }
+  });
+}
+
+const SAMPLING_PARAMS = {
+  messages: [{ role: 'user', content: { type: 'text', text: 'Write one line about ports.' } }],
+  systemPrompt: 'You are the fixture\'s model.',
+  modelPreferences: { hints: [{ name: 'claude' }], intelligencePriority: 0.5 },
+  maxTokens: 100,
+};
+const FORM_ELICIT = {
+  message: 'Publish it?',
+  requestedSchema: { type: 'object', properties: { publish: { type: 'boolean', description: 'Say yes to publish.' }, title: { type: 'string' } }, required: ['publish'] },
+};
+// URL mode per revision: 2025-11-25 carries an elicitationId, 2026-07-28 does not.
+const URL_ELICIT_MODERN = { mode: 'url', message: 'Sign in to the fixture to continue.', url: 'https://auth.example.com/authorize?client=fixture&state=abc123' };
+const URL_ELICIT = { ...URL_ELICIT_MODERN, elicitationId: 'fixture-elicit-1' };
+
+/** The modern-era MRTR tools and prompt. Stateless: everything a retry needs is in requestState. */
+function mrtr(params, ok, err) {
+  const answered = params.inputResponses;
+  const state = params.requestState;
+  const need = (inputRequests, requestState) => ok({ resultType: 'input_required', inputRequests, requestState });
+  const done = (text) => ok({ content: [{ type: 'text', text }] });
+  switch (params.name) {
+    case 'mrtr_both': {
+      const ask2 = () => need({
+        draft: { method: 'sampling/createMessage', params: SAMPLING_PARAMS },
+        confirm: { method: 'elicitation/create', params: { mode: 'form', ...FORM_ELICIT } },
+      }, BOTH_STATE);
+      if (answered === undefined && state === undefined) return ask2();
+      if (state !== BOTH_STATE) return err(-32602, `requestState came back altered: ${JSON.stringify(state)}`);
+      // Partial answers are asked again, as the specification says a server should.
+      if (!answered || answered.draft === undefined || answered.confirm === undefined) return ask2();
+      return done(`both answered, requestState intact: ${JSON.stringify(answered)}`);
+    }
+    case 'mrtr_loop': {
+      const round = typeof state === 'string' && state.startsWith('loop:') ? Number(state.slice(5)) : 0;
+      const limit = Number.isInteger(params.arguments?.rounds) ? params.arguments.rounds : Infinity;
+      if (round >= limit) return done(`finished after ${round} rounds`);
+      return need({ again: { method: 'elicitation/create', params: { mode: 'form', message: `Round ${round + 1}: go again?`, requestedSchema: { type: 'object', properties: { ok: { type: 'boolean' } } } } } }, `loop:${round + 1}`);
+    }
+    case 'mrtr_url':
+      if (!answered?.visit) return need({ visit: { method: 'elicitation/create', params: URL_ELICIT_MODERN } }, 'url:1');
+      return done(`url answered: ${JSON.stringify(answered.visit)}`);
+    case 'mrtr_roots':
+      if (!answered?.roots) return need({ roots: { method: 'roots/list', params: {} } }, 'roots:1');
+      return done(`roots answered: ${JSON.stringify(answered.roots)}`);
+    case 'mrtr_empty':
+      return ok({ resultType: 'input_required' });
+    default:
+      return undefined;
+  }
+}
+
+/** The legacy-era tools that ask the client mid-call. */
+async function askTool(params, send, ok) {
+  const reply = (label, response) => ok({ content: [{ type: 'text', text: `${label}: ${response === undefined ? 'cancelled by the server' : JSON.stringify(response.error ? { error: response.error } : response.result)}` }] });
+  switch (params.name) {
+    case 'ask_sampling': {
+      const after = Number.isInteger(params.arguments?.cancelAfterMs) ? params.arguments.cancelAfterMs : undefined;
+      return reply('sampling', await ask(send, 'sampling/createMessage', SAMPLING_PARAMS, after));
+    }
+    case 'ask_elicit':
+      return reply('elicitation', await ask(send, 'elicitation/create', FORM_ELICIT));
+    case 'ask_elicit_url':
+      return reply('url elicitation', await ask(send, 'elicitation/create', URL_ELICIT));
+    case 'ask_roots':
+      return reply('roots', await ask(send, 'roots/list', {}));
+    case 'ask_twice': {
+      const [s, e] = await Promise.all([ask(send, 'sampling/createMessage', SAMPLING_PARAMS), ask(send, 'elicitation/create', FORM_ELICIT)]);
+      return ok({ content: [{ type: 'text', text: `both: ${JSON.stringify({ sampling: s?.result ?? s?.error, elicitation: e?.result ?? e?.error })}` }] });
+    }
+    case 'ask_unknown':
+      return reply('unknown', await ask(send, 'fixture/custom', { anything: true }));
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -134,10 +289,32 @@ export async function handleCall(msg, send, extra = {}) {
     if (pending) { pending.cancelled = true; pending.onCancel?.(); }
     return undefined;
   }
+  if (method === undefined) {
+    // A client's response to one of this fixture's own requests.
+    const resolve = awaiting.get(key(id));
+    awaiting.delete(key(id));
+    resolve?.(msg);
+    return undefined;
+  }
+  if (method === 'notifications/initialized') {
+    void ask(send, 'roots/list', {});
+    return undefined;
+  }
   const ok = (result) => ({ jsonrpc: '2.0', id, result: { ...extra, ...result } });
   const err = (code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
 
+  if (method === 'tools/call') {
+    const answer = mrtr(params, ok, err) ?? await askTool(params, send, ok);
+    if (answer !== undefined) return answer;
+  }
+
   if (method === 'prompts/get') {
+    if (params.name === 'confirm_prompt') {
+      if (!params.inputResponses?.sure) {
+        return ok({ resultType: 'input_required', inputRequests: { sure: { method: 'elicitation/create', params: { mode: 'form', message: 'Get the prompt?', requestedSchema: { type: 'object', properties: {} } } } }, requestState: 'prompt:1' });
+      }
+      return ok({ messages: [{ role: 'user', content: { type: 'text', text: `confirmed: ${JSON.stringify(params.inputResponses.sure)}` } }] });
+    }
     if (params.name !== 'review') return err(-32602, `unknown prompt ${params.name}`);
     const args = params.arguments ?? {};
     if (typeof args.language !== 'string') return err(-32602, 'missing required argument language');

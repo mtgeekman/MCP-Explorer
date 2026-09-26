@@ -12,7 +12,7 @@
 //   - capabilities that can be made to lie (LIE_ABOUT)
 //   - a first probe that can answer -32022 (UNSUPPORTED_FIRST)
 
-import { callTools, CALL_PROMPTS, CALL_RESOURCES, CALL_TEMPLATES, CALL_TOOLS_ON } from './call-handler.mjs';
+import { callTools, mrtrTools, CALL_PROMPTS, CALL_RESOURCES, CALL_TEMPLATES, CALL_TOOLS_ON } from './call-handler.mjs';
 
 let probed = false;
 let toolsListCalls = 0;
@@ -117,7 +117,7 @@ export function handleModern(msg) {
         ...volatile(),
       }));
     }
-    return ok(id, shuffleKeys({ resultType: 'complete', tools: shuffle([...TOOLS, ...callTools()].map(shuffleKeys)), ...serverMeta(), ...volatile() }));
+    return ok(id, shuffleKeys({ resultType: 'complete', tools: shuffle([...TOOLS, ...callTools(), ...mrtrTools()].map(shuffleKeys)), ...serverMeta(), ...volatile() }));
   }
 
   if (method === 'prompts/list') {

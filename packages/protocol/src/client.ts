@@ -294,32 +294,43 @@ function tap(inner: any, listener: FrameListener | undefined, onFrameError: Fram
 /**
  * A list endpoint the server does not advertise is absent, not an error.
  *
- * Two SDK behaviours this has to account for, both measured rather than assumed:
+ * One page per call, read raw: the page is the response the tap saw, and
+ * captureSurface walks the cursors. Not the SDK's listTools() and friends,
+ * for three reasons, each measured:
  *
- * 1. `listTools()` and friends ALREADY walk every page internally and return
- *    the aggregate with no `nextCursor` -- 250 tools came back from one call
- *    across 36 observed `tools/list` frames. Every page still passes through
- *    the transport tap, so P1 holds. captureSurface's own page walk therefore
- *    sees a single complete page here; it remains the guarantee for any
- *    SurfaceSource that is not this SDK.
- * 2. The SDK caches cacheable results and honours the server's `ttlMs`
- *    (SEP-2549), so a second list within the TTL is served WITHOUT a round
- *    trip. That silently breaks version history: a re-capture after a
- *    `list_changed` notification would return the stale surface and the change
- *    would never be recorded. A capture must reflect the server now, so every
- *    list is issued with `cacheMode: 'bypass'`.
+ * 1. They validate the whole reply, so ONE malformed entry (a string
+ *    readOnlyHint, an inputSchema that is not an object) failed the entire
+ *    list and the capture showed no tools at all (phase 07; pinned by
+ *    test/capture-raw.test.mjs). The malformed entry is what an explorer is
+ *    for.
+ * 2. listTools() drops a tool whose `x-mcp-header` declarations it finds
+ *    invalid, with only a console warning.
+ * 3. They answer from the SDK's response cache within the server's `ttlMs`
+ *    (SEP-2549) unless told to bypass it, and a capture must reflect the
+ *    server now. request() never consults that cache.
  */
 function lister(
   client: any,
-  method: 'listTools' | 'listPrompts' | 'listResources' | 'listResourceTemplates',
+  calls: CallTracker,
+  method: 'tools/list' | 'prompts/list' | 'resources/list' | 'resources/templates/list',
   field: 'tools' | 'prompts' | 'resources' | 'resourceTemplates',
   supported: boolean,
 ): ((cursor?: string) => Promise<Page<Record<string, unknown>>>) | undefined {
   if (!supported) return undefined;
   return async (cursor?: string) => {
-    // bypass: fetch without consulting or writing the response cache. See above.
-    const result = await client[method](cursor === undefined ? {} : { cursor }, { cacheMode: 'bypass' });
-    return { items: (result?.[field] ?? []) as Record<string, unknown>[], nextCursor: result?.nextCursor };
+    const r = await rawRequest(client, calls, method, cursor === undefined ? {} : { cursor }, {});
+    if (!r.response) throw r.failure;
+    if ('error' in r.response) {
+      const e = (r.response.error ?? {}) as { code?: unknown; message?: unknown };
+      throw new Error(`MCP error ${String(e.code)}: ${String(e.message)}`);
+    }
+    const result = (r.response.result ?? {}) as Record<string, unknown>;
+    if (result.resultType === 'input_required') {
+      throw new Error(`the server answered ${method} with input_required, which the specification allows only on tools/call, prompts/get and resources/read`);
+    }
+    const items = result[field];
+    if (!Array.isArray(items)) throw new Error(`the ${method} result has no ${field} array`);
+    return { items: items as Record<string, unknown>[], nextCursor: typeof result.nextCursor === 'string' ? result.nextCursor : undefined };
   };
 }
 
@@ -398,15 +409,16 @@ class CallTracker {
     }
   }
 
-  /** Runs send() with the slot armed and returns the id it produced. */
-  send<T>(method: string, send: () => T): { id: string | number; sent: T } {
+  /**
+   * Runs send() with the slot armed and returns the id it produced. No id means
+   * no frame went out: the SDK refused the request first (not connected).
+   */
+  send<T>(method: string, send: () => T): { id?: string | number; sent: T } {
     if (this.armed) throw new Error('a call is already being sent');
     this.armed = { method };
     try {
       const sent = send();
-      const id = this.armed.id;
-      if (id === undefined) throw new Error(`the ${method} request never reached the transport tap`);
-      return { id, sent };
+      return { ...(this.armed.id === undefined ? {} : { id: this.armed.id }), sent };
     } finally {
       this.armed = undefined;
     }
@@ -422,12 +434,21 @@ class CallTracker {
   }
 }
 
-async function callOn(client: any, calls: CallTracker, req: CallRequest): Promise<CallOutcome> {
-  const method = CALL_METHOD[req.kind];
+/**
+ * The params a call sends, before the SDK adds its `_meta`: the one place they
+ * are built, so the confirm shows what call() will send (phase 07 decision 5).
+ */
+export function callParams(req: Pick<CallRequest, 'kind' | 'target' | 'args' | 'inputResponses' | 'requestState'>): Record<string, unknown> {
   const params: Record<string, unknown> = req.kind === 'resource' ? { uri: req.target } : { name: req.target };
   if (req.kind !== 'resource' && req.args !== undefined) params.arguments = req.args;
   if (req.inputResponses !== undefined) params.inputResponses = req.inputResponses;
   if (req.requestState !== undefined) params.requestState = req.requestState;
+  return params;
+}
+
+async function callOn(client: any, calls: CallTracker, req: CallRequest): Promise<CallOutcome> {
+  const method = CALL_METHOD[req.kind];
+  const params = callParams(req);
   const onProgress = req.onProgress;
   const options = {
     allowInputRequired: true,
@@ -442,11 +463,35 @@ async function callOn(client: any, calls: CallTracker, req: CallRequest): Promis
     } : {}),
   };
 
-  let sent: { id: string | number; sent: Promise<unknown> };
+  const r = await rawRequest(client, calls, method, params, options);
+  if (r.requestId === undefined) return { kind: 'failed', message: messageOf(r.failure) };
+  const requestId = r.requestId;
+  // After a cancel the SDK ignores a late response; so does this, and the
+  // wire log still has it.
+  if (req.signal?.aborted) return { kind: 'cancelled', requestId };
+  const response = r.response;
+  if (response && 'error' in response) return { kind: 'error', requestId, error: (response.error ?? {}) as { code?: unknown; message?: unknown; data?: unknown } };
+  if (response) {
+    const result = (response.result && typeof response.result === 'object' ? response.result : {}) as Record<string, unknown>;
+    return { kind: 'result', requestId, result, ...(r.sdkError === undefined ? {} : { sdkRejected: messageOf(r.sdkError) }) };
+  }
+  return { kind: 'failed', requestId, message: messageOf(r.failure) };
+}
+
+/**
+ * One request through the SDK, answered by the response the tap saw for its
+ * id: the server's message before the SDK decoded or validated it. The SDK
+ * still does everything else a request needs (the id, `_meta`, progress,
+ * cancellation). `failure` says why there is no response.
+ */
+async function rawRequest(client: any, calls: CallTracker, method: string, params: Record<string, unknown>, options: Record<string, unknown>): Promise<{
+  requestId?: string | number; response?: Record<string, unknown>; sdkError?: unknown; failure: unknown;
+}> {
+  let sent: { id?: string | number; sent: Promise<unknown> };
   try {
     sent = calls.send(method, () => client.request({ method, params }, PASS_THROUGH, options) as Promise<unknown>);
   } catch (e) {
-    return { kind: 'failed', message: messageOf(e) };
+    return { failure: e };
   }
   let sdkError: unknown;
   try {
@@ -454,19 +499,16 @@ async function callOn(client: any, calls: CallTracker, req: CallRequest): Promis
   } catch (e) {
     sdkError = e;
   }
+  if (sent.id === undefined) return { failure: sdkError ?? new Error(`the ${method} request never reached the transport`) };
   // The tap saw the response before the SDK's handler did, so by now it is
-  // here if it came. After a cancel the SDK ignores a late response; so does
-  // this, and the wire log still has it.
-  const taken = calls.take(sent.id);
-  const requestId = sent.id;
-  if (req.signal?.aborted) return { kind: 'cancelled', requestId };
-  const response = taken;
-  if (response && 'error' in response) return { kind: 'error', requestId, error: (response.error ?? {}) as { code?: unknown; message?: unknown; data?: unknown } };
-  if (response) {
-    const result = (response.result && typeof response.result === 'object' ? response.result : {}) as Record<string, unknown>;
-    return { kind: 'result', requestId, result, ...(sdkError === undefined ? {} : { sdkRejected: messageOf(sdkError) }) };
-  }
-  return { kind: 'failed', requestId, message: sdkError === undefined ? 'no response arrived' : messageOf(sdkError) };
+  // here if it came.
+  const response = calls.take(sent.id);
+  return {
+    requestId: sent.id,
+    ...(response ? { response } : {}),
+    ...(sdkError === undefined ? {} : { sdkError }),
+    failure: sdkError ?? new Error('no response arrived'),
+  };
 }
 
 /** Everything after the transport is connected is identical across transports. */
@@ -481,10 +523,10 @@ async function describe(client: any, calls: CallTracker): Promise<Connection> {
     serverInfo: client.getServerVersion?.(),
     instructions: client.getInstructions?.(),
     capabilities,
-    listTools: lister(client, 'listTools', 'tools', caps.tools !== undefined),
-    listPrompts: lister(client, 'listPrompts', 'prompts', caps.prompts !== undefined),
-    listResources: lister(client, 'listResources', 'resources', caps.resources !== undefined),
-    listResourceTemplates: lister(client, 'listResourceTemplates', 'resourceTemplates', caps.resources !== undefined),
+    listTools: lister(client, calls, 'tools/list', 'tools', caps.tools !== undefined),
+    listPrompts: lister(client, calls, 'prompts/list', 'prompts', caps.prompts !== undefined),
+    listResources: lister(client, calls, 'resources/list', 'resources', caps.resources !== undefined),
+    listResourceTemplates: lister(client, calls, 'resources/templates/list', 'resourceTemplates', caps.resources !== undefined),
   };
   return { era: source.era, revision, source, call: (req) => callOn(client, calls, req), close: () => client.close() };
 }

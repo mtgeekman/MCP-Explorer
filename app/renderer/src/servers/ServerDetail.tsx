@@ -11,6 +11,7 @@ import { SurfacePanel, type SelectedItem } from '../surface/SurfacePanel';
 import { VersionsPanel } from '../versions/VersionsPanel';
 import { HealthView, SessionPanel } from './SessionPanel';
 import { NotificationsPanel } from './NotificationsPanel';
+import { AuthPanel } from './AuthPanel';
 
 export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, selectedItem, onSelectItem, onReadCall }: {
   client: BackendClient; server: ServerRow; onEdit: () => void; onDeleted: () => void; onChanged: () => void;
@@ -21,10 +22,19 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [health, setHealth] = useState<HealthReport | null>(null);
+  const [signedInAt, setSignedInAt] = useState<number | undefined>(undefined);
 
   useEffect(() => {
     void client.request('servers.get', { id: server.id }).then(setForm);
   }, [client, server.id]);
+  useEffect(() => {
+    if (server.transport === 'stdio') return;
+    const load = () => void client.request('auth.get', { serverId: server.id }).then((r) => setSignedInAt(r.signedIn ? r.obtainedAt : undefined), () => undefined);
+    load();
+    return client.on((name, data) => {
+      if (name === 'auth.changed' && (data as { serverId: string }).serverId === server.id) load();
+    });
+  }, [client, server.id, server.transport]);
 
   const run = async (work: () => Promise<unknown>) => {
     setBusy(true);
@@ -47,8 +57,16 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
     commandLine: form?.command ? commandLine(form.command, form.args) : undefined,
     url: form?.url,
     platform: navigator.userAgent.includes('Windows') ? 'win32' : undefined,
+    signedInAt,
   });
   const live = state.status === 'connected';
+  // Sign in from a failed connect's challenge (phase 11 decision 5): the
+  // Sign-in panel below shows the page to open.
+  const signIn = () => run(() => client.request('auth.signIn', {
+    serverId: server.id,
+    ...(state.status === 'failed' && state.failure.kind === 'unauthorized' ? { challenge: state.failure.challenge } : {}),
+    ...(state.status === 'failed' && state.failure.kind === 'unauthorized' && state.failure.challenge.status === 403 && state.failure.challenge.scope ? { scope: state.failure.challenge.scope } : {}),
+  }));
   const moving = state.status === 'connecting' || state.status === 'closing';
 
   return (
@@ -89,8 +107,8 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
         {view.offers.length > 0 && (
           <div className="actions left">
             {view.offers.map((o) => (
-              <button key={o.action} className={o.action === 'start-again' ? 'primary' : ''} disabled={busy}
-                onClick={() => (o.action === 'start-again' ? call('connections.startAgain') : call('connections.disconnect'))}>
+              <button key={o.action} className={o.action === 'start-again' || o.action === 'sign-in' ? 'primary' : ''} disabled={busy}
+                onClick={() => (o.action === 'start-again' ? call('connections.startAgain') : o.action === 'sign-in' ? signIn() : call('connections.disconnect'))}>
                 {o.label}
               </button>
             ))}
@@ -103,6 +121,7 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
       </div>
       {error && <p className="error">{error}</p>}
       {health && <HealthView report={health} onClose={() => setHealth(null)} />}
+      <AuthPanel client={client} server={server} />
       <SessionPanel client={client} server={server} />
       <ServerRequestsPanel client={client} serverId={server.id} />
       <NotificationsPanel client={client} serverId={server.id} modernStdio={server.transport === 'stdio' && server.era?.era === 'modern'} />

@@ -1018,3 +1018,59 @@ test('completions: Suggest sends one completion/complete and a suggestion fills 
     await app.close();
   }
 });
+
+// Phase 11: OAuth through the real app. The test stands in for the browser:
+// it reads the authorization URL the panel shows and follows the redirect to
+// the loopback listener, so no real browser opens.
+async function browseTo(authorizationUrl) {
+  const r = await fetch(authorizationUrl, { redirect: 'manual' });
+  assert.equal(r.status, 302);
+  await (await fetch(r.headers.get('location'))).text();
+}
+
+async function signInFromCard(page) {
+  await page.locator('.state-card h3', { hasText: 'The server needs you to sign in' }).waitFor({ timeout: 20_000 });
+  await page.locator('.state-card').getByRole('button', { name: 'Sign in', exact: true }).click();
+  const shown = page.locator('.auth .selectable');
+  await shown.waitFor({ timeout: 20_000 });
+  await page.locator('.auth').getByRole('button', { name: 'Open in browser' }).waitFor();
+  await browseTo(await shown.innerText());
+  await page.locator('.auth p', { hasText: /^Signed in with / }).waitFor({ timeout: 20_000 });
+  await page.locator('.state-card h3', { hasText: 'Signed in since this failed: connect again' }).waitFor();
+}
+
+test('OAuth: a 401 offers Sign in; the page shows the URL, the browser comes back, and Connect succeeds; the log is redacted', async () => {
+  const url = await listen('http-server.mjs', children, { AUTH: '1' });
+  const { dataDir } = seed([{ id: randomUUID(), name: 'oauth', transport: 'streamable-http', url }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await page.locator('.server-row', { hasText: 'oauth' }).click();
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await signInFromCard(page);
+    await shot(page, '11-1-signed-in');
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.locator('.state-card h3', { hasText: /Connected, modern era/ }).waitFor({ timeout: 20_000 });
+    await page.getByText(/secrets redacted: access_token/).first().waitFor({ timeout: 20_000 });
+  } finally {
+    await app.close();
+  }
+});
+
+test('OAuth: a refused refresh on Connect says to sign in again, and offers it', async () => {
+  const url = await listen('http-server.mjs', children, { AUTH: '1', AUTH_TOKEN_TTL: '1', AUTH_REFRESH: 'refuse' });
+  const { dataDir } = seed([{ id: randomUUID(), name: 'expiring', transport: 'streamable-http', url }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await page.locator('.server-row', { hasText: 'expiring' }).click();
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await signInFromCard(page);
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.locator('.state-card h3', { hasText: 'The sign-in has expired: sign in again' }).waitFor({ timeout: 20_000 });
+    await page.locator('.state-card').getByRole('button', { name: 'Sign in again' }).waitFor();
+    await shot(page, '11-2-sign-in-again');
+  } finally {
+    await app.close();
+  }
+});

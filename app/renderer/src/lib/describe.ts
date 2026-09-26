@@ -4,7 +4,7 @@
 import type { ConnectionState } from '../../../../packages/backend/dist/index.js';
 
 export interface Offer {
-  action: 'start-again' | 'leave-stopped';
+  action: 'start-again' | 'leave-stopped' | 'sign-in';
   label: string;
 }
 
@@ -27,6 +27,8 @@ export interface ServerContext {
   commandLine?: string;
   url?: string;
   platform?: string;
+  /** When the tokens now held were obtained (phase 11): a sign-in newer than a failure answers it. */
+  signedInAt?: number;
 }
 
 const duration = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
@@ -96,8 +98,17 @@ function describeFailure(state: Extract<ConnectionState, { status: 'failed' }>, 
       return { ...base, headline: `The server answered HTTP ${f.status}`, facts: server.url ? [`From ${server.url}.`] : [], offers: [] };
     case 'protocol':
       return { ...base, headline: 'The server answered, but not with a usable MCP handshake', facts: f.code === undefined ? [] : [`Error code ${f.code}.`], offers: [] };
-    case 'unauthorized':
-      return { ...base, ...describeChallenge(f.challenge), offers: [] };
+    case 'unauthorized': {
+      // Phase 11 decision 2: the Connect's refresh was refused, so the tokens went.
+      if (state.auth?.kind === 'refresh-refused') {
+        return { ...base, headline: 'The sign-in has expired: sign in again', facts: ['The authorization server refused the refresh token, so the app forgot the tokens it held.'], offers: [{ action: 'sign-in', label: 'Sign in again' }] };
+      }
+      if (f.challenge.status === 401 && server.signedInAt !== undefined && server.signedInAt > state.at) {
+        return { headline: 'Signed in since this failed: connect again', facts: ['The sign-in finished after this connect was refused. Connect sends the new token.'], offers: [], tone: 'idle' };
+      }
+      const c = describeChallenge(f.challenge);
+      return { ...base, ...c, offers: [{ action: 'sign-in', label: f.challenge.status === 403 ? 'Sign in with these scopes' : 'Sign in' }] };
+    }
   }
 }
 

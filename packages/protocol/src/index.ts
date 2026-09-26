@@ -12,3 +12,5 @@ export * from './version.js';
 export * from './mcp-headers.js';
 export * from './errors.js';
 export * from './lint.js';
+export * from './redact.js';
+export * from './oauth.js';

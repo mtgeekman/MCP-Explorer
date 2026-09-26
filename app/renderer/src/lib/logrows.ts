@@ -39,7 +39,8 @@ function appEvent(u: LogUnit): string {
 function describeEmpty(u: LogUnit): string {
   if (u.omitted) return 'large: loaded when selected';
   if (u.bytes === null) return 'withheld (results are not kept in this workspace)';
-  if (u.http?.method && u.byteLength === 0) return `${u.http.method} ${u.http.url ?? ''}`.trim();
+  if (u.http?.method && (u.byteLength === 0 || u.http.redacted?.length)) return `${u.http.method} ${u.http.url ?? ''}`.trim();
+  if (u.http?.status !== undefined && u.http.redacted?.length) return `HTTP ${u.http.status}`;
   if (u.http?.status !== undefined && u.byteLength === 0) return `HTTP ${u.http.status}, no body`;
   if (u.http?.framing === 'sse-event') return 'SSE event, no JSON-RPC';
   return 'not JSON-RPC';
@@ -61,6 +62,12 @@ export function logRows(units: LogUnit[]): LogRow[] {
   const sent = new Map<string, number>();
   return units.map((u) => {
     const row: LogRow = { unit: u, arrow: ARROW[u.direction], label: '', preview: preview(u) };
+    // An OAuth exchange is stored with its secret values replaced (pillar
+    // amendment 2026-09-26); the row says so, since its bytes are not the wire's.
+    if (u.http?.redacted?.length) {
+      row.label = `${describeEmpty(u)}, secrets redacted: ${u.http.redacted.join(', ')}`;
+      return row;
+    }
     if (u.kind === 'stderr') row.label = 'stderr';
     else if (u.kind === 'app') row.label = appEvent(u);
     else if (u.frames.length === 0) row.label = describeEmpty(u);

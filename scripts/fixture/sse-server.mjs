@@ -9,11 +9,15 @@
 // Shape: GET /sse opens the event stream and immediately announces the POST
 // endpoint; the client POSTs there and every response comes back over the
 // stream, not in the POST body.
+//
+// AUTH (phase 11 decision 14): serve the fixture authorization server too,
+// and require its bearer tokens on /sse and /messages; the resource is /sse.
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { DIE, SILENT } from './legacy-handler.mjs';
 import { eraAnswerer } from './answer.mjs';
+import { handleAuth, checkBearer } from './auth-server.mjs';
 
 // LEGACY: serve the legacy-era handler. HTTP+SSE is itself the transport of
 // the legacy revisions, so this is the pairing real servers deployed.
@@ -21,8 +25,14 @@ const handle = eraAnswerer(process.env.LEGACY ? 'legacy' : 'modern');
 
 const streams = new Map();
 
-const server = createServer((req, res) => {
+let origin = '';
+
+const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (process.env.AUTH) {
+    if (await handleAuth(req, res, origin, '/sse')) return;
+    if ((url.pathname === '/sse' || url.pathname === '/messages') && !checkBearer(req, res, origin, '/sse')) return;
+  }
 
   if (req.method === 'GET' && url.pathname === '/sse') {
     const sessionId = randomUUID();
@@ -77,5 +87,6 @@ data: ${JSON.stringify(m)}
 });
 
 server.listen(0, '127.0.0.1', () => {
+  origin = `http://127.0.0.1:${server.address().port}`;
   process.stdout.write(`LISTENING http://127.0.0.1:${server.address().port}/sse\n`);
 });

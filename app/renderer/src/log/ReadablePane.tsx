@@ -31,6 +31,7 @@ function UnitReadable({ unit }: { unit: LogUnit }) {
         {unit.frames.length > 0 && (<><dt>Messages</dt><dd>{unit.frames.map((f) => `${f.method ?? 'unknown'}${f.jsonrpcId ? ` #${f.jsonrpcId}` : ''}`).join(', ')}</dd></>)}
         {http?.method && (<><dt>Request</dt><dd className="mono">{http.method} {http.url}</dd></>)}
         {http?.status !== undefined && (<><dt>Status</dt><dd>{http.status} {http.statusText}</dd></>)}
+        {http?.redacted?.length ? (<><dt>Redacted</dt><dd>These bytes are not the wire's: the values of {http.redacted.join(', ')} were replaced before they were stored, as OAuth secrets.</dd></>) : null}
       </dl>
       {http?.headers && Object.keys(http.headers).length > 0 && (
         <details>

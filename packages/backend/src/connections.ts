@@ -4,7 +4,7 @@
 import {
   captureSurface, connectHttp, connectStdio, ConnectError,
   type ChangedList, type CloseInfo, type NormalizedSurface, type ConnectFailure, type Connection, type EraPreference, type ProcessExit, type WireUnit,
-  type ServerAnswer, type ServerRequest, type ServerNotification,
+  type ServerAnswer, type ServerRequest, type ServerNotification, type UnitListener, type AuthFailure,
 } from '../../protocol/dist/index.js';
 import {
   HistoryRecorder, loadServer, pinEra, clearEra, readDetectedEra, recordCapture,
@@ -29,7 +29,8 @@ export type ConnectionState =
   | { status: 'needs-secrets'; missing: SecretNames }
   | { status: 'connecting'; step: 'starting' | 'negotiating'; era: EraPreference; connectionId: number }
   | { status: 'connected'; era: 'legacy' | 'modern'; revision: string; pid?: number; connectionId: number; connectedAt: number }
-  | { status: 'failed'; failure: ConnectFailure; message: string; stderr: string; at: number; offer?: StartAgainOffer; connectionId?: number }
+  /** `auth`: the Connect's refresh was refused, so the tokens were forgotten and the user must sign in again (phase 11 decision 2). */
+  | { status: 'failed'; failure: ConnectFailure; message: string; stderr: string; at: number; offer?: StartAgainOffer; connectionId?: number; auth?: AuthFailure }
   | { status: 'closing'; connectionId: number }
   /** A session that was up has ended: closed by the user, or the server went away. */
   | { status: 'ended'; exit?: ProcessExit; byUser: boolean; at: number; connectionId: number };
@@ -78,6 +79,11 @@ export interface ConnectionManagerOptions {
    * unanswered until the session ends (phase 08 decision 1).
    */
   onServerRequest?: (serverId: string, recorder: HistoryRecorder, request: ServerRequest) => Promise<ServerAnswer>;
+  /** OAuth (phase 11): the token an HTTP connect sends, and the refresh a Connect may do first. */
+  auth?: {
+    accessToken(serverId: string): string | undefined;
+    refreshIfDue(serverId: string, emit: UnitListener): Promise<void>;
+  };
 }
 
 interface Slot {
@@ -206,6 +212,24 @@ export class ConnectionManager {
     const state = slot?.state;
     if (!slot?.conn || !slot.recorder || state?.status !== 'connected') return undefined;
     return { conn: slot.conn, recorder: slot.recorder, connectionId: state.connectionId, era: state.era };
+  }
+
+  /**
+   * Somewhere to record traffic that is not a call (a sign-in, a refresh):
+   * the live session's log when the server is connected (and `own` is not
+   * asked for), else a connection of its own, which `close` ends. Every unit is announced like any other.
+   */
+  record(serverId: string, own = false): { emit: UnitListener; close(): void } {
+    // A sign-in waits on the browser for minutes; the session may end under
+    // it, so it records as a connection of its own.
+    const live = own ? undefined : this.session(serverId);
+    const recorder = live?.recorder ?? HistoryRecorder.open(this.ws, serverId, this.now);
+    const connectionId = recorder.connectionId;
+    const emit: UnitListener = (u) => {
+      const unitId = recorder.unit(u);
+      this.opts.events.unit?.(serverId, connectionId, unitId, u);
+    };
+    return { emit, close: () => { if (!live) recorder.close(); } };
   }
 
   partialCapture(serverId: string): PartialCapture | undefined {
@@ -375,6 +399,9 @@ export class ConnectionManager {
 
     let conn: Connection;
     try {
+      // Decision 2: a token that has expired is refreshed as part of this
+      // Connect, the user's action, and recorded in this connection's log.
+      if (def.transport !== 'stdio') await this.opts.auth?.refreshIfDue(serverId, onUnit);
       conn = def.transport === 'stdio'
         ? await connectStdio({
           command: def.command!, args: def.args, cwd: def.cwd,
@@ -388,6 +415,7 @@ export class ConnectionManager {
           url: def.url!, kind: def.transport, era,
           headers: def.headers, secretHeaders: { ...def.secretHeaders, ...session?.headers },
           onUnit, onNotification, onServerRequest, probeTimeoutMs: this.opts.probeTimeoutMs,
+          ...(this.opts.auth ? { accessToken: () => this.opts.auth!.accessToken(serverId) } : {}),
         });
     } catch (e) {
       recorder.close();
@@ -396,6 +424,10 @@ export class ConnectionManager {
       // its own is ended here, which on Windows finds what it left behind.
       if (slot.root) await this.endTree(slot.root);
       slot.root = undefined;
+      const authFailure = (e as { name?: string; failure?: AuthFailure }).name === 'AuthError' ? (e as { failure: AuthFailure }).failure : undefined;
+      if (authFailure) {
+        return this.set(serverId, { status: 'failed', failure: { kind: 'unauthorized', challenge: { status: 401 } }, message: e instanceof Error ? e.message : String(e), stderr: '', at: this.now(), connectionId, auth: authFailure });
+      }
       if (!(e instanceof ConnectError)) {
         return this.set(serverId, { status: 'failed', failure: { kind: 'protocol' }, message: e instanceof Error ? e.message : String(e), stderr: '', at: this.now(), connectionId });
       }

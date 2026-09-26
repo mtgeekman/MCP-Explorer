@@ -13,6 +13,7 @@ import { clock } from '../lib/logrows';
 import { InputSet, UrlBox } from './InputRequests';
 import { EarlierRequest } from './ServerRequestsPanel';
 import { UnitBytes } from './UnitBytes';
+import { AuthOffer } from './AuthOffer';
 
 export function CallTranscript({ client, callId, serverName, onRead, onReplay }: {
   client: BackendClient;
@@ -98,6 +99,7 @@ export function CallTranscript({ client, callId, serverName, onRead, onReplay }:
       {error && <p className="error">{error}</p>}
       {exported && <ExportBox exported={exported} onClose={() => setExported(null)} />}
       {call.roundRecords.map((r) => <Round key={r.seq} client={client} round={r} />)}
+      {!view.live && <AuthOffer client={client} call={call} onReplay={onReplay} />}
       {view.serverRequests.length > 0 && (
         <div className="round">
           <h4>Requests from the server during this call</h4>

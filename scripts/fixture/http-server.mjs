@@ -27,11 +27,15 @@
 //                LEGACY a GET opens the stream for notices sent outside any
 //                request. The client's answer to a server request arrives as a
 //                POST of its own and is answered 202.
+//   AUTH         (phase 11) serve the fixture authorization server from this
+//                process and require its bearer tokens on the MCP endpoint;
+//                its own modes are in auth-server.mjs.
 import { createServer } from 'node:http';
 import { appendFileSync } from 'node:fs';
 import { DIE, SILENT } from './legacy-handler.mjs';
 import { eraAnswerer } from './answer.mjs';
 import { setBroadcast } from './extras.mjs';
+import { handleAuth, checkBearer } from './auth-server.mjs';
 
 // CALL_TOOLS calls are answered here too; a progress notification is dropped,
 // since a JSON body carries one message. Progress is exercised over stdio.
@@ -97,8 +101,16 @@ function resume(req, res) {
   res.end(`id: primed-2\nevent: message\ndata: ${JSON.stringify(response)}\n\n`);
 }
 
-const server = createServer((req, res) => {
+let origin = '';
+
+const server = createServer(async (req, res) => {
   if (process.env.HEADER_LOG) appendFileSync(process.env.HEADER_LOG, `${req.headers.authorization ?? ''}\n`);
+  if (process.env.AUTH) {
+    if (await handleAuth(req, res, origin, endpoint)) return;
+    // Every MCP request needs a token. A POST's frames are read first, below,
+    // so that a tool needing more scope can be told apart.
+    if (req.url.startsWith(endpoint) && req.method !== 'POST' && !checkBearer(req, res, origin, endpoint)) return;
+  }
   if (req.method === 'GET' && req.headers['last-event-id'] && resumable.has(req.headers['last-event-id'])) return resume(req, res);
   if (process.env.STREAMING && process.env.LEGACY && req.method === 'GET' && req.url.startsWith(endpoint)) return openGetStream(res);
   if (req.method !== 'POST' || !req.url.startsWith(endpoint)) {
@@ -128,6 +140,7 @@ const server = createServer((req, res) => {
     }
 
     const frames = Array.isArray(msg) ? msg : [msg];
+    if (process.env.AUTH && !checkBearer(req, res, origin, endpoint, frames)) return;
     if ((process.env.SSE_PRIMED_CUT || process.env.SSE_ID_ONLY_CUT) && !Array.isArray(msg) && msg.method === 'tools/call') return primedCut(res, msg);
     if (process.env.STREAMING && !Array.isArray(msg) && msg.method !== undefined && msg.id !== undefined) return stream(req, res, msg);
     const results = await Promise.all(frames.map((f) => handle(f, () => {})));
@@ -157,5 +170,6 @@ const server = createServer((req, res) => {
 
 server.listen(0, '127.0.0.1', () => {
   const { port } = server.address();
+  origin = `http://127.0.0.1:${port}`;
   process.stdout.write(`LISTENING http://127.0.0.1:${port}${endpoint}\n`);
 });

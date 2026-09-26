@@ -436,7 +436,9 @@ export class CallPipeline {
       } else {
         // No response: the session ended under the call, or the request never went out.
         const ended = this.sessions.session(run.serverId)?.conn !== run.conn;
-        run.recorder.finishRound(callId, seq, { error: { message: o.message } });
+        // A 401 or 403 challenge is kept with the round (phase 11 decision 10):
+        // the transcript offers Refresh and retry, or Sign in with its scopes.
+        run.recorder.finishRound(callId, seq, { error: { message: o.message, ...(o.auth ? { auth: o.auth } : {}) } });
         this.end(callId, run, ended ? 'interrupted' : 'error');
       }
     } catch (e) {
@@ -506,7 +508,7 @@ export class CallPipeline {
         return waitAgain(task);
       }
       const ended = this.sessions.session(run.serverId)?.conn !== run.conn;
-      run.recorder.finishRound(callId, seq, { error: { message: o.kind === 'failed' ? o.message : 'cancelled' } });
+      run.recorder.finishRound(callId, seq, { error: o.kind === 'failed' ? { message: o.message, ...(o.auth ? { auth: o.auth } : {}) } : { message: 'cancelled' } });
       if (ended) return this.end(callId, run, 'interrupted');
       return waitAgain(task);
     } catch (e) {

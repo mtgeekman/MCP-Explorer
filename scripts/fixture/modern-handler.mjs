@@ -147,6 +147,12 @@ export function handleModern(msg) {
   if (method === 'tools/call') {
     if (params.name === 'needs_input') {
       const answered = params._meta?.inputResponses ?? params.inputResponses;
+      // STATE_ONLY: answer with requestState and no inputRequests, the shape the
+      // spec lets a client retry at once, and the SDK's default does after
+      // 250 ms with nobody asked (phase 07 decision 1).
+      if (process.env.STATE_ONLY && params.requestState === undefined) {
+        return ok(id, { resultType: 'input_required', requestState: 'state-only', ...serverMeta() });
+      }
       if (!answered) {
         return ok(id, {
           resultType: 'input_required',

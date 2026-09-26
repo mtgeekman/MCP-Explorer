@@ -666,7 +666,8 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
     }
     const events = new SseEventSplitter();
     const event = (bytes: Uint8Array) => emit({ direction: 'in', kind: 'wire', bytes, http: { ...http, framing: 'sse-event' } });
-    const logged = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    // Transformer.cancel is in the streams standard and in Node, not yet in the TypeScript lib.
+    const logging: Transformer<Uint8Array, Uint8Array> & { cancel?: (reason: unknown) => void } = {
       transform(chunk, controller) {
         for (const e of events.push(chunk)) event(e);
         controller.enqueue(chunk);
@@ -676,7 +677,16 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
         const rest = events.flush();
         if (rest) event(rest);
       },
-    }));
+      // The stream ended by error (the server dropped the connection mid-event)
+      // or was cancelled: flush never runs, so the bytes that did arrive are
+      // logged here (P1), and the listener goes as it would at a clean end.
+      cancel() {
+        done();
+        const rest = events.flush();
+        if (rest) event(rest);
+      },
+    };
+    const logged = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(logging));
     return rebuilt(logged);
   };
 }

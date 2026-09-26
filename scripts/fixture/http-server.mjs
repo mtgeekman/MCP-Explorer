@@ -4,6 +4,8 @@
 // it without guessing a port.
 //
 // Modes, for the wire log's byte-exact tests (D34, D35):
+//   SSE_CUT      answer a tools/call with an event stream, then drop the
+//                connection halfway through the event, as a crashing server does
 //   SSE_REPLIES  answer each POST with an event stream instead of a JSON body:
 //                a comment, then the response as one event with CRLF line
 //                endings, written a few bytes at a time.
@@ -67,6 +69,11 @@ const server = createServer((req, res) => {
     if (responses.length === 0) {
       res.writeHead(202);
       return res.end();
+    }
+    if (process.env.SSE_CUT && frames.some((f) => f.method === 'tools/call')) {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      res.write('event: message\ndata: {"jsonrpc":"2.0"');
+      return setTimeout(() => req.socket.destroy(), 50);
     }
     if (process.env.SSE_REPLIES) {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });

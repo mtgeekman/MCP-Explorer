@@ -1,6 +1,6 @@
 // One surface entry as a person reads it (board 5.1A's pane): parameters,
 // arguments, annotations with the line that says they are not trusted, and a
-// Fields table where "none sent" and "not on this revision" stay apart (5.4).
+// Fields list where "none sent" and "not on this revision" stay apart (5.4).
 import { Fragment } from 'react';
 import { JsonView } from '../log/JsonView';
 import type { SelectedItem } from './SurfacePanel';

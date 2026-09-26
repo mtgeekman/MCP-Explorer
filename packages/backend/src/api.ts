@@ -5,11 +5,14 @@ import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface, Verdi
 import type { CallRecord, CallSummary, PurgeResult, RoundRecord, ServerSummary, Transport, WorkspaceSettings, VersionTimeline, VersionEntry, VersionKind } from '../../storage/dist/index.js';
 import type { AwaitedInput, CallChange, CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply } from './calls.js';
 import type { ServerRequestRow } from './server-requests.js';
-import type { ServerAnswer } from '../../protocol/dist/index.js';
+import type { ServerAnswer, LogLevel, SubscriptionFilter, UtilityMethod, UtilityOutcome, ListenEnd } from '../../protocol/dist/index.js';
+import type { SessionInfo, ListenView } from './session-controls.js';
+import type { NotificationRow } from './notifications.js';
 
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
 export type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply, CallRecord, CallSummary, RoundRecord, Verdict, CallProgress };
 export type { AwaitedInput, ServerRequestRow, ServerAnswer };
+export type { LogLevel, SubscriptionFilter, UtilityMethod, UtilityOutcome, ListenEnd, SessionInfo, ListenView, NotificationRow };
 export type { VersionTimeline, VersionEntry, VersionKind, VersionComparison, TextComparison, TokenDelta, ToolTokenDelta, SurfaceDiff, ItemChange, FieldChange, TextDiff, Hunk, DiffLine };
 import type { CaptureStatus, ConnectionState, PartialCapture, SecretValues } from './connections.js';
 import type { Protection, Unlock, WorkspaceListing, WorkspaceNotice } from './workspaces.js';
@@ -203,6 +206,18 @@ export interface Requests {
   'calls.validate': { params: { schema: unknown; value: unknown }; result: Verdict };
   /** A call's first request as it was sent, and a curl command for an HTTP server (decision 8). */
   'calls.export': { params: { callId: number }; result: CallExport };
+  /** What the user set on the live session: log level, subscriptions, the listen stream (phase 10). */
+  'session.get': { params: { serverId: string }; result: SessionInfo };
+  /** Legacy: sends logging/setLevel. Modern: held for every later request's _meta, and nothing is sent (decision 5). */
+  'session.setLogLevel': { params: { serverId: string; level: LogLevel | null }; result: UtilityOutcome | null };
+  /** One utility request, sent once: ping, completion/complete (decisions 3 and 8). */
+  'session.request': { params: { serverId: string; method: 'ping' | 'completion/complete'; params?: Record<string, unknown> }; result: UtilityOutcome };
+  /** Subscribe or unsubscribe a resource: legacy resources/subscribe, modern the listen's filter (decision 7). */
+  'session.subscribe': { params: { serverId: string; uri: string; on: boolean }; result: UtilityOutcome | null };
+  /** Modern: open the listen with this filter, replacing an open one; null closes it. */
+  'session.listen': { params: { serverId: string; filter: SubscriptionFilter | null }; result: null };
+  /** A page of the server's notifications, oldest first, from units older than `before` (decision 6). */
+  'notifications.list': { params: { serverId: string; before?: number; limit?: number }; result: NotificationRow[] };
   /** A resource template's variables, or the URI they make. */
   'resources.template': { params: { uriTemplate: string; values?: Record<string, string> }; result: { variables: string[]; uri?: string } };
 }
@@ -229,6 +244,8 @@ export interface Events {
   'call.changed': { serverId: string; callId: number; reason: CallChange };
   /** A server's request arrived or ended: list requests again, and the linked call's transcript. */
   'request.changed': { serverId: string; requestId: number; callId: number | null };
+  /** What the user set on a live session changed, or the session ended: read session.get again. */
+  'session.changed': { serverId: string };
   /** Retention deleted history: an open log or call list reloads (R05-9). */
   'log.purged': Record<string, never>;
   notice: WorkspaceNotice;

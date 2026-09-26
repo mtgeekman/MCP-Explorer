@@ -14,6 +14,8 @@ import { listed, logPage, logUnit } from './log.js';
 import { rawEntry } from './entry.js';
 import { CallPipeline, curlFor, type CallExport } from './calls.js';
 import { ServerRequests } from './server-requests.js';
+import { SessionControls } from './session-controls.js';
+import { notificationPage } from './notifications.js';
 import { listConfigLocations, readConfigs, saveImported } from './importer.js';
 import type { ContextView, ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow, SurfaceView } from './api.js';
 
@@ -36,6 +38,7 @@ export class Backend {
   private connections: ConnectionManager | undefined;
   private calls: CallPipeline | undefined;
   private requests: ServerRequests | undefined;
+  private controls: SessionControls | undefined;
   private readonly listeners = new Set<<E extends keyof Events>(name: E, data: Events[E]) => void>();
   private readonly handlers: { [M in Method]: Handler<M> };
 
@@ -126,6 +129,15 @@ export class Backend {
       'calls.get': ({ callId }) => this.pipeline().view(callId),
       'calls.validate': ({ schema, value }) => validateAgainst(schema, value),
       'calls.export': ({ callId }) => this.exportCall(callId),
+      'session.get': ({ serverId }) => { this.server(serverId); return this.sessions().info(serverId); },
+      'session.setLogLevel': ({ serverId, level }) => this.sessions().setLogLevel(serverId, level),
+      'session.request': ({ serverId, method, params }) => {
+        if (method !== 'ping' && method !== 'completion/complete') throw new Error(`session.request does not send ${String(method)}`);
+        return this.sessions().request(serverId, method, params);
+      },
+      'session.subscribe': ({ serverId, uri, on }) => this.sessions().subscribe(serverId, uri, on),
+      'session.listen': ({ serverId, filter }) => { this.sessions().listen(serverId, filter); return null; },
+      'notifications.list': ({ serverId, before, limit }) => { this.server(serverId); return notificationPage(this.ws().db, serverId, before, limit ?? DEFAULT_PAGE); },
       'resources.template': async ({ uriTemplate: template, values }) => {
         const t = await uriTemplate(template);
         return { variables: t.variables, ...(values ? { uri: t.expand(values) } : {}) };
@@ -177,6 +189,11 @@ export class Backend {
     return this.requests;
   }
 
+  private sessions(): SessionControls {
+    if (!this.controls) throw new NoWorkspaceError('no workspace is open');
+    return this.controls;
+  }
+
   private exportCall(callId: number): CallExport {
     const call = readCall(this.ws(), callId);
     if (!call) throw new Error(`no call ${callId} in this workspace`);
@@ -210,12 +227,14 @@ export class Backend {
           if (state.status !== 'connected' && state.status !== 'closing') {
             this.calls?.sessionEnded(serverId);
             this.requests?.sessionEnded(serverId);
+            this.controls?.sessionEnded(serverId);
           }
           this.emit('connection.state', { serverId, state });
         },
         unit: (_serverId, _connectionId, unitId) => this.emit('log.unit', this.liveUnit(unitId)),
         processes: (roots) => this.opts.onProcesses?.(roots),
         surface: (serverId) => this.emit('surface.changed', { serverId }),
+        notification: (serverId, n) => this.controls?.notification(serverId, n),
       },
       onServerRequest: (serverId, recorder, request) => {
         if (!this.requests) return new Promise(() => undefined);
@@ -223,6 +242,7 @@ export class Backend {
       },
     });
     const conns = this.connections;
+    this.controls = new SessionControls({ session: (id) => conns.session(id) }, (serverId) => this.emit('session.changed', { serverId }), this.opts.now);
     this.calls = new CallPipeline(open.ws, {
       session: (id) => conns.session(id),
       partialCapture: (id) => conns.partialCapture(id),
@@ -242,6 +262,7 @@ export class Backend {
     this.connections = undefined;
     this.calls = undefined;
     this.requests = undefined;
+    this.controls = undefined;
     await c?.closeAll();
   }
 

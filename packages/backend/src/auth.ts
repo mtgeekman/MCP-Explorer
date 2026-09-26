@@ -144,7 +144,7 @@ export class AuthManager {
         const kept = this.grantFor(serverId, info.issuer);
         if (kept?.client.source === 'dynamic') client = kept.client;
       }
-      listener = await LoopbackListener.open(client ? Number(new URL(client.redirectUri).port) : 0);
+      listener = client ? await LoopbackListener.forRedirect(client.redirectUri) : await LoopbackListener.open();
       const scope = opts.scope ?? info.defaultScope;
       if (!client) {
         client = await registerDynamically(info, { redirectUri: listener.redirectUri, ...(scope ? { scope } : {}), fetchFn });

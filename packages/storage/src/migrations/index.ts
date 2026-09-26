@@ -6,6 +6,7 @@ import { sql as callSettings } from './0005-call-settings.js';
 import { sql as callEndings } from './0006-call-endings.js';
 import { sql as serverRequests } from './0007-server-requests.js';
 import { sql as roundMethod } from './0008-round-method.js';
+import { sql as oauth } from './0009-oauth.js';
 
 export interface Migration {
   /** The `user_version` a database has after this migration. Contiguous from 1. */
@@ -34,6 +35,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 6, name: 'call-endings', sql: callEndings, rebuildsParent: true },
   { version: 7, name: 'server-requests', sql: serverRequests },
   { version: 8, name: 'round-method', sql: roundMethod },
+  { version: 9, name: 'oauth', sql: oauth },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

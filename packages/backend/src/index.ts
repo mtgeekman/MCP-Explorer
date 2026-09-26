@@ -34,3 +34,4 @@ export {
   type ParsedConfig,
 } from './config-import.js';
 export type * from './api.js';
+export { AuthManager, CALLBACK_TIMEOUT_MS, type AuthReport } from './auth.js';

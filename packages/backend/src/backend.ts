@@ -17,6 +17,7 @@ import { ServerRequests } from './server-requests.js';
 import { SessionControls } from './session-controls.js';
 import { notificationPage } from './notifications.js';
 import { healthReport } from './health.js';
+import { AuthManager } from './auth.js';
 import { listConfigLocations, readConfigs, saveImported } from './importer.js';
 import type { ContextView, ErrorReply, Events, LogUnit, Message, Method, OpenedWorkspace, Requests, ServerForm, ServerRow, SurfaceView } from './api.js';
 
@@ -40,6 +41,7 @@ export class Backend {
   private calls: CallPipeline | undefined;
   private requests: ServerRequests | undefined;
   private controls: SessionControls | undefined;
+  private auth: AuthManager | undefined;
   private readonly listeners = new Set<<E extends keyof Events>(name: E, data: Events[E]) => void>();
   private readonly handlers: { [M in Method]: Handler<M> };
 
@@ -78,6 +80,7 @@ export class Backend {
       },
       'servers.delete': async ({ id }) => {
         await this.conns().disconnect(id);
+        await this.oauth().forget(id);
         return deleteServer(this.ws(), id);
       },
       'connections.connect': ({ serverId, secrets }) => this.conns().connect(serverId, secrets),
@@ -141,6 +144,11 @@ export class Backend {
       'session.subscribe': ({ serverId, uri, on }) => this.sessions().subscribe(serverId, uri, on),
       'session.listen': ({ serverId, filter }) => { this.sessions().listen(serverId, filter); return null; },
       'health.check': ({ serverId }) => this.health(serverId),
+      'auth.get': ({ serverId }) => this.oauth().report(serverId),
+      'auth.signIn': ({ serverId, challenge, scope, reregister }) => this.oauth().signIn(serverId, { ...(challenge ? { challenge } : {}), ...(scope ? { scope } : {}), ...(reregister ? { reregister } : {}) }),
+      'auth.cancel': async ({ serverId }) => { await this.oauth().cancel(serverId); this.emit('auth.changed', { serverId }); return null; },
+      'auth.signOut': async ({ serverId, registrations }) => { await this.oauth().signOut(serverId, registrations ?? false); return this.oauth().report(serverId); },
+      'auth.refresh': async ({ serverId }) => { await this.oauth().refresh(serverId); return this.oauth().report(serverId); },
       'notifications.list': ({ serverId, before, limit }) => { this.server(serverId); return notificationPage(this.ws().db, serverId, before, limit ?? DEFAULT_PAGE); },
       'resources.template': async ({ uriTemplate: template, values }) => {
         const t = await uriTemplate(template);
@@ -212,6 +220,11 @@ export class Backend {
     return healthReport(session.conn, shown.surface, now, status.error);
   }
 
+  private oauth(): AuthManager {
+    if (!this.auth) throw new NoWorkspaceError('no workspace is open');
+    return this.auth;
+  }
+
   private sessions(): SessionControls {
     if (!this.controls) throw new NoWorkspaceError('no workspace is open');
     return this.controls;
@@ -241,7 +254,15 @@ export class Backend {
     // A call or session a crash left open is closed before anything new starts
     // (phase 07 decision 7). Safe while one process opens a workspace at a time.
     repairInterrupted(open.ws);
+    // The connection manager asks the auth manager for tokens, and the auth
+    // manager records through the connection manager: each reaches the other lazily.
+    const auth = new AuthManager(open.ws, {
+      record: (serverId, own) => this.conns().record(serverId, own),
+      changed: (serverId) => this.emit('auth.changed', { serverId }),
+    }, this.opts.now);
+    this.auth = auth;
     this.connections = new ConnectionManager(open.ws, {
+      auth: { accessToken: (id) => auth.accessToken(id), refreshIfDue: (id, emit) => auth.refreshIfDue(id, emit) },
       now: this.opts.now,
       probeTimeoutMs: this.opts.probeTimeoutMs,
       closeGraceMs: this.opts.closeGraceMs,
@@ -285,6 +306,9 @@ export class Backend {
 
   private async closeConnections(): Promise<void> {
     const c = this.connections;
+    const a = this.auth;
+    this.auth = undefined;
+    await a?.closeAll();
     this.connections = undefined;
     this.calls = undefined;
     this.requests = undefined;
@@ -355,9 +379,14 @@ export class NoWorkspaceError extends Error {
 
 /** The definition as the renderer may see it: stored secret values replaced by null. */
 function toForm(def: ServerDefinition): ServerForm {
-  const { secretEnv, secretHeaders, ...rest } = def;
+  const { secretEnv, secretHeaders, oauthClient, ...rest } = def;
   const names = (m?: Record<string, string>) => (m ? Object.fromEntries(Object.keys(m).map((k) => [k, null])) : undefined);
-  return { ...rest, ...(secretEnv ? { secretEnv: names(secretEnv) } : {}), ...(secretHeaders ? { secretHeaders: names(secretHeaders) } : {}) };
+  return {
+    ...rest,
+    ...(secretEnv ? { secretEnv: names(secretEnv) } : {}),
+    ...(secretHeaders ? { secretHeaders: names(secretHeaders) } : {}),
+    ...(oauthClient ? { oauthClient: { clientId: oauthClient.clientId, redirectUri: oauthClient.redirectUri, ...(oauthClient.clientSecret !== undefined ? { clientSecret: null } : {}) } } : {}),
+  };
 }
 
 /** The definition to store: a secret given as null keeps the value already stored. */
@@ -370,8 +399,13 @@ function fromForm(form: ServerForm & { id: string }, existing: ServerDefinition 
       return [name, v];
     }));
   };
-  const { secretEnv, secretHeaders, ...rest } = form;
+  const { secretEnv, secretHeaders, oauthClient, ...rest } = form;
   const def: ServerDefinition = { ...rest };
+  if (oauthClient) {
+    const secret = oauthClient.clientSecret === null ? existing?.oauthClient?.clientSecret : oauthClient.clientSecret;
+    if (oauthClient.clientSecret === null && secret === undefined) throw new Error('the OAuth client secret has no value to keep');
+    def.oauthClient = { clientId: oauthClient.clientId, redirectUri: oauthClient.redirectUri, ...(secret !== undefined ? { clientSecret: secret } : {}) };
+  }
   const env = resolve(secretEnv, existing?.secretEnv, 'environment variable');
   const headers = resolve(secretHeaders, existing?.secretHeaders, 'header');
   if (env) def.secretEnv = env;

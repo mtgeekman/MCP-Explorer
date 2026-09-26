@@ -91,4 +91,13 @@ export function seedEveryTable(db) {
     request.run(null, '"srv-1"', 'roots/list', null, 'refused', null, 1, null, t + 8, t + 9);
     request.run(null, '2', 'elicitation/create', '{"message":"?"}', 'interrupted', null, 0, null, t + 8, t + 9);
   }
+
+  // Schema 9 (OAuth, phase 11): a pre-registered client, and a sign-in's
+  // client and tokens. Golden databases are unencrypted, so these rows only
+  // exercise the shape; the app never writes either secret to one.
+  if (tableNames(db).includes('server_oauth')) {
+    db.prepare(`INSERT INTO server_oauth_client (server_id, client_id, redirect_uri, client_secret) VALUES ('srv-2', 'pre-1', 'http://127.0.0.1:43123/callback', NULL)`).run();
+    db.prepare(`INSERT INTO server_oauth (server_id, issuer, auth_server, resource, client_json, tokens_json, updated_at)
+                VALUES ('srv-2', 'https://as.example.test', 'https://as.example.test', 'https://example.test/mcp', '{"clientId":"c1","redirectUri":"http://127.0.0.1:43123/callback","source":"dynamic"}', '{"accessToken":"golden-not-a-token","tokenType":"Bearer"}', ?)`).run(t);
+  }
 }

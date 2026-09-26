@@ -86,3 +86,15 @@ export function callAuthOffer(error: unknown, report: AuthReport | null): { kind
   if (report?.signedIn && report.hasRefreshToken) return { kind: 'refresh-retry', label: 'Refresh and retry', text: `The server refused the access token (${why}).` };
   return { kind: 'sign-in', label: 'Sign in', text: `The server refused the access token (${why}), and there is no refresh token to use.` };
 }
+
+/**
+ * What Sign in on a refused connect sends (decisions 5 and 11): the
+ * challenge, and for a 403 the union of the scopes granted and challenged,
+ * so a step-up does not lose what the last sign-in granted (R11-8).
+ */
+export function signInParams(serverId: string, state: { status: string; failure?: { kind: string; challenge?: Challenge } }, report: { scope?: string } | null): { serverId: string; challenge?: Challenge; scope?: string } {
+  const challenge = state.status === 'failed' && state.failure?.kind === 'unauthorized' ? state.failure.challenge : undefined;
+  if (!challenge) return { serverId };
+  const scope = challenge.status === 403 ? scopeUnion(report?.scope, challenge.scope) : undefined;
+  return { serverId, challenge, ...(scope ? { scope } : {}) };
+}

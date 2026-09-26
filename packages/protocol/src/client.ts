@@ -198,6 +198,14 @@ export interface Connection {
    * request's _meta, sends nothing, and resolves undefined.
    */
   setLogLevel(level: LogLevel | undefined): Promise<UtilityOutcome | undefined>;
+  /**
+   * Modern era: opens one subscriptions/listen stream with this filter, as the
+   * user asked. Sent through request() with no timeout, never the SDK's
+   * listen(), whose 60 s acknowledgement timeout cancels on its own (P2). The
+   * acknowledgement arrives as a notification. On legacy it sends nothing and
+   * ends at once as failed.
+   */
+  listen(filter: SubscriptionFilter): ListenHandle;
   /** stdio only: the process the app spawned, the root of its tree (D36). */
   pid?: number;
   /** stdio only: when that process was seen to spawn, milliseconds since the epoch. */
@@ -481,6 +489,44 @@ export interface UtilityRequest {
   signal?: AbortSignal;
 }
 
+/**
+ * What a modern subscriptions/listen stream asks for (2026-07-28
+ * SubscriptionFilter). Open-ended: an extension's field, such as the tasks
+ * extension's taskIds, goes through as given.
+ */
+export interface SubscriptionFilter {
+  toolsListChanged?: boolean;
+  promptsListChanged?: boolean;
+  resourcesListChanged?: boolean;
+  resourceSubscriptions?: string[];
+  [extension: string]: unknown;
+}
+
+/** How a listen stream ended. */
+export type ListenEnd =
+  /** The user closed it: the era's cancellation was sent. */
+  | { kind: 'closed' }
+  /** The server ended it gracefully with the listen result. */
+  | { kind: 'result'; result: Record<string, unknown> }
+  /** The server answered the listen with an error. */
+  | { kind: 'error'; error: { code?: unknown; message?: unknown; data?: unknown } }
+  /** The server cancelled it (notifications/cancelled naming the listen). */
+  | { kind: 'cancelled-by-server'; reason?: unknown }
+  /** No response: the session ended, or the request could not be sent. */
+  | { kind: 'failed'; message: string };
+
+/** An open modern listen stream (phase 10 decision 7). */
+export interface ListenHandle {
+  /** The listen request's id: every notification on the stream carries it as its subscriptionId. Absent when nothing was sent. */
+  readonly requestId?: string | number;
+  /** Settles when the stream ends, for any reason. */
+  readonly ended: Promise<ListenEnd>;
+  /** Ends the stream as the user asked: the SDK sends the era's cancellation. */
+  close(): void;
+}
+
+export const SUBSCRIPTION_ID_META_KEY = 'io.modelcontextprotocol/subscriptionId';
+
 /** A utility request's outcome, and how long it took from send to response. */
 export type UtilityOutcome = CallOutcome & { elapsedMs: number };
 
@@ -521,9 +567,13 @@ class CallTracker {
   private armed: { method: string; id?: string | number } | undefined;
   private readonly responses = new Map<string, Record<string, unknown>>();
   private readonly watched = new Set<string>();
+  private readonly cancels = new Map<string, (reason: unknown) => void>();
 
   see(direction: FrameDirection, frame: unknown): void {
-    const m = frame as { id?: unknown; method?: unknown } | null;
+    const m = frame as { id?: unknown; method?: unknown; params?: { requestId?: unknown; reason?: unknown } } | null;
+    if (direction === 'in' && m && typeof m === 'object' && m.method === 'notifications/cancelled' && m.params) {
+      this.cancels.get(idKey(m.params.requestId))?.(m.params.reason);
+    }
     if (!m || typeof m !== 'object' || m.id === undefined || m.id === null) return;
     if (direction === 'out' && this.armed && m.method === this.armed.method && this.armed.id === undefined) {
       this.armed.id = m.id as string | number;
@@ -546,6 +596,15 @@ class CallTracker {
     } finally {
       this.armed = undefined;
     }
+  }
+
+  /** Calls back when the server cancels the request we sent under this id. */
+  watchCancel(id: string | number, onCancel: (reason: unknown) => void): void {
+    this.cancels.set(idKey(id), onCancel);
+  }
+
+  unwatchCancel(id: string | number): void {
+    this.cancels.delete(idKey(id));
   }
 
   /** Whether the response for this id has arrived. */
@@ -627,15 +686,18 @@ interface RawResponse {
 
 async function rawRequest(session: Session, method: string, params: Record<string, unknown>, options: Record<string, unknown>): Promise<RawResponse> {
   const { client, calls } = session;
+  // onSent is ours: told the id the moment the frame is out, before any reply.
+  const { onSent, ...sdkOptions } = options as Record<string, unknown> & { onSent?: (id: string | number) => void };
   let sent: { id?: string | number; sent: Promise<unknown> };
   try {
-    sent = calls.send(method, () => client.request({ method, params: withLogLevel(session, params) }, PASS_THROUGH, options) as Promise<unknown>);
+    sent = calls.send(method, () => client.request({ method, params: withLogLevel(session, params) }, PASS_THROUGH, sdkOptions) as Promise<unknown>);
   } catch (e) {
     return { failure: e };
   }
   let abortedFirst = false;
   const signal = options.signal as AbortSignal | undefined;
   const id = sent.id;
+  if (id !== undefined) onSent?.(id);
   const onAbort = () => { abortedFirst = id === undefined || !calls.has(id); };
   signal?.addEventListener('abort', onAbort, { once: true });
   let sdkError: unknown;
@@ -700,6 +762,37 @@ async function setLogLevelOn(session: Session, level: LogLevel | undefined): Pro
   return outcome;
 }
 
+function listenOn(session: Session, filter: SubscriptionFilter): ListenHandle {
+  if (session.era !== 'modern') {
+    return { ended: Promise.resolve({ kind: 'failed', message: 'subscriptions/listen does not exist on ' + session.revision }), close: () => undefined };
+  }
+  const abort = new AbortController();
+  let requestId: string | number | undefined;
+  let serverCancel: ((end: ListenEnd) => void) | undefined;
+  const byServer = new Promise<ListenEnd>((resolve) => { serverCancel = resolve; });
+  const onSent = (id: string | number) => {
+    requestId = id;
+    // The spec's cancellation page says a server ending a listen sends
+    // notifications/cancelled naming it; its subscriptions page says the
+    // listen result. Both are read. The SDK does not settle a request the
+    // server cancelled, so this does, and nothing is sent back.
+    session.calls.watchCancel(id, (reason) => serverCancel?.({ kind: 'cancelled-by-server', reason }));
+  };
+  const request = rawRequest(session, 'subscriptions/listen', { notifications: filter }, { timeout: NO_TIMEOUT_MS, signal: abort.signal, onSent }).then((r): ListenEnd => {
+    if (r.abortedFirst) return { kind: 'closed' };
+    const response = r.response;
+    if (response && 'error' in response) return { kind: 'error', error: (response.error ?? {}) as { code?: unknown; message?: unknown; data?: unknown } };
+    if (response) return { kind: 'result', result: (response.result && typeof response.result === 'object' ? response.result : {}) as Record<string, unknown> };
+    return { kind: 'failed', message: messageOf(r.failure) };
+  });
+  const ended = Promise.race([request, byServer]).finally(() => { if (requestId !== undefined) session.calls.unwatchCancel(requestId); });
+  return {
+    get requestId() { return requestId; },
+    ended,
+    close: () => abort.abort(),
+  };
+}
+
 /** Everything after the transport is connected is identical across transports. */
 async function describe(client: any, calls: CallTracker): Promise<Connection> {
   const revision: string = client.getNegotiatedProtocolVersion?.() ?? '2025-06-18';
@@ -724,6 +817,7 @@ async function describe(client: any, calls: CallTracker): Promise<Connection> {
     request: (req) => utilityOn(session, req),
     get logLevel() { return session.logLevel; },
     setLogLevel: (level) => setLogLevelOn(session, level),
+    listen: (filter) => listenOn(session, filter),
     close: () => client.close(),
   };
 }

@@ -379,7 +379,9 @@ export class LoopbackListener {
   private listenOn(host: string, port: number): Promise<void> {
     return new Promise((resolve, reject) => {
       const server = createServer((req, res) => {
-        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
+        // A fixed base: the path and query are all that is read, and a Host
+        // header is the sender's to malform (R11-11).
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1');
         if (req.method !== 'GET' || url.pathname !== this.path || !this.waiting) {
           res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
           return res.end('Not found');

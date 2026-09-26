@@ -193,3 +193,54 @@ test('R11-8: a connect refused with 403 signs in with the union of the granted a
   const s401 = { ...state, failure: { kind: 'unauthorized', challenge: { status: 401 } } };
   assert.deepEqual(signInParams('s', s401, null), { serverId: 's', challenge: { status: 401 } });
 });
+
+// Round 2 (one agent over the fix chain 2bb092b..dca84f9).
+
+test('R11-11: a request with a malformed Host header does not crash the listener', async () => {
+  const { connect } = await import('node:net');
+  const l = await LoopbackListener.open();
+  try {
+    const reply = await new Promise((resolve, reject) => {
+      const s = connect(l.port, '127.0.0.1', () => s.write('GET /callback?code=x HTTP/1.1\r\nHost: [\r\nConnection: close\r\n\r\n'));
+      let data = '';
+      s.setTimeout(2000, () => { s.destroy(); resolve(data); });
+      s.on('data', (d) => { data += d; });
+      s.on('end', () => resolve(data));
+      s.on('error', reject);
+    });
+    assert.match(String(reply), /^HTTP\/1\.1 404/);
+    const w = l.wait(2000);
+    await (await fetch(`http://127.0.0.1:${l.port}/callback?state=s`)).text();
+    assert.equal((await w).params.get('state'), 's', 'the listener still answers');
+  } finally {
+    await l.close();
+  }
+});
+
+test('R11-12: a redirect URI without an explicit port is refused, never bound to a random port', async () => {
+  await assert.rejects(LoopbackListener.forRedirect('http://127.0.0.1/callback'), /port/);
+  await assert.rejects(LoopbackListener.forRedirect('http://localhost:80/cb'), /port/);
+  // Old valid input: an explicit port is listened on as given.
+  const port = await freePort();
+  const l = await LoopbackListener.forRedirect(`http://127.0.0.1:${port}/x`);
+  assert.equal(l.port, port);
+  await l.close();
+});
+
+test('R11-13: in an unencrypted workspace a registration with a new issuer does not replace working tokens', async () => {
+  const ws = createWorkspaceDb({ path: join(mkdtempSync(join(root, 'ws-')), 'w.db'), workspaceId: randomUUID(), name: 'r13', custody: { kind: 'none' }, secrets: memoryStore() });
+  try {
+    saveServer(ws, { id: 's', name: 's', transport: 'streamable-http', url: 'https://mcp.test/mcp' });
+    const auth = new AuthManager(ws, { record: () => ({ emit: () => undefined, close: () => undefined }), changed: () => undefined });
+    const info = (issuer) => ({ issuer, authorizationServerUrl: issuer, warnings: [] });
+    const client = { clientId: 'c', redirectUri: 'http://127.0.0.1:1/callback', source: 'dynamic' };
+    auth['store']('s', { info: info('https://a'), client, tokens: { accessToken: 'still-good', tokenType: 'Bearer', obtainedAt: 1 }, serverUrl: 'https://mcp.test/mcp' });
+    auth['store']('s', { info: info('https://b'), client });
+    assert.equal(auth.accessToken('s'), 'still-good');
+    // Old valid input: the same issuer's tokenless grant (a refused refresh) does drop the tokens.
+    auth['store']('s', { info: info('https://a'), client });
+    assert.equal(auth.accessToken('s'), undefined);
+  } finally {
+    ws.close();
+  }
+});

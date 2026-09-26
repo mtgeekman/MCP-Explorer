@@ -23,7 +23,8 @@
     "probe:fallback": "node scripts/probe-fallback.mjs",
     "check:macos-prebuilds": "node scripts/check-macos-prebuilds.mjs",
     "capture:real": "node scripts/capture-real.mjs",
-    "golden:db": "node scripts/golden-db.mjs"
+    "golden:db": "node scripts/golden-db.mjs",
+    "golden:versions": "node scripts/golden-versions.mjs"
   },
   "devDependencies": {
     "@fontsource/ibm-plex-sans": "^5.3.0",

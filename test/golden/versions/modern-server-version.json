@@ -1,0 +1,182 @@
+{
+  "before": {
+    "revision": "2026-07-28",
+    "era": "modern",
+    "capabilities": {
+      "prompts": {},
+      "resources": {},
+      "tools": {}
+    },
+    "tools": [
+      {
+        "annotations": {
+          "readOnlyHint": false
+        },
+        "description": "Always answers with an InputRequiredResult, to exercise MRTR.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "name": "needs_input",
+        "title": "Needs input"
+      },
+      {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Echoes its input.",
+        "inputSchema": {
+          "properties": {
+            "text": {
+              "description": "What to echo.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "name": "echo",
+        "outputSchema": {
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "title": "Echo"
+      }
+    ],
+    "prompts": [
+      {
+        "arguments": [
+          {
+            "name": "who",
+            "required": true
+          }
+        ],
+        "description": "A greeting.",
+        "name": "greet",
+        "title": "Greet"
+      }
+    ],
+    "resources": [
+      {
+        "mimeType": "text/markdown",
+        "name": "readme",
+        "title": "Readme",
+        "uri": "file:///fixture/readme.md"
+      }
+    ],
+    "resourceTemplates": [
+      {
+        "mimeType": "text/markdown",
+        "name": "doc",
+        "uriTemplate": "file:///fixture/{name}.md"
+      }
+    ],
+    "unavailable": [
+      "tool.execution"
+    ],
+    "problems": [],
+    "serverName": "phase01-modern-fixture",
+    "serverVersion": "1.0.0",
+    "instructions": "Phase 01 fixture. Modern era."
+  },
+  "after": {
+    "revision": "2026-07-28",
+    "era": "modern",
+    "capabilities": {
+      "prompts": {},
+      "resources": {},
+      "tools": {}
+    },
+    "tools": [
+      {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Echoes its input.",
+        "inputSchema": {
+          "properties": {
+            "text": {
+              "description": "What to echo.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "name": "echo",
+        "outputSchema": {
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "title": "Echo"
+      },
+      {
+        "annotations": {
+          "readOnlyHint": false
+        },
+        "description": "Always answers with an InputRequiredResult, to exercise MRTR.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "name": "needs_input",
+        "title": "Needs input"
+      }
+    ],
+    "prompts": [
+      {
+        "arguments": [
+          {
+            "name": "who",
+            "required": true
+          }
+        ],
+        "description": "A greeting.",
+        "name": "greet",
+        "title": "Greet"
+      }
+    ],
+    "resources": [
+      {
+        "mimeType": "text/markdown",
+        "name": "readme",
+        "title": "Readme",
+        "uri": "file:///fixture/readme.md"
+      }
+    ],
+    "resourceTemplates": [
+      {
+        "mimeType": "text/markdown",
+        "name": "doc",
+        "uriTemplate": "file:///fixture/{name}.md"
+      }
+    ],
+    "unavailable": [
+      "tool.execution"
+    ],
+    "problems": [],
+    "serverName": "phase01-modern-fixture",
+    "serverVersion": "1.0.1",
+    "instructions": "Phase 01 fixture. Modern era."
+  }
+}

@@ -3,7 +3,7 @@
 // it as fifty changed tools buries the signal it exists to surface.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { diffSurfaces, surfaceChangeCount, captureSurface, hashSurface } from '../packages/protocol/dist/index.js';
+import { diffSurfaces, diffJson, surfaceChangeCount, captureSurface, hashSurface } from '../packages/protocol/dist/index.js';
 
 const surface = async (over = {}, tools = [{ name: 'echo', description: 'Echoes.', inputSchema: { type: 'object' } }]) =>
   captureSurface({
@@ -24,7 +24,7 @@ test('added, removed and changed tools fall out of the join', async () => {
   const after = await surface({}, [{ name: 'a', inputSchema: {}, description: 'now documented' }, { name: 'c', inputSchema: {} }]);
   const d = diffSurfaces(before, after);
   assert.deepEqual(d.tools, [
-    { key: 'a', kind: 'changed' },
+    { key: 'a', kind: 'changed', fields: [{ path: '/description', kind: 'added', after: 'now documented' }] },
     { key: 'b', kind: 'removed' },
     { key: 'c', kind: 'added' },
   ]);
@@ -82,4 +82,47 @@ test('a real capability difference is still a change', async () => {
     await surface({ capabilities: { tools: {}, prompts: {} } }),
   );
   assert.equal(d.capabilitiesChanged, true);
+});
+
+// Phase 09 decision 3: a changed item says where, down to the field.
+test('a changed tool lists the paths that differ inside its schema', async () => {
+  const schema = (extra) => ({ type: 'object', properties: { text: { type: 'string', description: 'What to echo.' }, ...extra }, required: ['text'] });
+  const before = await surface({}, [{ name: 'echo', inputSchema: schema({}) }]);
+  const after = await surface({}, [{ name: 'echo', inputSchema: { ...schema({ 'a/b~c': { type: 'boolean' } }), required: ['text', 'a/b~c'] } }]);
+  assert.deepEqual(diffSurfaces(before, after).tools[0].fields, [
+    { path: '/inputSchema/properties/a~1b~0c', kind: 'added', after: { type: 'boolean' } },
+    { path: '/inputSchema/required/1', kind: 'added', after: 'a/b~c' },
+  ]);
+});
+
+test('fields outside the allowlist never appear, and key order is not a change', () => {
+  assert.deepEqual(diffJson({ b: 1, a: { y: 2, x: 1 } }, { a: { x: 1, y: 2 }, b: 1 }), []);
+  assert.deepEqual(diffJson({ a: [1, 2] }, { a: [2, 1] }), [
+    { path: '/a/0', kind: 'changed', before: 1, after: 2 },
+    { path: '/a/1', kind: 'changed', before: 2, after: 1 },
+  ], 'array order is part of the value, as it is for the hash');
+  assert.deepEqual(diffJson({ a: 1 }, { a: '1' }), [{ path: '/a', kind: 'changed', before: 1, after: '1' }]);
+  assert.deepEqual(diffJson({ a: {} }, { a: [] }), [{ path: '/a', kind: 'changed', before: {}, after: [] }]);
+  assert.deepEqual(diffJson({ a: null }, {}), [{ path: '/a', kind: 'removed', before: null }]);
+});
+
+test('a changed tool whose only difference is a non-surface field is not changed', async () => {
+  const before = await surface({}, [{ name: 'echo', inputSchema: {} }]);
+  const after = await surface({}, [{ name: 'echo', inputSchema: {}, _meta: { x: 1 } }]);
+  assert.deepEqual(diffSurfaces(before, after).tools, []);
+});
+
+test('instructions and capabilities carry what changed', async () => {
+  const d = diffSurfaces(await surface(), await surface({ instructions: undefined, capabilities: { tools: { listChanged: true } } }));
+  assert.deepEqual(d.instructions, { before: 'hello' });
+  assert.deepEqual(d.capabilityChanges, [{ path: '/tools/listChanged', kind: 'added', after: true }]);
+  const same = diffSurfaces(await surface(), await surface());
+  assert.equal('instructions' in same, false);
+  assert.equal('capabilityChanges' in same, false);
+});
+
+test('a field-level diff reads only allowlisted fields, whatever the surface object holds', () => {
+  const raw = (tool) => ({ revision: '2026-07-28', era: 'modern', capabilities: {}, tools: [tool], prompts: [], resources: [], resourceTemplates: [], unavailable: [], problems: [] });
+  const d = diffSurfaces(raw({ name: 'e', description: 'a', inputSchema: {}, execution: { x: 1 } }), raw({ name: 'e', description: 'b', inputSchema: {}, execution: { x: 2 } }));
+  assert.deepEqual(d.tools[0].fields.map((f) => f.path), ['/description']);
 });

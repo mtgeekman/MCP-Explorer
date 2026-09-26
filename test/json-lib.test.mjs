@@ -41,3 +41,40 @@ test('tokens: text that is not JSON still comes back whole, the unknown runs as 
   assert.equal(tokens.map((t) => t.text).join(''), text);
   assert.ok(tokens.some((t) => t.kind === 'other'));
 });
+
+test('prettyTokens without decoding is exactly JSON.stringify(value, null, 2)', async () => {
+  const { prettyTokens } = await import('../app/renderer/src/lib/json.ts');
+  const samples = [
+    {}, [], null, true, 0, -1.5e-7, 'a "quoted" \ string\nwith lines', [1, [2, [3, {}]], []],
+    { a: undefined, b: () => 1, c: [undefined, () => 1], d: { e: NaN, f: Infinity }, g: new Date(0), 'weird key': ' ' },
+    { jsonrpc: '2.0', id: 3, result: { content: [{ type: 'text', text: '[{"page":"x"}]' }], isError: false } },
+  ];
+  for (const v of samples) {
+    const text = prettyTokens(v, { embedded: false }).map((t) => t.text).join('');
+    assert.equal(text, JSON.stringify(v, null, 2), JSON.stringify(v));
+  }
+});
+
+test('in Pretty, a string holding a JSON object or array is decoded between markers with a badge; anything else stays a string', async () => {
+  const { prettyTokens, embeddedJson, EMBED_DEPTH } = await import('../app/renderer/src/lib/json.ts');
+  assert.deepEqual(embeddedJson(' [{"a":1}]'), [{ a: 1 }]);
+  assert.equal(embeddedJson('42'), undefined, 'a number in a string stays a string');
+  assert.equal(embeddedJson('"x"'), undefined);
+  assert.equal(embeddedJson('{not json'), undefined);
+  assert.equal(embeddedJson('null'), undefined);
+
+  const tokens = prettyTokens({ text: '[{"page":"claude/x","score":0.4}]' }, { embedded: true });
+  const kinds = tokens.map((t) => t.kind);
+  assert.equal(kinds.filter((k) => k === 'embed-open').length, 1);
+  assert.equal(tokens.find((t) => t.kind === 'badge').text, 'JSON in a string');
+  assert.deepEqual(tokens.filter((t) => t.kind === 'key').map((t) => t.text), ['"text"', '"page"', '"score"'], 'the decoded keys are keys');
+  const shown = tokens.filter((t) => t.kind !== 'badge').map((t) => t.text).join('');
+  assert.equal(shown, '{\n  "text": [\n    {\n      "page": "claude/x",\n      "score": 0.4\n    }\n  ]\n}', 'laid out at the depth where the string was');
+
+  // Nesting stops at EMBED_DEPTH: past it, the string is shown as a string.
+  let v = { deepest: 1 };
+  for (let i = 0; i < EMBED_DEPTH + 1; i++) v = { s: JSON.stringify(v) };
+  const deep = prettyTokens(v, { embedded: true });
+  assert.equal(deep.filter((t) => t.kind === 'embed-open').length, EMBED_DEPTH);
+  assert.ok(deep.some((t) => t.kind === 'string' && t.text.includes('deepest')), 'the innermost stays a string');
+});

@@ -171,11 +171,13 @@ interface ServerRequestRow {
 
 // The answer is the first outgoing frame with the request's id after the
 // request's own frame: server ids are their own id space, and may repeat.
+// Without the request's frame there is no bound, and nothing is guessed
+// (R08-7): an earlier request with the same id would claim its answer.
 const SELECT_SERVER_REQUEST = `
   SELECT q.id, c.server_id, q.connection_id, q.call_id, q.jsonrpc_id, q.method, q.params_json, q.status, q.response_json, q.withheld,
          q.received_at, q.finished_at, q.request_unit_id,
          (SELECT f.unit_id FROM frame f WHERE f.connection_id = q.connection_id AND f.direction = 'out' AND f.jsonrpc_id = q.jsonrpc_id AND f.method = q.method
-            AND f.id > coalesce((SELECT max(r.id) FROM frame r WHERE r.unit_id = q.request_unit_id), 0) ORDER BY f.id LIMIT 1) AS response_unit
+            AND f.id > (SELECT max(r.id) FROM frame r WHERE r.unit_id = q.request_unit_id) ORDER BY f.id LIMIT 1) AS response_unit
   FROM server_request q JOIN connection c ON c.id = q.connection_id`;
 
 const serverRequest = (r: ServerRequestRow): ServerRequestRecord => ({

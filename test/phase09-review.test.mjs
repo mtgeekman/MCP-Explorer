@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createWorkspaceDb, saveServer, recordCapture, versionTimeline, latestCapture } from '../packages/storage/dist/index.js';
+import { span } from '../app/renderer/src/lib/versions.ts';
 import { memoryStore } from './support/memory-store.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'mcpx-p09r-'));
@@ -53,6 +54,13 @@ test('R09-1: the timeline classifies from stored hashes and never reads an item 
       [['first', 0], ['surface', 1], ['identity', 0], ['surface', 1], ['surface', 1], ['surface', 2], ['surface', 1]],
       'a description, a version, instructions, capabilities, a prompt and a template added, a tool removed');
   } finally { ws.close(); }
+});
+
+test('R09-5: a span just under a unit boundary reads as the next unit', () => {
+  assert.equal(span(59_600), '1 minute');
+  assert.equal(span(59.6 * 60_000), '1 hour');
+  assert.equal(span(23.6 * 3_600_000), '1 day');
+  assert.equal(span(59_400), '59 seconds', 'still seconds below the rounding edge');
 });
 
 test('R09-2 twin: the latest capture is the last one recorded, not the latest by the clock', () => {

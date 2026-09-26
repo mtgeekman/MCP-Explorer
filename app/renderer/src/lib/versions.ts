@@ -64,9 +64,13 @@ export function span(ms: number): string {
   const minute = 60_000;
   const hour = 60 * minute;
   const day = 24 * hour;
-  if (ms < minute) return plural(Math.max(0, Math.round(ms / 1000)), 'second', 'seconds');
-  if (ms < hour) return plural(Math.round(ms / minute), 'minute', 'minutes');
-  if (ms < day) return plural(Math.round(ms / hour), 'hour', 'hours');
+  // Round first, then pick the unit: 59.6 seconds is "1 minute", not "60 seconds" (R09-5).
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return plural(seconds, 'second', 'seconds');
+  const minutes = Math.round(ms / minute);
+  if (minutes < 60) return plural(minutes, 'minute', 'minutes');
+  const hours = Math.round(ms / hour);
+  if (hours < 24) return plural(hours, 'hour', 'hours');
   return plural(Math.round(ms / day), 'day', 'days');
 }
 

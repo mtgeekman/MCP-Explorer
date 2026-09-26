@@ -182,11 +182,6 @@ class LoggingReadBuffer {
 export const PROBE_TIMEOUT_MS = 5000;
 
 export interface Connection {
-  /**
-   * HTTP only: the authorization challenge behind a failed request, when the
-   * failure was a 401 or a 403 `insufficient_scope` (phase 11), else undefined.
-   */
-  authChallenge?: (error: unknown) => AuthChallenge | undefined;
   era: Era;
   revision: string;
   /** How the session travels: Mcp-Param-* headers exist on Streamable HTTP only. */
@@ -1381,7 +1376,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
     const outcome = await call(req);
     return outcome.kind === 'failed' && outcome.auth?.status === 401 && challenge?.status === 401 ? { ...outcome, auth: challenge } : outcome;
   };
-  return Object.assign(conn, { call: withChallenge, authChallenge: (err: unknown) => authChallengeOf(err, challenge) });
+  return Object.assign(conn, { call: withChallenge });
 }
 
 function classifyHttp(e: unknown, challenge: AuthChallenge | undefined): ConnectError {

@@ -7,7 +7,7 @@ import type { CallView } from '../../../../packages/backend/dist/index.js';
 import { readableResult, statusLabel, type Part } from '../lib/content';
 import { READABLE_LIMIT } from '../lib/readable';
 import { formatBytes } from '../lib/raw';
-import { JsonView } from '../log/JsonView';
+import { JsonView, TextPart } from '../log/JsonView';
 
 export function ResultReadable({ view }: { view: CallView }) {
   const { call } = view;
@@ -73,7 +73,7 @@ function Result({ kind, result, view }: { kind: 'tool' | 'prompt' | 'resource'; 
 function PartView({ part }: { part: Part }) {
   switch (part.kind) {
     case 'text':
-      return <pre className="mono part-text">{part.text}</pre>;
+      return <TextPart text={part.text} />;
     case 'image':
       return part.src
         ? <figure className="part-media"><img src={part.src} alt={`${part.mimeType} image from the server`} /><figcaption className="muted">{part.mimeType}, {formatBytes(part.bytes)}</figcaption></figure>

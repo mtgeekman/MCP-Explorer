@@ -91,7 +91,7 @@ interface Running {
   live: LiveCall;
 }
 
-/** Results kept for this session's calls, newest last, so a withheld result can still be read while the app runs. */
+/** What storage does not keep for this session's calls, newest last: withheld results and the SDK's objections. */
 const SESSION_RESULTS = 50;
 
 export class CallPipeline {
@@ -204,7 +204,10 @@ export class CallPipeline {
           ...(inputRequired && r.inputRequests !== undefined ? { inputRequests: r.inputRequests } : {}),
           ...(inputRequired && typeof r.requestState === 'string' ? { requestState: r.requestState } : {}),
         });
-        this.keep(callId, { result: r, ...(o.sdkRejected ? { sdkRejected: o.sdkRejected } : {}) });
+        // Memory holds only what storage does not: a result withheld under the
+        // opt-out (D30), and the SDK's objection, which has no column (R07-3).
+        const withheld = !readSettings(this.ws).persistResults;
+        if (withheld || o.sdkRejected) this.keep(callId, { ...(withheld ? { result: r } : {}), ...(o.sdkRejected ? { sdkRejected: o.sdkRejected } : {}) });
         if (inputRequired && this.sessions.session(run.serverId)?.conn === run.conn) {
           // Decision 6: round 1 is recorded and the call waits. Phase 08 answers it.
           run.live = { status: 'awaiting-input' };

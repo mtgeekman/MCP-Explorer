@@ -26,7 +26,11 @@ export function VersionDiff({ client, serverId, before, after }: { client: Backe
   if (!comparison) return <p className="muted">Comparing</p>;
   const { tokens } = comparison;
   const instructionsRow = instructionsTokenCells(tokens);
-  const costRows = [...(instructionsRow ? [instructionsRow] : []), ...tokens.tools.map(toolTokenCells)];
+  // Keyed apart from the tools: a server may name a tool "(instructions)".
+  const costRows = [
+    ...(instructionsRow ? [{ key: 'instructions', cells: instructionsRow, instructions: true }] : []),
+    ...tokens.tools.map((t) => ({ key: `tool:${t.name}`, cells: toolTokenCells(t), instructions: false })),
+  ];
 
   return (
     <div className="version-diff">
@@ -39,8 +43,11 @@ export function VersionDiff({ client, serverId, before, after }: { client: Backe
           <TextDiffView text={comparison.model} same="Nothing the model sees changed." />
           {costRows.length > 0 && (
             <table className="calls token-table"><tbody>
-              {costRows.map(([name, what, delta]) => (
-                <tr key={name}><td className="mono">{name}</td><td className="muted">{what}</td><td className="mono">{delta}</td></tr>
+              {costRows.map(({ key, cells: [name, what, delta], instructions }) => (
+                <tr key={key}>
+                  <td className={instructions ? 'muted' : 'mono'}>{instructions ? 'Instructions' : name}</td>
+                  <td className="muted">{what}</td><td className="mono">{delta}</td>
+                </tr>
               ))}
             </tbody></table>
           )}

@@ -63,3 +63,8 @@ export function forgetGrants(ws: Workspace, serverId: string, registrations = fa
     ? ws.db.prepare('DELETE FROM server_oauth WHERE server_id = ?').run(serverId).changes
     : ws.db.prepare('UPDATE server_oauth SET tokens_json = NULL WHERE server_id = ? AND tokens_json IS NOT NULL').run(serverId).changes;
 }
+
+/** Drops one issuer's row: its registration is not to be reused (a busy port, a changed server). */
+export function dropGrant(ws: Workspace, serverId: string, issuer: string): boolean {
+  return ws.db.prepare('DELETE FROM server_oauth WHERE server_id = ? AND issuer = ?').run(serverId, issuer).changes > 0;
+}

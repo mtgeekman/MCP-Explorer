@@ -3,13 +3,18 @@
 // message (P1), and these are the app's own, not protocol traffic.
 import type { ConnectFailure, ContextCost, HttpDetails, NormalizedSurface, Verdict, CallProgress, VersionComparison, TextComparison, TokenDelta, ToolTokenDelta, SurfaceDiff, ItemChange, FieldChange, TextDiff, Hunk, DiffLine } from '../../protocol/dist/index.js';
 import type { CallRecord, CallSummary, PurgeResult, RoundRecord, ServerSummary, Transport, WorkspaceSettings, VersionTimeline, VersionEntry, VersionKind } from '../../storage/dist/index.js';
-import type { AwaitedInput, CallChange, CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply } from './calls.js';
+import type { AwaitedInput, CallChange, CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, LiveTask, StartReply, TaskOp } from './calls.js';
 import type { ServerRequestRow } from './server-requests.js';
-import type { ServerAnswer } from '../../protocol/dist/index.js';
+import type { CallOutcome, ServerAnswer, LogLevel, SubscriptionFilter, UtilityMethod, UtilityOutcome, ListenEnd } from '../../protocol/dist/index.js';
+import type { SessionInfo, ListenView } from './session-controls.js';
+import type { NotificationRow } from './notifications.js';
+import type { HealthReport, ListState } from './health.js';
 
 export type { PurgeResult, WorkspaceSettings, ConfigLocation, FoundLocation, ImportChoice, ReadConfig };
 export type { CallExport, CallStart, CallView, ConfirmPrompt, LiveCall, StartReply, CallRecord, CallSummary, RoundRecord, Verdict, CallProgress };
-export type { AwaitedInput, ServerRequestRow, ServerAnswer };
+export type { AwaitedInput, ServerRequestRow, ServerAnswer, LiveTask, TaskOp };
+export type { HealthReport, ListState };
+export type { LogLevel, SubscriptionFilter, UtilityMethod, UtilityOutcome, ListenEnd, SessionInfo, ListenView, NotificationRow };
 export type { VersionTimeline, VersionEntry, VersionKind, VersionComparison, TextComparison, TokenDelta, ToolTokenDelta, SurfaceDiff, ItemChange, FieldChange, TextDiff, Hunk, DiffLine };
 import type { CaptureStatus, ConnectionState, PartialCapture, SecretValues } from './connections.js';
 import type { Protection, Unlock, WorkspaceListing, WorkspaceNotice } from './workspaces.js';
@@ -190,6 +195,10 @@ export interface Requests {
    * retry is on its way; `call.changed` follows.
    */
   'calls.answer': { params: { callId: number; inputResponses?: Record<string, unknown> }; result: null };
+  /** A task call: ask for its status, or on legacy its result; one request, one round (phase 10 decision 2). */
+  'calls.task': { params: { callId: number; op: TaskOp }; result: null };
+  /** Legacy: every task the server holds (tasks/list), sent once. */
+  'session.tasks': { params: { serverId: string; cursor?: string }; result: CallOutcome };
   /** "Keep answering" at the soft cap (D21, board 6.4). */
   'calls.continue': { params: { callId: number }; result: null };
   /** A server's requests to the client, newest first (legacy era; phase 08 decision 5). */
@@ -203,6 +212,23 @@ export interface Requests {
   'calls.validate': { params: { schema: unknown; value: unknown }; result: Verdict };
   /** A call's first request as it was sent, and a curl command for an HTTP server (decision 8). */
   'calls.export': { params: { callId: number }; result: CallExport };
+  /** What the user set on the live session: log level, subscriptions, the listen stream (phase 10). */
+  'session.get': { params: { serverId: string }; result: SessionInfo };
+  /** Legacy: sends logging/setLevel. Modern: held for every later request's _meta, and nothing is sent (decision 5). */
+  'session.setLogLevel': { params: { serverId: string; level: LogLevel | null }; result: UtilityOutcome | null };
+  /** One utility request, sent once: ping, completion/complete (decisions 3 and 8). */
+  'session.request': { params: { serverId: string; method: 'ping' | 'completion/complete'; params?: Record<string, unknown> }; result: UtilityOutcome };
+  /** Subscribe or unsubscribe a resource: legacy resources/subscribe, modern the listen's filter (decision 7). */
+  'session.subscribe': { params: { serverId: string; uri: string; on: boolean }; result: UtilityOutcome | null };
+  /** Modern: open the listen with this filter, replacing an open one; null closes it. */
+  'session.listen': { params: { serverId: string; filter: SubscriptionFilter | null }; result: null };
+  /**
+   * The health check (phase 10 decision 12): connects if needed, lists
+   * everything, pings a legacy server, and reports. Shown, never stored.
+   */
+  'health.check': { params: { serverId: string }; result: HealthReport };
+  /** A page of the server's notifications, oldest first, from units older than `before` (decision 6). */
+  'notifications.list': { params: { serverId: string; before?: number; limit?: number }; result: NotificationRow[] };
   /** A resource template's variables, or the URI they make. */
   'resources.template': { params: { uriTemplate: string; values?: Record<string, string> }; result: { variables: string[]; uri?: string } };
 }
@@ -229,6 +255,8 @@ export interface Events {
   'call.changed': { serverId: string; callId: number; reason: CallChange };
   /** A server's request arrived or ended: list requests again, and the linked call's transcript. */
   'request.changed': { serverId: string; requestId: number; callId: number | null };
+  /** What the user set on a live session changed, or the session ended: read session.get again. */
+  'session.changed': { serverId: string };
   /** Retention deleted history: an open log or call list reloads (R05-9). */
   'log.purged': Record<string, never>;
   notice: WorkspaceNotice;

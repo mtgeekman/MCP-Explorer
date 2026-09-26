@@ -4,7 +4,7 @@
 import {
   captureSurface, connectHttp, connectStdio, ConnectError,
   type ChangedList, type CloseInfo, type NormalizedSurface, type ConnectFailure, type Connection, type EraPreference, type ProcessExit, type WireUnit,
-  type ServerAnswer, type ServerRequest,
+  type ServerAnswer, type ServerRequest, type ServerNotification,
 } from '../../protocol/dist/index.js';
 import {
   HistoryRecorder, loadServer, pinEra, clearEra, readDetectedEra, recordCapture,
@@ -48,6 +48,8 @@ export interface ConnectionEvents {
   processes(roots: ServerRoot[]): void;
   /** A server's capture status changed, or a capture was recorded. */
   surface(serverId: string): void;
+  /** Every notification a live session received (phase 10). */
+  notification(serverId: string, notification: ServerNotification): void;
 }
 
 /** Where a server's surface capture stands in this session. */
@@ -356,10 +358,17 @@ export class ConnectionManager {
       }
     };
     const onClose = (info: CloseInfo) => this.sessionEnded(serverId, connectionId, info);
-    const onListChanged = (list: ChangedList) => {
+    // A change notice is read from every notification the tap saw, not from
+    // the SDK's dispatch, so a modern notice on a listen stream counts the
+    // same as a legacy one sent unasked. Nothing is re-listed (P2).
+    const onNotification = (n: ServerNotification) => {
       if (slot.recorder !== recorder) return;
-      slot.changed.add(list);
-      this.opts.events.surface?.(serverId);
+      const list = CHANGED_BY_METHOD[n.method];
+      if (list) {
+        slot.changed.add(list);
+        this.opts.events.surface?.(serverId);
+      }
+      this.opts.events.notification?.(serverId, n);
     };
     const answer = this.opts.onServerRequest;
     const onServerRequest = answer ? (request: ServerRequest) => answer(serverId, recorder, request) : undefined;
@@ -370,7 +379,7 @@ export class ConnectionManager {
         ? await connectStdio({
           command: def.command!, args: def.args, cwd: def.cwd,
           env: { ...inheritedEnv(), ...def.env, ...def.secretEnv, ...session?.env },
-          era, onUnit, onClose, onListChanged, onServerRequest, probeTimeoutMs: this.opts.probeTimeoutMs,
+          era, onUnit, onClose, onNotification, onServerRequest, probeTimeoutMs: this.opts.probeTimeoutMs,
           // A failed connect ends the whole tree, not just its root (D36),
           // before the SDK's own close signals the root alone.
           terminate: (pid) => { const root = this.owned.get(pid); return root ? this.endTree(root) : Promise.resolve(); },
@@ -378,7 +387,7 @@ export class ConnectionManager {
         : await connectHttp({
           url: def.url!, kind: def.transport, era,
           headers: def.headers, secretHeaders: { ...def.secretHeaders, ...session?.headers },
-          onUnit, onListChanged, onServerRequest, probeTimeoutMs: this.opts.probeTimeoutMs,
+          onUnit, onNotification, onServerRequest, probeTimeoutMs: this.opts.probeTimeoutMs,
         });
     } catch (e) {
       recorder.close();
@@ -471,6 +480,12 @@ export class ConnectionManager {
     return this.state(serverId);
   }
 }
+
+const CHANGED_BY_METHOD: Record<string, ChangedList> = {
+  'notifications/tools/list_changed': 'tools',
+  'notifications/prompts/list_changed': 'prompts',
+  'notifications/resources/list_changed': 'resources',
+};
 
 /** The environment a stdio server inherits: the app's own, as a shell would pass it. */
 function inheritedEnv(): Record<string, string> {

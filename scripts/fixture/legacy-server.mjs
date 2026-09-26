@@ -4,14 +4,16 @@
 // Records every spawn so the probe's process behaviour is observable.
 import { appendFileSync } from 'node:fs';
 import { readFrames, writer } from './stdio-lines.mjs';
-import { handleLegacy, afterLegacy, DIE, SILENT } from './legacy-handler.mjs';
-import { answerer } from './call-handler.mjs';
+import { afterLegacy, DIE, SILENT } from './legacy-handler.mjs';
+import { eraAnswerer } from './answer.mjs';
+import { setBroadcast } from './extras.mjs';
 
 const spawnLog = process.env.SPAWN_LOG;
 if (spawnLog) appendFileSync(spawnLog, `${Date.now()} pid=${process.pid}\n`);
 
 const { send } = writer(process.stdout);
-const answer = answerer(handleLegacy);
+setBroadcast(send);
+const answer = eraAnswerer('legacy');
 
 readFrames(process.stdin, (msg, line) => {
   if (process.env.FRAME_LOG) appendFileSync(process.env.FRAME_LOG, `IN  ${line}\n`);

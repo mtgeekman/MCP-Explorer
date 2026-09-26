@@ -42,16 +42,22 @@ export class ServerRequests {
     /** The calls running on a connection, to link a request to the only one. */
     private readonly runningOn: (connectionId: number) => number[],
     private readonly events: Partial<ServerRequestEvents> = {},
+    /** The open task call on a connection with this task id (phase 10), when there is one. */
+    private readonly taskCall: (connectionId: number, taskId: string) => number | undefined = () => undefined,
   ) {}
 
   /**
    * A request arrived. It is linked to a call only when exactly one is
    * running on its connection: a stdio request says nothing of which call it
-   * belongs to (decision 4). Resolves with the person's answer.
+   * belongs to (decision 4). A request that names a task in
+   * _meta["io.modelcontextprotocol/related-task"] (2025-11-25) is linked to
+   * that task's call instead. Resolves with the person's answer.
    */
   receive(serverId: string, recorder: HistoryRecorder, request: ServerRequest): Promise<ServerAnswer> {
+    const related = (request.params as { _meta?: Record<string, { taskId?: unknown } | undefined> } | undefined)?._meta?.['io.modelcontextprotocol/related-task']?.taskId;
+    const byTask = typeof related === 'string' ? this.taskCall(recorder.connectionId, related) : undefined;
     const running = this.runningOn(recorder.connectionId);
-    const callId = running.length === 1 ? running[0] : null;
+    const callId = byTask ?? (running.length === 1 ? running[0] : null);
     let id: number;
     try {
       id = recorder.receiveRequest(request.id, request.method, request.params, callId);

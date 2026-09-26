@@ -74,7 +74,8 @@ test('duplicate identity keys are reported, not silently collapsed', async () =>
   });
 
   assert.equal(s.tools.length, 3, 'every item is still captured');
-  const reported = s.problems.map((p) => `${p.endpoint}: ${p.message}`).sort();
+  // Their items carry no inputSchema, which phase 10 reports as malformed; this test is about duplicates.
+  const reported = s.problems.filter((p) => p.kind !== 'malformed').map((p) => `${p.endpoint}: ${p.message}`).sort();
   assert.equal(reported.length, 2, `expected one problem per affected list, got ${JSON.stringify(reported)}`);
   assert.match(reported[0], /duplicate/i);
   assert.match(reported.join(' '), /echo/);
@@ -86,7 +87,7 @@ test('unique names produce no duplicate report (old valid input)', async () => {
     revision: '2026-07-28', era: 'modern', capabilities: {},
     async listTools() { return { items: [{ name: 'a', inputSchema: {} }, { name: 'b', inputSchema: {} }] }; },
   });
-  assert.deepEqual(s.problems, []);
+  assert.deepEqual(s.problems.filter((p) => p.kind !== 'malformed'), []);
   assert.equal(s.tools.length, 2);
 });
 
@@ -111,5 +112,5 @@ test('a server-side failure is still recorded, not thrown (old valid input)', as
     async listPrompts() { throw new Error('Method not found: prompts/list'); },
   });
   assert.equal(s.tools.length, 1);
-  assert.deepEqual(s.problems.map((p) => p.endpoint), ['prompts/list']);
+  assert.deepEqual(s.problems.filter((p) => p.kind !== 'malformed').map((p) => p.endpoint), ['prompts/list']);
 });

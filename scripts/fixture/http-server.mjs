@@ -13,18 +13,29 @@
 //                of a dead server would.
 //   WIRE_LOG     append every response body written, as hex, one per line.
 //   HEADER_LOG   append the Authorization header each request carried.
+//   MCP_HEADER_LOG  append each POST's Mcp-* headers as one JSON line (phase 10).
+//   SSE_PRIMED_CUT  a tools/call's stream sends an event id, then closes; the
+//                response comes when the client resumes with Last-Event-ID.
 //   LEGACY       serve the legacy-era handler instead of the modern one; its
 //                hostile modes die by dropping the connection, or hang.
+//   STREAMING    (phase 10) answer every POST that carries a request with an
+//                event stream: whatever the handler sends first (progress, log
+//                messages, a legacy server's own requests, a listen's
+//                acknowledgement and notices) as events, then the response.
+//                A request the handler never answers (a listen) keeps its
+//                stream open; the client closing it is its cancellation. On
+//                LEGACY a GET opens the stream for notices sent outside any
+//                request. The client's answer to a server request arrives as a
+//                POST of its own and is answered 202.
 import { createServer } from 'node:http';
 import { appendFileSync } from 'node:fs';
-import { handleModern } from './modern-handler.mjs';
-import { handleLegacy, DIE, SILENT } from './legacy-handler.mjs';
-import { answerer } from './call-handler.mjs';
-import { serverMeta } from './modern-handler.mjs';
+import { DIE, SILENT } from './legacy-handler.mjs';
+import { eraAnswerer } from './answer.mjs';
+import { setBroadcast } from './extras.mjs';
 
 // CALL_TOOLS calls are answered here too; a progress notification is dropped,
 // since a JSON body carries one message. Progress is exercised over stdio.
-const handle = answerer(process.env.LEGACY ? handleLegacy : handleModern, () => (process.env.LEGACY ? {} : { resultType: 'complete', ...serverMeta() }));
+const handle = eraAnswerer(process.env.LEGACY ? 'legacy' : 'modern');
 
 const endpoint = '/mcp';
 
@@ -35,8 +46,61 @@ function writeBody(res, bytes, chunkSize) {
   res.end();
 }
 
+const event = (m) => `event: message\ndata: ${JSON.stringify(m)}\n\n`;
+
+/** STREAMING, LEGACY: the GET stream, where notices sent outside any request go. */
+function openGetStream(res) {
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+  res.write(': open\n\n');
+  setBroadcast((m) => res.write(event(m)));
+}
+
+/** STREAMING: one POST's request answered on its own event stream. */
+async function stream(req, res, frame) {
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+  let done = false;
+  res.on('close', () => {
+    // The client closed the stream before the response: on Streamable HTTP
+    // that is how a request is cancelled.
+    if (!done) void handle({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: frame.id, reason: 'stream closed' } }, () => {});
+  });
+  const response = await handle(frame, (m) => { if (!res.writableEnded) res.write(event(m)); });
+  done = true;
+  if (response === DIE) return req.socket.destroy();
+  if (response === SILENT || res.writableEnded) return;
+  if (response !== undefined) res.write(event(response));
+  res.end();
+}
+
+/**
+ * SSE_PRIMED_CUT: a tools/call's stream carries one event with an id and no
+ * data, then closes without the response (the 2025-11-25 polling pattern).
+ * The response waits for the client to resume with Last-Event-ID on a GET.
+ * RESUME_REFUSED: the resume GET is answered 405, so the response never comes.
+ * SSE_ID_ONLY_CUT: the event carries an id and no data line, which the SSE
+ * parser never dispatches, so there is nothing to resume from.
+ */
+const resumable = new Map();
+
+async function primedCut(res, frame) {
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+  res.write(process.env.SSE_ID_ONLY_CUT ? 'id: only-1\n\n' : 'id: primed-1\nretry: 50\ndata:\n\n');
+  res.end();
+  const response = await handle(frame, () => {});
+  if (!process.env.RESUME_REFUSED && !process.env.SSE_ID_ONLY_CUT) resumable.set('primed-1', response);
+}
+
+function resume(req, res) {
+  const response = resumable.get(req.headers['last-event-id']);
+  resumable.delete(req.headers['last-event-id']);
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+  res.end(`id: primed-2\nevent: message\ndata: ${JSON.stringify(response)}\n\n`);
+}
+
 const server = createServer((req, res) => {
   if (process.env.HEADER_LOG) appendFileSync(process.env.HEADER_LOG, `${req.headers.authorization ?? ''}\n`);
+  if (req.method === 'GET' && req.headers['last-event-id'] && resumable.has(req.headers['last-event-id'])) return resume(req, res);
+  if (process.env.STREAMING && process.env.LEGACY && req.method === 'GET' && req.url.startsWith(endpoint)) return openGetStream(res);
   if (req.method !== 'POST' || !req.url.startsWith(endpoint)) {
     res.writeHead(405, { 'content-type': 'text/plain' });
     return res.end('method not allowed');
@@ -47,6 +111,10 @@ const server = createServer((req, res) => {
   req.on('data', (c) => { body += c; });
   req.on('end', async () => {
     if (process.env.FRAME_LOG) appendFileSync(process.env.FRAME_LOG, `IN  ${body}\n`);
+    if (process.env.MCP_HEADER_LOG) {
+      const mcp = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k.startsWith('mcp-')));
+      appendFileSync(process.env.MCP_HEADER_LOG, `${JSON.stringify(mcp)}\n`);
+    }
     if (process.env.HTML_REPLY) {
       res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
       return writeBody(res, Buffer.from('<!doctype html>\n<title>502 Bad Gateway</title>\n<h1>Bad Gateway</h1>\n', 'utf8'));
@@ -60,6 +128,8 @@ const server = createServer((req, res) => {
     }
 
     const frames = Array.isArray(msg) ? msg : [msg];
+    if ((process.env.SSE_PRIMED_CUT || process.env.SSE_ID_ONLY_CUT) && !Array.isArray(msg) && msg.method === 'tools/call') return primedCut(res, msg);
+    if (process.env.STREAMING && !Array.isArray(msg) && msg.method !== undefined && msg.id !== undefined) return stream(req, res, msg);
     const results = await Promise.all(frames.map((f) => handle(f, () => {})));
     if (results.includes(DIE)) return req.socket.destroy();
     if (results.includes(SILENT)) return;

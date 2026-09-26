@@ -123,6 +123,6 @@ test('instructions and capabilities carry what changed', async () => {
 
 test('a field-level diff reads only allowlisted fields, whatever the surface object holds', () => {
   const raw = (tool) => ({ revision: '2026-07-28', era: 'modern', capabilities: {}, tools: [tool], prompts: [], resources: [], resourceTemplates: [], unavailable: [], problems: [] });
-  const d = diffSurfaces(raw({ name: 'e', description: 'a', inputSchema: {}, execution: { x: 1 } }), raw({ name: 'e', description: 'b', inputSchema: {}, execution: { x: 2 } }));
+  const d = diffSurfaces(raw({ name: 'e', description: 'a', inputSchema: {}, _meta: { x: 1 } }), raw({ name: 'e', description: 'b', inputSchema: {}, _meta: { x: 2 } }));
   assert.deepEqual(d.tools[0].fields.map((f) => f.path), ['/description']);
 });

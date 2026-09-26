@@ -21,12 +21,20 @@
 //                    session on stdio, the only front that sends it.
 //   ECHO_DESCRIPTION  echo's description (phase 09, version history)
 //   SERVER_VERSION    serverInfo.version (phase 09)
+//   LEGACY_REVISION   the protocolVersion initialize answers, 2025-06-18 unless
+//                     set; phase 10's tasks and elicitation/complete need
+//                     2025-11-25
+//   EXTRAS            (extras.mjs) makes prompts and resources listable even
+//                     without CALL_TOOLS, since it advertises both
 //
 // Returns a JSON-RPC response, `undefined` when the frame warrants none, or
 // one of the two markers below; each front decides what dying or hanging
 // means on its own transport.
 import { existsSync, writeFileSync } from 'node:fs';
 import { callTools, askTools, CALL_PROMPTS, CALL_RESOURCES, CALL_TEMPLATES, CALL_TOOLS_ON } from './call-handler.mjs';
+
+const LISTS_ON = () => CALL_TOOLS_ON() || Boolean(process.env.EXTRAS);
+const orNone = (items) => (CALL_TOOLS_ON() ? items : []);
 
 export const DIE = Symbol('die');
 export const SILENT = Symbol('silent');
@@ -42,7 +50,7 @@ export function handleLegacy(msg) {
 
   if (msg.method === 'initialize') {
     return ok(msg.id, {
-      protocolVersion: '2025-06-18',
+      protocolVersion: process.env.LEGACY_REVISION ?? '2025-06-18',
       capabilities: { tools: { listChanged: Boolean(process.env.LIST_CHANGED) }, ...(CALL_TOOLS_ON() ? { prompts: {}, resources: {} } : {}) },
       serverInfo: { name: 'phase00-legacy-fixture', version: process.env.SERVER_VERSION ?? '0.0.0' },
       instructions: 'Phase 00 fixture. Legacy era.',
@@ -72,9 +80,9 @@ export function handleLegacy(msg) {
     });
   }
 
-  if (CALL_TOOLS_ON() && msg.method === 'prompts/list') return ok(msg.id, { prompts: CALL_PROMPTS });
-  if (CALL_TOOLS_ON() && msg.method === 'resources/list') return ok(msg.id, { resources: CALL_RESOURCES });
-  if (CALL_TOOLS_ON() && msg.method === 'resources/templates/list') return ok(msg.id, { resourceTemplates: CALL_TEMPLATES });
+  if (LISTS_ON() && msg.method === 'prompts/list') return ok(msg.id, { prompts: orNone(CALL_PROMPTS) });
+  if (LISTS_ON() && msg.method === 'resources/list') return ok(msg.id, { resources: orNone(CALL_RESOURCES) });
+  if (LISTS_ON() && msg.method === 'resources/templates/list') return ok(msg.id, { resourceTemplates: orNone(CALL_TEMPLATES) });
   if (msg.method === 'tools/call' && msg.params?.name === 'echo') {
     const text = String(msg.params.arguments?.text ?? '');
     return ok(msg.id, { content: [{ type: 'text', text }] });

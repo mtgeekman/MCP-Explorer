@@ -92,6 +92,8 @@ export interface ConnectOptions {
   onStderr?: (text: string) => void;
   /** A server's notice that a list changed. Nothing is re-listed. */
   onListChanged?: ListChangedListener;
+  /** Legacy era: the server's own requests (sampling, elicitation, roots, any other), for a person to answer. */
+  onServerRequest?: ServerRequestListener;
 }
 
 /**
@@ -193,8 +195,57 @@ export interface Connection {
 
 // D21: declaring these is what permits a server to ask for them at all. A
 // server MUST NOT send an input request for a capability the client did not
-// declare, so this list decides what the app can be asked to do.
-const CLIENT_CAPABILITIES = { sampling: {}, elicitation: {}, roots: {} };
+// declare, so this list decides what the app can be asked to do (phase 08
+// decision 3). A bare `elicitation: {}` means form only, and the SDK then
+// refuses a URL-mode request with -32602 on its own. `sampling.tools`: the
+// human can write tool_use content. Never `elicitation.form.applyDefaults`,
+// which makes the SDK fill schema defaults into the human's answer (P2), and
+// no `roots.listChanged`: the app keeps no roots to change.
+export const CLIENT_CAPABILITIES = { sampling: { tools: {} }, elicitation: { form: {}, url: {} }, roots: {} };
+
+/** A request the server sent the client (legacy era), exactly as it arrived. */
+export interface ServerRequest {
+  id: string | number;
+  method: string;
+  /** The params as sent, _meta included; nothing is validated first. */
+  params: unknown;
+  /** Aborts when the server cancels the request; nothing is sent back after that. */
+  signal: AbortSignal;
+}
+
+/** What the human sends back: a result, or a JSON-RPC error. */
+export type ServerAnswer =
+  | { result: Record<string, unknown> }
+  | { error: { code: number; message: string; data?: unknown } };
+
+/**
+ * Answers a server's request. Resolves only when a person has answered: the
+ * SDK has no timeout on it, and nothing here answers on anyone's behalf (P2).
+ */
+export type ServerRequestListener = (request: ServerRequest) => Promise<ServerAnswer>;
+
+/**
+ * Every request a server sends, whatever its method, goes to the listener
+ * raw. Not setRequestHandler: the SDK wraps a registered sampling or
+ * elicitation handler in validation that answers -32602 to the server before
+ * the handler runs, and checks the answer too (phase 08 decision 1). Only a
+ * method with its own handler bypasses this; the SDK registers `ping`, and
+ * its automatic empty reply stays (decision 2).
+ *
+ * With no listener a request waits, unanswered, until the session ends. The
+ * SDK's alternative is -32601, an answer nobody gave.
+ */
+function answerServerRequests(client: any, listener: ServerRequestListener | undefined): void {
+  client.fallbackRequestHandler = async (request: { id: string | number; method: string; params?: unknown }, ctx: { mcpReq: { signal: AbortSignal } }) => {
+    if (!listener) return new Promise<never>(() => undefined);
+    const answer = await listener({ id: request.id, method: request.method, params: request.params, signal: ctx.mcpReq.signal });
+    if ('error' in answer) {
+      // The SDK sends a thrown value's code, message and data as the error.
+      throw Object.assign(new Error(answer.error.message), { code: answer.error.code, ...(answer.error.data === undefined ? {} : { data: answer.error.data }) });
+    }
+    return answer.result;
+  };
+}
 
 /**
  * The ONLY place a Client is constructed, so the P3 gate has a single site to
@@ -207,7 +258,7 @@ const CLIENT_CAPABILITIES = { sampling: {}, elicitation: {}, roots: {} };
 function makeClient(
   Client: any,
   info: { name: string; version: string },
-  opts: { negotiate: boolean; probeTimeoutMs?: number; onListChanged?: ListChangedListener },
+  opts: { negotiate: boolean; probeTimeoutMs?: number; onListChanged?: ListChangedListener; onServerRequest?: ServerRequestListener },
 ): any {
   // Never the SDK's `listChanged` option: its autoRefresh defaults to true and
   // re-lists on every notice, and on the modern era it also opens a
@@ -223,6 +274,7 @@ function makeClient(
       ? { versionNegotiation: { mode: 'auto', probe: { timeoutMs: opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS } } }
       : {}),
   });
+  answerServerRequests(client, opts.onServerRequest);
   const onListChanged = opts.onListChanged;
   if (onListChanged) {
     // Registering sends nothing; a notice is only reported. On 2026-07-28 a
@@ -570,6 +622,8 @@ export interface HttpConnectOptions {
   onUnitError?: UnitErrorListener;
   /** A server's notice that a list changed. Nothing is re-listed. */
   onListChanged?: ListChangedListener;
+  /** Legacy era: the server's own requests, for a person to answer. */
+  onServerRequest?: ServerRequestListener;
   probeTimeoutMs?: number;
 }
 
@@ -766,7 +820,7 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   const fetchOption = emit ? { fetch: loggingFetch(emit, Object.keys(secretHeaders)) } : {};
 
   const attempt = async (negotiate: boolean) => {
-    const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged });
+    const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged, onServerRequest: opts.onServerRequest });
     const transport = new Transport(new URL(opts.url), { requestInit: { headers: { ...opts.headers, ...secretHeaders } }, ...fetchOption });
     try {
       await client.connect(tap(transport, opts.onFrame, opts.onFrameError, calls));
@@ -935,7 +989,7 @@ export async function connectStdio(opts: ConnectOptions): Promise<Connection> {
 
   const era = opts.era ?? 'auto';
   const calls = new CallTracker();
-  const client = makeClient(Client, { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' }, { negotiate: era === 'auto', probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged });
+  const client = makeClient(Client, { name: opts.clientName ?? 'mcp-explorer', version: opts.clientVersion ?? '0.0.0' }, { negotiate: era === 'auto', probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged, onServerRequest: opts.onServerRequest });
 
   try {
     await client.connect(tap(inner, opts.onFrame, opts.onFrameError, calls));

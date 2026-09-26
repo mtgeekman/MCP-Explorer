@@ -597,3 +597,36 @@ test('R07-5: progress updates the transcript without re-listing the call history
     await app.close();
   }
 });
+
+test('R07-6: a large result in the pane is not re-serialized when something else re-renders the app', async () => {
+  const { dataDir } = seed([
+    { id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } },
+    { id: randomUUID(), name: 'other', transport: 'stdio', command: process.execPath, args: [modern], env: { EXIT_AFTER_MS: '6000' } },
+  ]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'other');
+    await connect(page, 'calls');
+    await openCall(page, 'big');
+    await page.locator('.call-form input').first().fill(String(2 * 1024 * 1024));
+    await callButton(page).click();
+    await page.locator('.readable-pane .part-text').waitFor({ timeout: 30_000 });
+    await page.evaluate(() => {
+      const w = window;
+      w.__bigStringify = 0;
+      const stringify = JSON.stringify;
+      JSON.stringify = function (...a) {
+        const out = stringify.apply(this, a);
+        if (typeof out === 'string' && out.length > 1_000_000) w.__bigStringify++;
+        return out;
+      };
+    });
+    // The other server exits on its own; its state change re-renders the app.
+    await page.locator('.server-row', { hasText: 'other' }).getByText('Connected').waitFor({ state: 'detached', timeout: 20_000 });
+    assert.ok(await page.locator('.readable-pane .part-text').isVisible(), 'the result is still in the pane');
+    assert.equal(await page.evaluate(() => window.__bigStringify), 0);
+  } finally {
+    await app.close();
+  }
+});

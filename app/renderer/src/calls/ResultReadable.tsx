@@ -2,6 +2,7 @@
 // images and audio inline, resources, links, structuredContent with the
 // app's check against the outputSchema, and anything no revision defines
 // shown as its JSON, labelled. The transcript beside it stays raw.
+import { useMemo } from 'react';
 import type { CallView } from '../../../../packages/backend/dist/index.js';
 import { readableResult, statusLabel, type Part } from '../lib/content';
 import { READABLE_LIMIT } from '../lib/readable';
@@ -12,7 +13,9 @@ export function ResultReadable({ view }: { view: CallView }) {
   const status = statusLabel(call.status, view.live);
   const first = call.roundRecords[0];
   const result = first?.result ?? view.sessionResult;
-  const size = result === undefined || result === null ? 0 : JSON.stringify(result).length;
+  // Serializing a multi-megabyte result is the expensive part; the pane
+  // re-renders with the app, so it happens once per result (R07-6).
+  const size = useMemo(() => (result === undefined || result === null ? 0 : JSON.stringify(result).length), [result]);
   return (
     <div className="readable-body">
       <h4 className="mono">{call.target}</h4>
@@ -40,7 +43,7 @@ export function ResultReadable({ view }: { view: CallView }) {
 }
 
 function Result({ kind, result, view }: { kind: 'tool' | 'prompt' | 'resource'; result: unknown; view: CallView }) {
-  const r = readableResult(kind, result);
+  const r = useMemo(() => readableResult(kind, result), [kind, result]);
   return (
     <>
       {r.isError && <p className="warn">The tool reports an error (isError). The call itself completed.</p>}

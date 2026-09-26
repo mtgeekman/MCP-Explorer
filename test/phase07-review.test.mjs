@@ -109,3 +109,25 @@ test('R07-9: export over HTTP+SSE gives the request but no curl, and says why', 
   assert.equal(exported.curl, undefined);
   assert.match(exported.reason, /event stream/);
 });
+
+test('R07-2 (re-review): an event stream that dies mid-event is logged, and leaves no abort listener for close to fire', async () => {
+  const url = await listen('http-server.mjs', children, { CALL_TOOLS: '1', SSE_CUT: '1' });
+  const units = [];
+  const conn = await connectHttp({ url, onUnit: (u) => units.push(u) });
+  // The SDK never settles a request whose stream died (and calls do not time
+  // out, decision 2), so the session is closed under it.
+  const pending = conn.call({ kind: 'tool', target: 'add', args: { a: 1, b: 2 } });
+  let post;
+  for (let i = 0; i < 100 && !post; i++) {
+    post = units.find((x) => x.direction === 'out' && x.kind === 'wire' && Buffer.from(x.bytes).includes('tools/call'));
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  await new Promise((r) => setTimeout(r, 500));
+  await conn.close();
+  await Promise.race([pending, new Promise((r) => setTimeout(r, 2000))]);
+  const exchange = post.http.exchange;
+  const partial = units.find((x) => x.direction === 'in' && x.http?.exchange === exchange && Buffer.from(x.bytes).includes('{"jsonrpc":"2.0"'));
+  assert.ok(partial, 'P1: the bytes the server sent before it died are in the log');
+  const aborted = appEvents(units).filter((e) => e.event === 'request-aborted' && e.exchange === exchange);
+  assert.deepEqual(aborted, [], 'the dead POST is not reported aborted at close');
+});

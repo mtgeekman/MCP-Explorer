@@ -1149,3 +1149,47 @@ test('surface: at the narrowest readable pane a parameter\'s type stays on one l
     await app.close();
   }
 });
+
+test('readable JSON: colored and pretty by default, Compact switches every block, Pretty switches back, and the choice survives a restart', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'json', transport: 'stdio', command: process.execPath, args: [modern] }]);
+  const pane = (page) => page.locator('.readable-pane');
+  const schema = (page) => pane(page).locator('.item-fields .json-view').first();
+  {
+    const { app, page } = await launch(dataDir);
+    try {
+      await openWorkspace(page);
+      await connectAndCapture(page, 'json', 2);
+      await page.locator('.surface-items .item', { hasText: 'echo' }).click();
+      await schema(page).waitFor();
+      assert.ok(await schema(page).locator('.j-key', { hasText: '"properties"' }).count() > 0, 'keys are colored');
+      assert.ok((await schema(page).innerText()).includes('\n  "properties"'), 'pretty: indented');
+      assert.equal(await pane(page).getByRole('button', { name: 'Pretty' }).getAttribute('aria-pressed'), 'true');
+      await shot(page, 'json-pretty');
+
+      await pane(page).getByRole('button', { name: 'Compact' }).click();
+      assert.ok(!(await schema(page).innerText()).includes('\n'), 'compact: one line');
+      assert.ok(await schema(page).locator('.j-key').count() > 0, 'still colored when compact');
+
+      // A wire unit in the pane follows the same switch.
+      await page.locator('.log-line', { hasText: 'tools/list' }).last().click();
+      const unit = pane(page).locator('.json-view').first();
+      await unit.waitFor();
+      assert.ok(!(await unit.innerText()).includes('\n'), 'the unit is compact too');
+      await pane(page).getByRole('button', { name: 'Pretty' }).click();
+      assert.ok((await unit.innerText()).includes('\n  "jsonrpc"'), 'and pretty again');
+      await pane(page).getByRole('button', { name: 'Compact' }).click();
+    } finally {
+      await app.close();
+    }
+  }
+  {
+    const { app, page } = await launch(dataDir);
+    try {
+      await openWorkspace(page);
+      await page.locator('.server-row', { hasText: 'json' }).click();
+      assert.equal(await pane(page).getByRole('button', { name: 'Compact' }).getAttribute('aria-pressed'), 'true', 'Compact survived the restart');
+    } finally {
+      await app.close();
+    }
+  }
+});

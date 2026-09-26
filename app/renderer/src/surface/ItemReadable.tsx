@@ -2,6 +2,7 @@
 // arguments, annotations with the line that says they are not trusted, and a
 // Fields table where "none sent" and "not on this revision" stay apart (5.4).
 import { Fragment } from 'react';
+import { JsonView } from '../log/JsonView';
 import type { SelectedItem } from './SurfacePanel';
 import { ANNOTATIONS_LINE, FIELDS, ITEM_KIND, annotationRows, fieldState, parameters, promptArguments } from '../lib/surface';
 
@@ -19,19 +20,19 @@ export function ItemReadable({ selected }: { selected: SelectedItem }) {
       {kind === 'prompt' && <PromptArguments args={item.arguments} />}
 
       <h4>Fields</h4>
-      <table className="fields"><tbody>
+      <ul className="params item-fields">
         {FIELDS[kind].map((field) => {
           const s = fieldState(kind, field, item, revision);
           return (
-            <tr key={field}>
-              <td className="mono">{field}</td>
-              <td className={s.kind === 'value' ? 'mono' : 'muted'}>
-                {s.kind === 'value' ? summarize(s.value) : s.kind === 'none-sent' ? 'None sent' : s.label}
-              </td>
-            </tr>
+            <li key={field} className="param">
+              <div className="param-head"><span className="mono param-name">{field}</span></div>
+              {s.kind !== 'value'
+                ? <p className="param-desc muted">{s.kind === 'none-sent' ? 'None sent' : s.label}</p>
+                : typeof s.value === 'string' ? <p className="param-desc">{s.value}</p> : <JsonView value={s.value} />}
+            </li>
           );
         })}
-      </tbody></table>
+      </ul>
     </div>
   );
 }
@@ -75,11 +76,6 @@ function PromptArguments({ args }: { args: unknown }) {
 }
 
 /** A field's value in one line: strings as they are, anything else as compact JSON, long ones cut with a count. */
-function summarize(value: unknown): string {
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
-  return text.length > 120 ? `${text.slice(0, 117)}... (${text.length.toLocaleString()} characters)` : text;
-}
-
 /**
  * A tool's parameters or a prompt's arguments: the name and type on one
  * line, the description under them. Stacked rather than a table, because in

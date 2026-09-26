@@ -55,7 +55,7 @@ export const ITEM_KIND: Record<EntryList, ItemKind> = {
   tools: 'tool', prompts: 'prompt', resources: 'resource', resourceTemplates: 'resourceTemplate',
 };
 
-/** The optional fields each kind's Fields table shows, in order. Only fields the app captures. */
+/** The optional fields each kind's Fields list shows, in order. Only fields the app captures. */
 export const FIELDS: Record<ItemKind, string[]> = {
   tool: ['title', 'description', 'icons', 'inputSchema', 'outputSchema', 'annotations', 'execution'],
   prompt: ['title', 'description', 'icons', 'arguments'],

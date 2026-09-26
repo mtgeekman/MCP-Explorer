@@ -8,6 +8,7 @@ import type { SelectedItem } from '../surface/SurfacePanel';
 import { readable } from '../lib/readable';
 import { clock } from '../lib/logrows';
 import { formatBytes } from '../lib/raw';
+import { JsonModeProvider, JsonModeToggle, JsonView } from './JsonView';
 
 /** What the pane shows: a wire log unit, a surface entry (board 5.1A), or a call's result. */
 export type ReadableContent = { kind: 'unit'; unit: LogUnit } | { kind: 'item'; item: SelectedItem } | { kind: 'call'; view: CallView };
@@ -56,7 +57,7 @@ function UnitReadable({ unit }: { unit: LogUnit }) {
               <dl className="facts">{r.cacheHints.map((h) => <Fragment key={h.name}><dt>{h.name}</dt><dd className="mono">{JSON.stringify(h.value)}</dd></Fragment>)}</dl>
             </div>
           )}
-          <pre className="mono json">{r.pretty}</pre>
+          <JsonView value={r.value} />
         </>
       )}
     </div>
@@ -66,11 +67,13 @@ function UnitReadable({ unit }: { unit: LogUnit }) {
 export function ReadablePane({ content, poppedOut, onPopOut, width }: { content: ReadableContent | null; poppedOut: boolean; onPopOut: () => void; width?: number }) {
   return (
     <aside className="readable-pane" style={width === undefined ? undefined : { flexBasis: width }}>
-      <div className="pane-head">
-        <span>Readable</span>
-        {!poppedOut && <button onClick={onPopOut} title="Open this pane in its own window">Pop out</button>}
-      </div>
-      {poppedOut ? <p className="muted pad">Shown in its own window. Close that window to bring it back here.</p> : <ReadableBody content={content} />}
+      <JsonModeProvider>
+        <div className="pane-head">
+          <span>Readable</span>
+          {!poppedOut && <span className="pane-actions"><JsonModeToggle /><button onClick={onPopOut} title="Open this pane in its own window">Pop out</button></span>}
+        </div>
+        {poppedOut ? <p className="muted pad">Shown in its own window. Close that window to bring it back here.</p> : <ReadableBody content={content} />}
+      </JsonModeProvider>
     </aside>
   );
 }

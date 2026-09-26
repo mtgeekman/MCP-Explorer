@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import type { BackendClient } from '../lib/client';
 import { entryKey } from '../lib/surface';
 import { ReadableBody, type ReadableContent } from './ReadablePane';
+import { JsonModeProvider, JsonModeToggle } from './JsonView';
 
 export function ReadableWindow({ client }: { client: BackendClient }) {
   const [content, setContent] = useState<ReadableContent | null>(null);
@@ -34,8 +35,10 @@ export function ReadableWindow({ client }: { client: BackendClient }) {
   }, [client]);
   return (
     <div className="readable-window">
-      <div className="pane-head"><span>Readable</span></div>
-      {error ? <p className="error pad">{error}</p> : <ReadableBody content={content} />}
+      <JsonModeProvider>
+        <div className="pane-head"><span>Readable</span><JsonModeToggle /></div>
+        {error ? <p className="error pad">{error}</p> : <ReadableBody content={content} />}
+      </JsonModeProvider>
     </div>
   );
 }

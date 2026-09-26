@@ -63,3 +63,91 @@ test('allowlist: Tool.execution, Resource.size and both annotations are hashed',
   const template = { uriTemplate: 'file:///{x}' };
   assert.notEqual(hashResourceTemplate({ ...template, annotations: { audience: ['user'] } }), hashResourceTemplate(template));
 });
+
+async function extras(file, env = {}) {
+  const notes = [];
+  const frames = [];
+  const conn = await connectStdio({
+    command: process.execPath, args: [file], env: { ...process.env, EXTRAS: '1', ...env },
+    onFrame: (direction, frame) => frames.push({ direction, frame }),
+    onNotification: (n) => notes.push(n),
+  });
+  open.push(conn);
+  return { conn, frames, notes };
+}
+
+const messages = (notes) => notes.filter((n) => n.method === 'notifications/message').map((n) => n.params.level);
+
+test('logging, legacy: no messages until the user sets a level; then logging/setLevel goes out and the server filters by it', async () => {
+  const { conn, frames, notes } = await extras(LEGACY);
+  await conn.call({ kind: 'tool', target: 'log_burst', args: {} });
+  assert.deepEqual(messages(notes), []);
+  const outcome = await conn.setLogLevel('error');
+  assert.equal(outcome.kind, 'result');
+  assert.deepEqual(sent(frames, 'logging/setLevel').map((f) => f.frame.params), [{ level: 'error' }]);
+  assert.equal(conn.logLevel, 'error');
+  await conn.call({ kind: 'tool', target: 'log_burst', args: {} });
+  assert.deepEqual(messages(notes), ['error', 'critical', 'alert', 'emergency']);
+  const call = sent(frames, 'tools/call').at(-1).frame;
+  assert.equal(call.params._meta?.['io.modelcontextprotocol/logLevel'], undefined, 'legacy requests carry no logLevel key');
+});
+
+test('logging, legacy: turning logging off is refused, not faked', async () => {
+  const { conn } = await extras(LEGACY);
+  const outcome = await conn.setLogLevel(undefined);
+  assert.equal(outcome.kind, 'failed');
+});
+
+test('logging, modern: setting a level sends nothing, and every later request carries it in _meta', async () => {
+  const { conn, frames, notes } = await extras(MODERN);
+  await conn.call({ kind: 'tool', target: 'log_burst', args: {} });
+  assert.deepEqual(messages(notes), [], 'no key, no messages');
+  const before = frames.length;
+  assert.equal(await conn.setLogLevel('warning'), undefined);
+  assert.equal(frames.length, before, 'no frame went out');
+  assert.equal(sent(frames, 'logging/setLevel').length, 0);
+  await conn.call({ kind: 'tool', target: 'log_burst', args: {} });
+  assert.deepEqual(messages(notes), ['warning', 'error', 'critical', 'alert', 'emergency']);
+  await conn.source.listTools();
+  assert.equal(sent(frames, 'tools/list').at(-1).frame.params._meta['io.modelcontextprotocol/logLevel'], 'warning', 'lists carry it too');
+  await conn.setLogLevel(undefined);
+  await conn.call({ kind: 'tool', target: 'log_burst', args: {} });
+  assert.equal(sent(frames, 'tools/call').at(-1).frame.params._meta['io.modelcontextprotocol/logLevel'], undefined);
+  assert.equal(messages(notes).length, 5, 'unset means no more messages');
+});
+
+test('ping: legacy sends it and times the round trip; modern refuses it without a frame', async () => {
+  const legacy = await extras(LEGACY);
+  const outcome = await legacy.conn.request({ method: 'ping' });
+  assert.equal(outcome.kind, 'result');
+  assert.ok(outcome.elapsedMs >= 0);
+  assert.equal(sent(legacy.frames, 'ping').length, 1);
+
+  const modern = await extras(MODERN);
+  const refused = await modern.conn.request({ method: 'ping' });
+  assert.equal(refused.kind, 'failed');
+  assert.match(refused.message, /does not exist on 2026-07-28/);
+  assert.equal(sent(modern.frames, 'ping').length, 0);
+});
+
+for (const [era, file] of [['legacy', LEGACY], ['modern', MODERN]]) {
+  test(`completion, ${era}: one completion/complete per request, for a prompt argument and a template variable`, async () => {
+    const { conn, frames } = await extras(file);
+    const prompt = await conn.request({ method: 'completion/complete', params: { ref: { type: 'ref/prompt', name: 'pick' }, argument: { name: 'language', value: 'py' } } });
+    assert.deepEqual(prompt.result.completion.values, ['python']);
+    const template = await conn.request({ method: 'completion/complete', params: { ref: { type: 'ref/resource', uri: 'fixture://langs/{lang}' }, argument: { name: 'lang', value: 't' } } });
+    assert.deepEqual(template.result.completion.values, ['typescript']);
+    assert.equal(sent(frames, 'completion/complete').length, 2);
+  });
+
+  test(`capture, ${era}: the extras' capabilities and the new fields are captured`, async () => {
+    const { conn } = await extras(file);
+    const caps = conn.source.capabilities;
+    assert.ok(caps.logging && caps.completions);
+    assert.equal(caps.resources.subscribe, true);
+    const resources = await conn.source.listResources();
+    const sized = resources.items.find((r) => r.uri === 'fixture://sized');
+    assert.equal(sized.size, 42);
+    assert.deepEqual(sized.annotations, { audience: ['user'], priority: 0.5 });
+  });
+}

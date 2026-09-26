@@ -2,13 +2,12 @@
 // All response logic lives in modern-handler.mjs, shared with the HTTP servers.
 import { appendFileSync } from 'node:fs';
 import { readFrames, writer } from './stdio-lines.mjs';
-import { handleModern, serverMeta } from './modern-handler.mjs';
-import { answerer } from './call-handler.mjs';
+import { eraAnswerer } from './answer.mjs';
 
 if (process.env.SPAWN_LOG) appendFileSync(process.env.SPAWN_LOG, `${Date.now()} pid=${process.pid}\n`);
 
 const { send } = writer(process.stdout);
-const answer = answerer(handleModern, () => ({ resultType: 'complete', ...serverMeta() }));
+const answer = eraAnswerer('modern');
 
 // STDERR_FLOOD: write more to stderr than an OS pipe buffer holds (~64KB)
 // before answering. A parent that pipes stderr without reading it leaves the

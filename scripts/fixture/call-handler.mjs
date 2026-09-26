@@ -164,7 +164,7 @@ const sleep = (ms, signal) => new Promise((resolve) => {
  * fields to every result (a modern result's resultType and _meta).
  */
 export function answerer(handle, extra = () => ({})) {
-  return (msg, send) => (isCallMessage(msg) ? handleCall(msg, send, extra()) : Promise.resolve(handle(msg)));
+  return (msg, send) => (isCallMessage(msg) ? handleCall(msg, send, extra()) : Promise.resolve(handle(msg, send)));
 }
 
 /** Whether this message is one this module answers (or, for a cancellation, acts on). */

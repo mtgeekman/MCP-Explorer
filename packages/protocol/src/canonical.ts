@@ -44,16 +44,20 @@ export const TEMPLATE_FIELDS = ['uriTemplate', 'name', 'title', 'description', '
 /**
  * The allowlisted fields of an item: what is hashed, and what a field-level
  * diff compares. Annotations.lastModified (2025-06-18) is a timestamp of the
- * content, so it is left out of an annotations object, and an object holding
- * nothing else counts as absent (R10-3).
+ * content, so it is left out of an annotations object (R10-3). A resource's
+ * or template's annotations holding nothing else count as absent, `{}`
+ * included (R10-11): they were first hashed in phase 10, so no stored hash
+ * depends on `{}`. A tool's `{}` has been hashed as present since phase 01,
+ * and stays so, or every stored snapshot of such a tool would read as changed.
  */
 export function pick<T extends object>(item: T, fields: readonly string[]): Record<string, unknown> {
+  const emptyIsAbsent = fields === RESOURCE_FIELDS || fields === TEMPLATE_FIELDS;
   const out: Record<string, unknown> = {};
   for (const f of fields) {
     let v = (item as Record<string, unknown>)[f];
-    if (f === 'annotations' && v !== null && typeof v === 'object' && !Array.isArray(v) && 'lastModified' in v) {
+    if (f === 'annotations' && v !== null && typeof v === 'object' && !Array.isArray(v)) {
       const { lastModified: _, ...rest } = v as Record<string, unknown>;
-      v = Object.keys(rest).length > 0 ? rest : undefined;
+      v = Object.keys(rest).length > 0 ? rest : emptyIsAbsent ? undefined : {};
     }
     if (v !== undefined) out[f] = v;
   }

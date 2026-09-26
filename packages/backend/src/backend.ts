@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import { buildContext, costContext, renderContext, O200K, type ContextServer } from '../../protocol/dist/index.js';
 import {
-  compact, deleteServer, latestCapture, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
+  compact, deleteServer, latestCapture, repairInterrupted, fileBytes, listServers, loadServer, previewPurge, purgeHistory, readDetectedEra, readSettings, saveServer, updateSettings, usedBytes,
   type ServerDefinition, type SecretStore,
 } from '../../storage/dist/index.js';
 import type { ServerRoot } from '../../platform/dist/index.js';
@@ -142,6 +142,9 @@ export class Backend {
   }
 
   private startConnections(open: OpenWorkspace): void {
+    // A call or session a crash left open is closed before anything new starts
+    // (phase 07 decision 7). Safe while one process opens a workspace at a time.
+    repairInterrupted(open.ws);
     this.connections = new ConnectionManager(open.ws, {
       now: this.opts.now,
       probeTimeoutMs: this.opts.probeTimeoutMs,

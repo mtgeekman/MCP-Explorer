@@ -17,8 +17,12 @@ import { createServer } from 'node:http';
 import { appendFileSync } from 'node:fs';
 import { handleModern } from './modern-handler.mjs';
 import { handleLegacy, DIE, SILENT } from './legacy-handler.mjs';
+import { answerer } from './call-handler.mjs';
+import { serverMeta } from './modern-handler.mjs';
 
-const handle = process.env.LEGACY ? handleLegacy : handleModern;
+// CALL_TOOLS calls are answered here too; a progress notification is dropped,
+// since a JSON body carries one message. Progress is exercised over stdio.
+const handle = answerer(process.env.LEGACY ? handleLegacy : handleModern, () => (process.env.LEGACY ? {} : { resultType: 'complete', ...serverMeta() }));
 
 const endpoint = '/mcp';
 
@@ -39,7 +43,7 @@ const server = createServer((req, res) => {
   let body = '';
   req.setEncoding('utf8');
   req.on('data', (c) => { body += c; });
-  req.on('end', () => {
+  req.on('end', async () => {
     if (process.env.FRAME_LOG) appendFileSync(process.env.FRAME_LOG, `IN  ${body}\n`);
     if (process.env.HTML_REPLY) {
       res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
@@ -54,7 +58,7 @@ const server = createServer((req, res) => {
     }
 
     const frames = Array.isArray(msg) ? msg : [msg];
-    const results = frames.map(handle);
+    const results = await Promise.all(frames.map((f) => handle(f, () => {})));
     if (results.includes(DIE)) return req.socket.destroy();
     if (results.includes(SILENT)) return;
     const responses = results.filter((r) => r !== undefined);

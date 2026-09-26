@@ -460,7 +460,10 @@ export class CallPipeline {
     try {
       if (o.kind === 'result') {
         const r = o.result;
-        const inputRequired = method === 'tasks/get' && r.status === 'input_required';
+        // Only a modern task asks through tasks/get; a legacy one at
+        // input_required asks by a request of its own, answered under
+        // "Requests from the server", and stays a task here (R10-2).
+        const inputRequired = method === 'tasks/get' && task.era === 'modern' && r.status === 'input_required';
         run.recorder.finishRound(callId, seq, {
           result: r,
           ...(typeof r.resultType === 'string' ? { resultType: r.resultType } : {}),

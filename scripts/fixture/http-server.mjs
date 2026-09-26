@@ -76,14 +76,18 @@ async function stream(req, res, frame) {
  * SSE_PRIMED_CUT: a tools/call's stream carries one event with an id and no
  * data, then closes without the response (the 2025-11-25 polling pattern).
  * The response waits for the client to resume with Last-Event-ID on a GET.
+ * RESUME_REFUSED: the resume GET is answered 405, so the response never comes.
+ * SSE_ID_ONLY_CUT: the event carries an id and no data line, which the SSE
+ * parser never dispatches, so there is nothing to resume from.
  */
 const resumable = new Map();
 
 async function primedCut(res, frame) {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-  res.write('id: primed-1\nretry: 50\ndata:\n\n');
+  res.write(process.env.SSE_ID_ONLY_CUT ? 'id: only-1\n\n' : 'id: primed-1\nretry: 50\ndata:\n\n');
   res.end();
-  resumable.set('primed-1', await handle(frame, () => {}));
+  const response = await handle(frame, () => {});
+  if (!process.env.RESUME_REFUSED && !process.env.SSE_ID_ONLY_CUT) resumable.set('primed-1', response);
 }
 
 function resume(req, res) {
@@ -124,7 +128,7 @@ const server = createServer((req, res) => {
     }
 
     const frames = Array.isArray(msg) ? msg : [msg];
-    if (process.env.SSE_PRIMED_CUT && !Array.isArray(msg) && msg.method === 'tools/call') return primedCut(res, msg);
+    if ((process.env.SSE_PRIMED_CUT || process.env.SSE_ID_ONLY_CUT) && !Array.isArray(msg) && msg.method === 'tools/call') return primedCut(res, msg);
     if (process.env.STREAMING && !Array.isArray(msg) && msg.method !== undefined && msg.id !== undefined) return stream(req, res, msg);
     const results = await Promise.all(frames.map((f) => handle(f, () => {})));
     if (results.includes(DIE)) return req.socket.destroy();

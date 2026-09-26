@@ -7,7 +7,7 @@ import type { Era } from './model.js';
 import { eraOf } from './model.js';
 import type { Page, SurfaceSource } from './capture.js';
 import { StringDecoder } from 'node:string_decoder';
-import { LineSplitter, SseEventSplitter, sseEventData, type HttpDetails, type UnitListener, type WireUnit } from './wire.js';
+import { LineSplitter, SseEventSplitter, type HttpDetails, type UnitListener, type WireUnit } from './wire.js';
 import { encodeHeaderValue } from './mcp-headers.js';
 
 /**
@@ -308,8 +308,9 @@ function makeClient(
   const onListChanged = opts.onListChanged;
   if (onListChanged) {
     // Registering sends nothing; a notice is only reported. On 2026-07-28 a
-    // server sends these only on a subscriptions/listen stream, which the app
-    // does not open (phase 06 decision 7), so in practice this is legacy only.
+    // server sends these only on a subscriptions/listen stream the user
+    // opened (phase 10 decision 7). The app's backend reads notices through
+    // onNotification instead; this listener stays for the adapter's callers.
     for (const [method, list] of LIST_CHANGED) {
       client.setNotificationHandler(method, () => onListChanged(list));
     }
@@ -367,7 +368,7 @@ function tap(inner: any, listener: FrameListener | undefined, onFrameError: Fram
       if (p === 'send') {
         return async (m: unknown, o?: unknown) => {
           for (const f of Array.isArray(m) ? m : [m]) onFrame('out', f);
-          return t.send(m, o);
+          return t.send(m, calls ? withStreamEnd(m, o, calls) : o);
         };
       }
       if (p === 'onmessage') return assigned;
@@ -389,6 +390,30 @@ function tap(inner: any, listener: FrameListener | undefined, onFrameError: Fram
       return Reflect.set(t, p, v);
     },
   });
+}
+
+const STREAM_ENDED = 'the event stream ended without a response';
+
+/**
+ * Decision 13, revised by R10-9 and R10-10: the Streamable HTTP transport
+ * calls a send's onRequestStreamEnd when a request's event stream is over
+ * and it will not resume it: the stream ended with no event id to resume
+ * from, or every reconnect failed (or was refused). client.request() passes
+ * no such callback, so the tap adds one to each request it sends, and the
+ * request fails then instead of waiting forever. The SDK decides; this only
+ * listens. A transport without the callback (stdio, SSE) never calls it.
+ */
+function withStreamEnd(message: unknown, options: unknown, calls: CallTracker): unknown {
+  const m = message as { id?: unknown; method?: unknown } | null;
+  if (Array.isArray(message) || !m || typeof m.method !== 'string' || m.id === undefined || m.id === null) return options;
+  const given = options as { onRequestStreamEnd?: () => void } | undefined;
+  return {
+    ...given,
+    onRequestStreamEnd: () => {
+      given?.onRequestStreamEnd?.();
+      calls.abandon(m.id, STREAM_ENDED);
+    },
+  };
 }
 
 /** A listener that throws must not cost the connection the frame; it is warned about instead. */
@@ -662,9 +687,19 @@ class CallTracker {
     return new Promise((resolve) => this.abandons.set(idKey(id), resolve));
   }
 
-  /** The stream carrying this request's response ended without it: the request fails, and nothing is sent. */
+  /** Told when a request is abandoned, to record why beside the wire traffic (decision 13). */
+  onAbandoned?: (id: unknown, message: string) => void;
+
+  /**
+   * The stream carrying this request's response ended without it, and will
+   * not be resumed: the request fails, and nothing is sent. A request already
+   * answered, or not pending here, is left alone: the SDK reports the end of
+   * every request stream, answered or not.
+   */
   abandon(id: unknown, message: string): void {
     const key = idKey(id);
+    if (!this.watched.has(key) && !this.waiters.has(key)) return;
+    this.onAbandoned?.(id, message);
     const waiter = this.waiters.get(key);
     this.waiters.delete(key);
     waiter?.reject(new Error(message));
@@ -785,8 +820,9 @@ async function rawRequest(session: Session, method: string, params: Record<strin
   const onAbort = () => { abortedFirst = id === undefined || !calls.has(id); };
   signal?.addEventListener('abort', onAbort, { once: true });
   let sdkError: unknown;
-  // The SDK never settles a request whose event stream died without its
-  // response; the logging fetch notices, and the request fails here instead.
+  // The SDK never settles a request whose event stream ended without its
+  // response and will not be resumed; the tap hears it from the transport
+  // (withStreamEnd), and the request fails here instead.
   const abandoned = id === undefined ? new Promise<never>(() => undefined) : calls.whenAbandoned(id);
   try {
     const why = await Promise.race([sent.sent.then(() => undefined), abandoned]);
@@ -1023,7 +1059,7 @@ async function requestBytes(input: string | URL | Request, init: RequestInit | u
  * finishes it reaches the SDK: nothing the SDK acts on is ever missing from the
  * log, and cancelling the stream still cancels the connection underneath.
  */
-export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>, base: typeof fetch = fetch, onOrphaned?: (ids: unknown[], message: string) => void): typeof fetch {
+export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>, base: typeof fetch = fetch): typeof fetch {
   const secretNames = new Set([...secretHeaders].map((n) => n.toLowerCase()));
   let exchanges = 0;
   return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -1072,27 +1108,7 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
       return rebuilt(bytes);
     }
     const events = new SseEventSplitter();
-    // The requests this POST carried, until an event answers each (decision 13).
-    const unanswered = requestIds(body);
-    // An event with an id makes the stream resumable: the SDK reconnects with
-    // Last-Event-ID and the response may still come (2025-11-25 polling;
-    // _handleSseStream in the SDK), so such a stream orphans nothing (R10-1).
-    let resumable = false;
-    const event = (bytes: Uint8Array) => {
-      emit({ direction: 'in', kind: 'wire', bytes, http: { ...http, framing: 'sse-event' } });
-      if (!resumable && hasEventId(bytes)) resumable = true;
-      if (unanswered.size > 0) for (const id of responseIds(bytes)) unanswered.delete(id);
-    };
-    // The stream ended with requests unanswered, not because the user aborted
-    // it, and cannot be resumed: those responses will never come.
-    const orphans = () => {
-      if (unanswered.size === 0 || signal?.aborted || resumable) return;
-      const ids = [...unanswered].map((k) => JSON.parse(k) as unknown);
-      const message = 'the event stream ended without a response';
-      appEvent(emit, { event: 'stream-ended-without-response', exchange, ids });
-      unanswered.clear();
-      onOrphaned?.(ids, message);
-    };
+    const event = (bytes: Uint8Array) => emit({ direction: 'in', kind: 'wire', bytes, http: { ...http, framing: 'sse-event' } });
     // Transformer.cancel is in the streams standard and in Node, not yet in the TypeScript lib.
     const logging: Transformer<Uint8Array, Uint8Array> & { cancel?: (reason: unknown) => void } = {
       transform(chunk, controller) {
@@ -1103,7 +1119,6 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
         done();
         const rest = events.flush();
         if (rest) event(rest);
-        orphans();
       },
       // The stream ended by error (the server dropped the connection mid-event)
       // or was cancelled: flush never runs, so the bytes that did arrive are
@@ -1112,47 +1127,11 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
         done();
         const rest = events.flush();
         if (rest) event(rest);
-        orphans();
       },
     };
     const logged = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(logging));
     return rebuilt(logged);
   };
-}
-
-/** The ids, as id keys, of the requests a POST body carried: one, or a batch's. */
-function requestIds(body: Uint8Array | { unrecorded: string }): Set<string> {
-  const out = new Set<string>();
-  if (!(body instanceof Uint8Array) || body.length === 0) return out;
-  try {
-    const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as unknown;
-    for (const m of Array.isArray(parsed) ? parsed : [parsed]) {
-      const msg = m as { id?: unknown; method?: unknown } | null;
-      if (msg && typeof msg.method === 'string' && msg.id !== undefined && msg.id !== null) out.add(idKey(msg.id));
-    }
-  } catch {
-    // Not JSON: nothing this stream owes.
-  }
-  return out;
-}
-
-/** Whether an event carries a non-empty `id` field: what the SDK resumes a stream by. */
-function hasEventId(bytes: Uint8Array): boolean {
-  return /(?:^|\r\n|\r|\n)id:[ ]?[^\r\n]/.test(Buffer.from(bytes).toString('utf8'));
-}
-
-/** The ids, as id keys, of the responses one event carried. */
-function responseIds(bytes: Uint8Array): string[] {
-  const data = sseEventData(bytes);
-  if (data === null) return [];
-  try {
-    const parsed = JSON.parse(data) as unknown;
-    return (Array.isArray(parsed) ? parsed : [parsed])
-      .filter((m) => m && typeof m === 'object' && (m as { method?: unknown }).method === undefined && (m as { id?: unknown }).id !== undefined)
-      .map((m) => idKey((m as { id: unknown }).id));
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -1253,8 +1232,9 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   const calls = new CallTracker();
   const secretHeaders = opts.secretHeaders ?? {};
   // One logging fetch for every attempt, so exchange numbers keep counting.
-  const orphaned = (ids: unknown[], message: string) => { for (const id of ids) calls.abandon(id, message); };
-  const fetchOption = { fetch: taskNameFetch(loggingFetch(emit ?? (() => undefined), Object.keys(secretHeaders), fetch, orphaned)) };
+  // A request the transport gave up on is recorded beside the traffic (P1).
+  calls.onAbandoned = (id, message) => appEvent(emit, { event: 'stream-ended-without-response', ids: [id], message });
+  const fetchOption = { fetch: taskNameFetch(emit ? loggingFetch(emit, Object.keys(secretHeaders)) : fetch) };
 
   const attempt = async (negotiate: boolean) => {
     const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged, onServerRequest: opts.onServerRequest });

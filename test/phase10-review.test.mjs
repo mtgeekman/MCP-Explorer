@@ -132,3 +132,53 @@ test('R10-4 twin: notifications that arrived as HTTP event-stream events reach t
   assert.equal(rows[0].method, 'notifications/message');
   assert.match(rows[0].raw, /^event: message\ndata: /, 'the raw column is the event as it arrived');
 });
+
+// Round 2: the re-review of the round 1 fixes.
+
+const settles = (p, ms) => Promise.race([p, new Promise((_, reject) => setTimeout(() => reject(new Error(`still pending after ${ms} ms`)), ms))]);
+const orphanEvents = (units) => units.filter((u) => u.kind === 'app').map((u) => JSON.parse(Buffer.from(u.bytes).toString('utf8'))).filter((e) => e.event === 'stream-ended-without-response');
+
+test('R10-9: an event with an id and no data is nothing the SDK resumes from, so the request fails rather than hangs', { timeout: 20_000 }, async () => {
+  const url = await listen('http-server.mjs', children, { CALL_TOOLS: '1', SSE_ID_ONLY_CUT: '1' });
+  const units = [];
+  const conn = await connectHttp({ url, onUnit: (u) => units.push(u) });
+  open.push(conn);
+  const outcome = await settles(conn.call({ kind: 'tool', target: 'add', args: { a: 1, b: 1 } }), 5000);
+  assert.equal(outcome.kind, 'failed');
+  assert.match(outcome.message, /event stream ended without a response/);
+  assert.equal(orphanEvents(units).length, 1);
+});
+
+test('R10-10: a resumable stream whose resume the server refuses fails the request once the SDK gives up', { timeout: 20_000 }, async () => {
+  const url = await listen('http-server.mjs', children, { CALL_TOOLS: '1', SSE_PRIMED_CUT: '1', RESUME_REFUSED: '1' });
+  const units = [];
+  const conn = await connectHttp({ url, onUnit: (u) => units.push(u) });
+  open.push(conn);
+  const outcome = await settles(conn.call({ kind: 'tool', target: 'add', args: { a: 1, b: 1 } }), 8000);
+  assert.equal(outcome.kind, 'failed');
+  assert.equal(orphanEvents(units).length, 1);
+});
+
+test('R10-11: a resource\'s empty annotations and annotations holding only lastModified hash alike, as no annotations', () => {
+  const r = { uri: 'file:///a', name: 'a' };
+  assert.equal(hashResource({ ...r, annotations: {} }), hashResource({ ...r, annotations: { lastModified: 'x' } }));
+  assert.equal(hashResource({ ...r, annotations: {} }), hashResource(r));
+  const t = { uriTemplate: 'file:///{x}', name: 't' };
+  assert.equal(hashResourceTemplate({ ...t, annotations: {} }), hashResourceTemplate(t));
+});
+
+test('R10-11 (old valid input): a tool\'s empty annotations still hash as present, as stored since phase 01', async () => {
+  const { hashTool } = await import('../packages/protocol/dist/index.js');
+  const tool = { name: 'x', inputSchema: { type: 'object' } };
+  assert.notEqual(hashTool({ ...tool, annotations: {} }), hashTool(tool));
+});
+
+test('R10-10 (old valid input): an event stream that delivered its response records no stream-ended event', { timeout: 20_000 }, async () => {
+  const url = await listen('http-server.mjs', children, { CALL_TOOLS: '1', SSE_REPLIES: '1' });
+  const units = [];
+  const conn = await connectHttp({ url, onUnit: (u) => units.push(u) });
+  open.push(conn);
+  for (let i = 0; i < 5; i++) assert.equal((await conn.call({ kind: 'tool', target: 'add', args: { a: i, b: 1 } })).kind, 'result');
+  await sleep(100);
+  assert.deepEqual(orphanEvents(units), []);
+});

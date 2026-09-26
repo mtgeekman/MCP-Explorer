@@ -31,12 +31,14 @@ function sha256(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonicalJson(value))).digest('hex');
 }
 
-// One allowlist per item kind. Adding a field here changes every stored hash,
-// so it is a deliberate act, not a convenience.
-export const TOOL_FIELDS = ['name', 'title', 'description', 'icons', 'inputSchema', 'outputSchema', 'annotations'] as const;
+// One allowlist per item kind. Adding a field here changes the stored hash of
+// every item that carries it (pick skips an absent field, so the rest keep
+// theirs), so it is a deliberate act, not a convenience. Phase 10 decision 9
+// added execution, size and the resource annotations.
+export const TOOL_FIELDS = ['name', 'title', 'description', 'icons', 'inputSchema', 'outputSchema', 'annotations', 'execution'] as const;
 export const PROMPT_FIELDS = ['name', 'title', 'description', 'icons', 'arguments'] as const;
-export const RESOURCE_FIELDS = ['uri', 'name', 'title', 'description', 'mimeType', 'icons'] as const;
-export const TEMPLATE_FIELDS = ['uriTemplate', 'name', 'title', 'description', 'mimeType', 'icons'] as const;
+export const RESOURCE_FIELDS = ['uri', 'name', 'title', 'description', 'mimeType', 'icons', 'size', 'annotations'] as const;
+export const TEMPLATE_FIELDS = ['uriTemplate', 'name', 'title', 'description', 'mimeType', 'icons', 'annotations'] as const;
 
 /** The allowlisted fields of an item: what is hashed, and what a field-level diff compares. */
 export function pick<T extends object>(item: T, fields: readonly string[]): Record<string, unknown> {

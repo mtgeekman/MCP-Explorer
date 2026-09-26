@@ -80,6 +80,8 @@ export interface NormalizedTool {
   inputSchema: unknown;
   outputSchema?: unknown;
   annotations?: unknown;
+  /** 2025-11-25 only: `taskSupport` and whatever else the server sends there. */
+  execution?: unknown;
 }
 
 export interface NormalizedPrompt {
@@ -97,6 +99,9 @@ export interface NormalizedResource {
   description?: string;
   mimeType?: string;
   icons?: unknown;
+  /** As sent: a number on every revision, but a server may send anything. */
+  size?: unknown;
+  annotations?: unknown;
 }
 
 export interface NormalizedResourceTemplate {
@@ -106,6 +111,7 @@ export interface NormalizedResourceTemplate {
   description?: string;
   mimeType?: string;
   icons?: unknown;
+  annotations?: unknown;
 }
 
 /**

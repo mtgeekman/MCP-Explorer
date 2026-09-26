@@ -80,6 +80,7 @@ function normalizeTool(raw: Record<string, unknown>): NormalizedTool {
     inputSchema: raw.inputSchema,
     outputSchema: raw.outputSchema,
     annotations: raw.annotations,
+    execution: raw.execution,
   };
 }
 
@@ -101,6 +102,8 @@ function normalizeResource(raw: Record<string, unknown>): NormalizedResource {
     description: str(raw.description),
     mimeType: str(raw.mimeType),
     icons: raw.icons,
+    size: raw.size,
+    annotations: raw.annotations,
   };
 }
 
@@ -112,6 +115,7 @@ function normalizeResourceTemplate(raw: Record<string, unknown>): NormalizedReso
     description: str(raw.description),
     mimeType: str(raw.mimeType),
     icons: raw.icons,
+    annotations: raw.annotations,
   };
 }
 

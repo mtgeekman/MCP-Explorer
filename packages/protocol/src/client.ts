@@ -8,6 +8,7 @@ import { eraOf } from './model.js';
 import type { Page, SurfaceSource } from './capture.js';
 import { StringDecoder } from 'node:string_decoder';
 import { LineSplitter, SseEventSplitter, type HttpDetails, type UnitListener, type WireUnit } from './wire.js';
+import { redactAuthBody } from './redact.js';
 import { encodeHeaderValue } from './mcp-headers.js';
 
 /**
@@ -181,6 +182,11 @@ class LoggingReadBuffer {
 export const PROBE_TIMEOUT_MS = 5000;
 
 export interface Connection {
+  /**
+   * HTTP only: the authorization challenge behind a failed request, when the
+   * failure was a 401 or a 403 `insufficient_scope` (phase 11), else undefined.
+   */
+  authChallenge?: (error: unknown) => AuthChallenge | undefined;
   era: Era;
   revision: string;
   /** How the session travels: Mcp-Param-* headers exist on Streamable HTTP only. */
@@ -1014,6 +1020,67 @@ export interface HttpConnectOptions {
   /** Every notification the server sends, as the tap saw it. */
   onNotification?: NotificationListener;
   probeTimeoutMs?: number;
+  /**
+   * The OAuth access token to send, read before every request, so a token the
+   * user refreshed mid-session is used from the next request on (phase 11).
+   * A 401 or a 403 `insufficient_scope` is reported, never acted on: the
+   * transport is given `token()` only, never the SDK's OAuth provider,
+   * which would discover, register, refresh and retry on its own (decision 4).
+   */
+  accessToken?: () => string | undefined;
+}
+
+/** What a 401 or 403 answer's `WWW-Authenticate` challenge said (RFC 6750 §3, RFC 9728 §5.1). */
+export interface AuthChallenge {
+  status: 401 | 403;
+  resourceMetadataUrl?: string;
+  scope?: string;
+  error?: string;
+  errorDescription?: string;
+}
+
+/**
+ * A fetch that keeps the challenge of the last 401 or 403 it saw. The SDK's
+ * UnauthorizedError carries none of it, and the user needs it to sign in.
+ */
+function challengeFetch(base: typeof fetch, seen: (c: AuthChallenge) => void, extract: (r: Response) => Omit<AuthChallenge, 'status'> & { resourceMetadataUrl?: URL | string }): typeof fetch {
+  return async (input: string | URL | Request, init?: RequestInit) => {
+    const response = await base(input, init);
+    if (response.status === 401 || response.status === 403) {
+      const p = response.headers.has('www-authenticate') ? extract(response) : {};
+      seen({
+        status: response.status,
+        ...(p.resourceMetadataUrl ? { resourceMetadataUrl: String(p.resourceMetadataUrl) } : {}),
+        ...(p.scope ? { scope: p.scope } : {}),
+        ...(p.error ? { error: p.error } : {}),
+        ...(p.errorDescription ? { errorDescription: p.errorDescription } : {}),
+      });
+    }
+    return response;
+  };
+}
+
+/**
+ * The challenge behind an error, when the error is the transport's refusal to
+ * go on without authorization: a 401 (UnauthorizedError) or a 403
+ * `insufficient_scope` (InsufficientScopeError). Walks the cause chain.
+ */
+export function authChallengeOf(e: unknown, last: AuthChallenge | undefined): AuthChallenge | undefined {
+  for (let cur: unknown = e, depth = 0; cur && depth < 8; cur = (cur as { cause?: unknown }).cause, depth++) {
+    const name = (cur as { name?: unknown }).name;
+    const ctor = (cur as { constructor?: { name?: unknown } }).constructor?.name;
+    if (name === 'UnauthorizedError' || ctor === 'UnauthorizedError') return last?.status === 401 ? last : { status: 401 };
+    if (name === 'InsufficientScopeError' || ctor === 'InsufficientScopeError') {
+      const x = cur as { requiredScope?: string; resourceMetadataUrl?: URL; errorDescription?: string };
+      return {
+        status: 403, error: 'insufficient_scope',
+        ...(x.requiredScope ? { scope: x.requiredScope } : {}),
+        ...(x.resourceMetadataUrl ? { resourceMetadataUrl: String(x.resourceMetadataUrl) } : {}),
+        ...(x.errorDescription ? { errorDescription: x.errorDescription } : {}),
+      };
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -1058,20 +1125,32 @@ async function requestBytes(input: string | URL | Request, init: RequestInit | u
  * event is logged the moment its blank line arrives, before the chunk that
  * finishes it reaches the SDK: nothing the SDK acts on is ever missing from the
  * log, and cancelling the stream still cancels the connection underneath.
+ *
+ * With `redactSecrets`, the auth fetch (phase 11 decision 1): each body is
+ * logged with its OAuth secret values replaced, and the unit names the fields
+ * replaced. What is sent and what the caller reads are the real bytes.
  */
-export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>, base: typeof fetch = fetch): typeof fetch {
+export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>, base: typeof fetch = fetch, redactSecrets = false): typeof fetch {
   const secretNames = new Set([...secretHeaders].map((n) => n.toLowerCase()));
   let exchanges = 0;
+  const asLogged = (bytes: Uint8Array, contentType: string | null | undefined, http: HttpDetails): { bytes: Uint8Array; http: HttpDetails } => {
+    if (!redactSecrets) return { bytes, http };
+    const r = redactAuthBody(bytes, contentType);
+    return r.fields.length === 0 ? { bytes, http } : { bytes: r.bytes, http: { ...http, redacted: r.fields } };
+  };
   return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const exchange = ++exchanges;
     const url = input instanceof Request ? input.url : String(input);
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
-    const request: HttpDetails = { exchange, method, url, headers: loggedHeaders(init?.headers ?? (input instanceof Request ? input.headers : undefined), secretNames) };
+    const rawHeaders = init?.headers ?? (input instanceof Request ? input.headers : undefined);
+    const request: HttpDetails = { exchange, method, url, headers: loggedHeaders(rawHeaders, secretNames) };
     const body = await requestBytes(input, init);
     // A body the log cannot read still goes to the server; the log says so
     // in place of bytes it does not have.
-    if (body instanceof Uint8Array) emit({ direction: 'out', kind: 'wire', bytes: body, http: request });
-    else appEvent(emit, { event: 'request-body-not-recorded', bodyType: body.unrecorded, ...request });
+    if (body instanceof Uint8Array) {
+      const out = asLogged(body, new Headers(rawHeaders).get('content-type') ?? (init?.body instanceof URLSearchParams ? 'application/x-www-form-urlencoded' : undefined), request);
+      emit({ direction: 'out', kind: 'wire', bytes: out.bytes, http: out.http });
+    } else appEvent(emit, { event: 'request-body-not-recorded', bodyType: body.unrecorded, ...request });
 
     // On the modern era a cancelled call over Streamable HTTP is an aborted
     // request with no notifications/cancelled (cancellation.mdx), so the abort
@@ -1104,11 +1183,15 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
       } finally {
         done();
       }
-      emit({ direction: 'in', kind: 'wire', bytes, http });
+      const out = asLogged(bytes, response.headers.get('content-type'), http);
+      emit({ direction: 'in', kind: 'wire', bytes: out.bytes, http: out.http });
       return rebuilt(bytes);
     }
     const events = new SseEventSplitter();
-    const event = (bytes: Uint8Array) => emit({ direction: 'in', kind: 'wire', bytes, http: { ...http, framing: 'sse-event' } });
+    const event = (bytes: Uint8Array) => {
+      const out = asLogged(bytes, 'application/json', { ...http, framing: 'sse-event' });
+      emit({ direction: 'in', kind: 'wire', bytes: out.bytes, http: out.http });
+    };
     // Transformer.cancel is in the streams standard and in Node, not yet in the TypeScript lib.
     const logging: Transformer<Uint8Array, Uint8Array> & { cancel?: (reason: unknown) => void } = {
       transform(chunk, controller) {
@@ -1185,6 +1268,8 @@ export type ConnectFailure =
   | { kind: 'unsupported-version'; supported: string[] }
   /** An HTTP server answered with an error status. */
   | { kind: 'http-status'; status: number }
+  /** The server wants authorization (401), or more of it (403 `insufficient_scope`). */
+  | { kind: 'unauthorized'; challenge: AuthChallenge }
   /** The server answered, and the answer was not a usable handshake. */
   | { kind: 'protocol'; code?: string | number };
 
@@ -1234,11 +1319,16 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
   // One logging fetch for every attempt, so exchange numbers keep counting.
   // A request the transport gave up on is recorded beside the traffic (P1).
   calls.onAbandoned = (id, message) => appEvent(emit, { event: 'stream-ended-without-response', ids: [id], message });
-  const fetchOption = { fetch: taskNameFetch(emit ? loggingFetch(emit, Object.keys(secretHeaders)) : fetch) };
+  let challenge: AuthChallenge | undefined;
+  const logged = emit ? loggingFetch(emit, Object.keys(secretHeaders)) : fetch;
+  const fetchOption = { fetch: taskNameFetch(challengeFetch(logged, (c) => { challenge = c; }, mod.extractWWWAuthenticateParams)) };
+  // token() only: no onUnauthorized, so a 401 throws and nothing is retried;
+  // 'throw' so a 403 insufficient_scope is reported, not re-authorized (decision 4).
+  const authOptions = { authProvider: { token: async () => opts.accessToken?.() }, onInsufficientScope: 'throw' };
 
   const attempt = async (negotiate: boolean) => {
     const client = makeClient(mod.Client, info, { negotiate, probeTimeoutMs: opts.probeTimeoutMs, onListChanged: opts.onListChanged, onServerRequest: opts.onServerRequest });
-    const transport = new Transport(new URL(opts.url), { requestInit: { headers: { ...opts.headers, ...secretHeaders } }, ...fetchOption });
+    const transport = new Transport(new URL(opts.url), { requestInit: { headers: { ...opts.headers, ...secretHeaders } }, ...fetchOption, ...authOptions });
     try {
       await client.connect(tap(transport, opts.onFrame, opts.onFrameError, calls, opts.onNotification));
       return client;
@@ -1278,13 +1368,16 @@ export async function connectHttp(opts: HttpConnectOptions): Promise<Connection>
       }
     }
   } catch (e) {
-    throw classifyHttp(e);
+    throw classifyHttp(e, challenge);
   }
-  return describe(client, calls, opts.kind ?? 'streamable-http');
+  const conn = await describe(client, calls, opts.kind ?? 'streamable-http');
+  return Object.assign(conn, { authChallenge: (err: unknown) => authChallengeOf(err, challenge) });
 }
 
-function classifyHttp(e: unknown): ConnectError {
+function classifyHttp(e: unknown, challenge: AuthChallenge | undefined): ConnectError {
   if (e instanceof ConnectError) return e;
+  const auth = authChallengeOf(e, challenge);
+  if (auth) return new ConnectError(messageOf(e), { kind: 'unauthorized', challenge: auth }, '', { cause: e });
   const supported = unsupportedVersions(e);
   if (supported !== undefined) return new ConnectError(messageOf(e), { kind: 'unsupported-version', supported }, '', { cause: e });
   const status = (e as { status?: unknown } | null)?.status;

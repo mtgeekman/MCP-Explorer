@@ -33,6 +33,12 @@ export interface HttpDetails {
    * lacks the blank line that ends an event.
    */
   framing?: 'sse-event';
+  /**
+   * The fields whose values the log replaced with `<secret: field>`: an OAuth
+   * exchange's body (pillar amendment 2026-09-26). The stored bytes are not
+   * the bytes sent or received, and the raw view says so.
+   */
+  redacted?: string[];
 }
 
 export type UnitListener = (unit: WireUnit) => void;

@@ -96,7 +96,20 @@ function describeFailure(state: Extract<ConnectionState, { status: 'failed' }>, 
       return { ...base, headline: `The server answered HTTP ${f.status}`, facts: server.url ? [`From ${server.url}.`] : [], offers: [] };
     case 'protocol':
       return { ...base, headline: 'The server answered, but not with a usable MCP handshake', facts: f.code === undefined ? [] : [`Error code ${f.code}.`], offers: [] };
+    case 'unauthorized':
+      return { ...base, ...describeChallenge(f.challenge), offers: [] };
   }
+}
+
+/** A 401 or 403 challenge in words: what the server refused, and what it named (phase 11 decision 10). */
+export function describeChallenge(c: { status: 401 | 403; scope?: string; error?: string; errorDescription?: string; resourceMetadataUrl?: string }): { headline: string; facts: string[] } {
+  const scopeNeeded = c.status === 403 && c.error === 'insufficient_scope';
+  const headline = scopeNeeded ? 'The server needs more scopes than this sign-in granted' : 'The server needs you to sign in';
+  const facts: string[] = [`It answered HTTP ${c.status}${c.error ? ` (${c.error})` : ''}.`];
+  if (c.errorDescription) facts.push(`It said: ${c.errorDescription}`);
+  if (c.scope) facts.push(`${scopeNeeded ? 'Scopes it asks for' : 'Scopes it names'}: ${c.scope}.`);
+  if (c.resourceMetadataUrl) facts.push(`Its resource metadata: ${c.resourceMetadataUrl}.`);
+  return { headline, facts };
 }
 
 function startAgain(label: string): Offer[] {

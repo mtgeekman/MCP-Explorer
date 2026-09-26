@@ -424,6 +424,11 @@ class CallTracker {
     }
   }
 
+  /** Whether the response for this id has arrived. */
+  has(id: string | number): boolean {
+    return this.responses.has(idKey(id));
+  }
+
   /** The response the tap saw for this id, if any; forgets the id either way. */
   take(id: string | number): Record<string, unknown> | undefined {
     const key = idKey(id);
@@ -466,10 +471,11 @@ async function callOn(client: any, calls: CallTracker, req: CallRequest): Promis
   const r = await rawRequest(client, calls, method, params, options);
   if (r.requestId === undefined) return { kind: 'failed', message: messageOf(r.failure) };
   const requestId = r.requestId;
-  // After a cancel the SDK ignores a late response; so does this, and the
-  // wire log still has it.
-  if (req.signal?.aborted) return { kind: 'cancelled', requestId };
+  // A response the SDK accepted before the abort is the outcome: the cancel
+  // came too late to send anything (R07-4). One arriving after the abort the
+  // SDK ignores, and so does this; the wire log still has it.
   const response = r.response;
+  if (r.abortedFirst) return { kind: 'cancelled', requestId };
   if (response && 'error' in response) return { kind: 'error', requestId, error: (response.error ?? {}) as { code?: unknown; message?: unknown; data?: unknown } };
   if (response) {
     const result = (response.result && typeof response.result === 'object' ? response.result : {}) as Record<string, unknown>;
@@ -486,6 +492,8 @@ async function callOn(client: any, calls: CallTracker, req: CallRequest): Promis
  */
 async function rawRequest(client: any, calls: CallTracker, method: string, params: Record<string, unknown>, options: Record<string, unknown>): Promise<{
   requestId?: string | number; response?: Record<string, unknown>; sdkError?: unknown; failure: unknown;
+  /** The request's signal aborted before its response arrived: the request was cancelled. */
+  abortedFirst?: true;
 }> {
   let sent: { id?: string | number; sent: Promise<unknown> };
   try {
@@ -493,12 +501,18 @@ async function rawRequest(client: any, calls: CallTracker, method: string, param
   } catch (e) {
     return { failure: e };
   }
+  let abortedFirst = false;
+  const signal = options.signal as AbortSignal | undefined;
+  const id = sent.id;
+  const onAbort = () => { abortedFirst = id === undefined || !calls.has(id); };
+  signal?.addEventListener('abort', onAbort, { once: true });
   let sdkError: unknown;
   try {
     await sent.sent;
   } catch (e) {
     sdkError = e;
   }
+  signal?.removeEventListener('abort', onAbort);
   if (sent.id === undefined) return { failure: sdkError ?? new Error(`the ${method} request never reached the transport`) };
   // The tap saw the response before the SDK's handler did, so by now it is
   // here if it came.
@@ -507,6 +521,7 @@ async function rawRequest(client: any, calls: CallTracker, method: string, param
     requestId: sent.id,
     ...(response ? { response } : {}),
     ...(sdkError === undefined ? {} : { sdkError }),
+    ...(abortedFirst ? { abortedFirst: true as const } : {}),
     failure: sdkError ?? new Error('no response arrived'),
   };
 }
@@ -617,19 +632,35 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
 
     // On the modern era a cancelled call over Streamable HTTP is an aborted
     // request with no notifications/cancelled (cancellation.mdx), so the abort
-    // is recorded as an event of its own (P1).
+    // is recorded as an event of its own (P1). The SDK's signal also carries
+    // the transport's own, which aborts on close, so the listener lives only
+    // until the response is read whole: after that an abort ends nothing (R07-2).
     const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-    signal?.addEventListener('abort', () => appEvent(emit, { event: 'request-aborted', exchange, method, url }), { once: true });
-    const response = await base(input, init);
+    const onAbort = () => appEvent(emit, { event: 'request-aborted', exchange, method, url });
+    const done = () => signal?.removeEventListener('abort', onAbort);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    let response: Response;
+    try {
+      response = await base(input, init);
+    } catch (e) {
+      done();
+      throw e;
+    }
     const http: HttpDetails = { exchange, status: response.status, statusText: response.statusText, headers: loggedHeaders(response.headers, secretNames) };
     const rebuilt = (body: BodyInit | null) => new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 
     if (!response.body) {
+      done();
       emit({ direction: 'in', kind: 'wire', bytes: new Uint8Array(0), http });
       return response;
     }
     if (!/^\s*text\/event-stream\b/i.test(response.headers.get('content-type') ?? '')) {
-      const bytes = new Uint8Array(await response.arrayBuffer());
+      let bytes: Uint8Array<ArrayBuffer>;
+      try {
+        bytes = new Uint8Array(await response.arrayBuffer());
+      } finally {
+        done();
+      }
       emit({ direction: 'in', kind: 'wire', bytes, http });
       return rebuilt(bytes);
     }
@@ -641,6 +672,7 @@ export function loggingFetch(emit: UnitListener, secretHeaders: Iterable<string>
         controller.enqueue(chunk);
       },
       flush() {
+        done();
         const rest = events.flush();
         if (rest) event(rest);
       },

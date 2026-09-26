@@ -940,6 +940,9 @@ test('logging: a level set on a legacy session, and its messages in the notifica
     await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
     const panel = page.locator('.notifications');
     await panel.getByRole('button', { name: 'Show' }).click();
+    // Raw first (D10, R10-4): the unit as it arrived, then the Readable view.
+    await panel.locator('.raw-params', { hasText: '"level":"critical"' }).waitFor({ timeout: 10_000 });
+    await panel.getByLabel('Readable').check();
     await panel.getByText('critical from fixture: a critical message').waitFor({ timeout: 10_000 });
     await panel.getByText('emergency from fixture: a emergency message').waitFor();
     assert.equal(await panel.getByText('error from fixture').count(), 0, 'below the level, nothing');

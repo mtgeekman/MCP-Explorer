@@ -2,6 +2,7 @@
 // log level, legacy resource subscriptions, the modern listen stream, and the
 // one-off utility requests (ping, completions). Every request here is one the
 // user asked for; nothing is re-sent, re-opened or polled on its own (P2).
+import { SUBSCRIPTION_ID_META_KEY } from '../../protocol/dist/index.js';
 import type {
   CallOutcome, Connection, ListenEnd, ListenHandle, LogLevel, ServerNotification, SubscriptionFilter, UtilityMethod, UtilityOutcome,
 } from '../../protocol/dist/index.js';
@@ -123,7 +124,7 @@ export class SessionControls {
       this.changed(serverId);
     }
     if (n.method === 'notifications/subscriptions/acknowledged' && s.listen) {
-      const sub = params._meta?.['io.modelcontextprotocol/subscriptionId'];
+      const sub = params._meta?.[SUBSCRIPTION_ID_META_KEY];
       if (sub === s.listen.view.requestId) {
         s.listen.view.acknowledged = params.notifications ?? {};
         this.changed(serverId);

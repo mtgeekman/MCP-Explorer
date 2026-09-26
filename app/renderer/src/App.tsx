@@ -1,7 +1,7 @@
 // The app frame (board 1A): the workspace switcher in the header, servers on
 // the left, the selected server in the main area. First run is workspace
 // first (board 2C, spec D3 revised 2026-09-24).
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CallView, LogUnit, OpenedWorkspace, ServerRow, WorkspaceListing, WorkspaceNotice } from '../../../packages/backend/dist/index.js';
 import type { BackendClient } from './lib/client';
 import { CreateWorkspace } from './workspace/CreateWorkspace';
@@ -17,6 +17,17 @@ import { ReadablePane, type ReadableContent } from './log/ReadablePane';
 import type { SelectedItem } from './surface/SurfacePanel';
 import { Settings } from './settings/Settings';
 import { ContextScreen } from './context/ContextScreen';
+import { Splitter } from './layout/Splitter';
+import { KEYS, LOG_HEAD, READABLE_DEFAULT, logBounds, readFlag, readSize, readableBounds, remember, type SizeStore } from './lib/panes';
+
+/** The renderer's own storage for pane sizes; absent where the page cannot reach it. */
+function paneStore(): SizeStore | undefined {
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
+}
 
 type Main = { kind: 'server'; id: string } | { kind: 'add' } | { kind: 'edit'; id: string } | { kind: 'settings' } | { kind: 'import' } | { kind: 'context' } | { kind: 'none' };
 
@@ -30,6 +41,14 @@ export function App({ client }: { client: BackendClient }) {
   const [creating, setCreating] = useState(false);
   const [readable, setReadable] = useState<ReadableContent | null>(null);
   const [poppedOut, setPoppedOut] = useState(false);
+  // Pane sizes: the log's height (undefined keeps the default share of the
+  // column), whether it is collapsed, and the readable pane's width.
+  const [logHeight, setLogHeight] = useState<number | undefined>(() => readSize(paneStore(), KEYS.logHeight));
+  const [logCollapsed, setLogCollapsed] = useState(() => readFlag(paneStore(), KEYS.logCollapsed));
+  const [readableWidth, setReadableWidth] = useState(() => readSize(paneStore(), KEYS.readableWidth) ?? READABLE_DEFAULT);
+  const [measuredLog, setMeasuredLog] = useState(0);
+  const column = useRef<HTMLDivElement | null>(null);
+  const logSlot = useRef<HTMLDivElement | null>(null);
 
   const selectUnit = useCallback((u: LogUnit | null) => {
     setReadable(u ? { kind: 'unit', unit: u } : null);
@@ -115,6 +134,11 @@ export function App({ client }: { client: BackendClient }) {
   }
 
   const selected = main.kind === 'server' || main.kind === 'edit' ? servers.find((s) => s.id === main.id) : undefined;
+  const showLog = main.kind === 'server' && Boolean(selected);
+  const logSize = logCollapsed ? LOG_HEAD : logHeight ?? measuredLog;
+  const setCollapsed = (c: boolean) => { setLogCollapsed(c); remember(paneStore(), KEYS.logCollapsed, c); };
+  const resizeLog = (h: number) => { setLogCollapsed(false); setLogHeight(h); };
+  const commitLog = (h: number) => { remember(paneStore(), KEYS.logHeight, h); remember(paneStore(), KEYS.logCollapsed, false); };
   return (
     <div className="app">
       <header className="app-header">
@@ -127,7 +151,7 @@ export function App({ client }: { client: BackendClient }) {
       <Notices notices={notices} onDismiss={(i) => setNotices((n) => n.filter((_, j) => j !== i))} />
       <div className="app-body">
         <ServerList servers={servers} selectedId={selected?.id} onSelect={(id) => { if (id !== selected?.id) selectUnit(null); setMain({ kind: 'server', id }); }} onAdd={() => setMain({ kind: 'add' })} onImport={() => setMain({ kind: 'import' })} />
-        <div className="app-column">
+        <div className="app-column" ref={column}>
         <main className="app-main">
           {main.kind === 'none' && (
             <div className="empty">{servers.length ? 'Choose a server.' : 'No servers yet. Add one to connect to it.'}</div>
@@ -159,12 +183,46 @@ export function App({ client }: { client: BackendClient }) {
             />
           )}
         </main>
-        {main.kind === 'server' && selected && (
-          <WireLog key={selected.id} client={client} serverId={selected.id} selected={readable?.kind === 'unit' ? readable.unit : null} onSelect={selectUnit} />
+        {showLog && selected && (
+          <>
+            <Splitter axis="y" label="Wire log height" size={logSize} bounds={() => logBounds(column.current?.clientHeight ?? 0)}
+              onResize={resizeLog} onCommit={commitLog} onToggle={() => setCollapsed(!logCollapsed)} />
+            <LogSlot slot={logSlot} height={logCollapsed ? LOG_HEAD : logHeight} onMeasured={setMeasuredLog}>
+              <WireLog key={selected.id} client={client} serverId={selected.id} selected={readable?.kind === 'unit' ? readable.unit : null} onSelect={selectUnit}
+                collapsed={logCollapsed} onToggleCollapsed={() => setCollapsed(!logCollapsed)} />
+            </LogSlot>
+          </>
         )}
         </div>
-        <ReadablePane content={readable} poppedOut={poppedOut} onPopOut={() => { setPoppedOut(true); window.mcpxShell?.popOutReadable(); }} />
+        <Splitter axis="x" label="Readable pane width" size={readableWidth}
+          bounds={() => readableBounds((column.current?.offsetWidth ?? 0) + readableWidth)}
+          onResize={setReadableWidth} onCommit={(w) => remember(paneStore(), KEYS.readableWidth, w)} />
+        <ReadablePane width={readableWidth} content={readable} poppedOut={poppedOut} onPopOut={() => { setPoppedOut(true); window.mcpxShell?.popOutReadable(); }} />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Where the wire log sits: its default share of the column until the user
+ * sizes it, then that height, never so tall that the server view goes below
+ * its minimum. Reports its height, so the handle's first drag starts from it.
+ */
+function LogSlot({ slot, height, onMeasured, children }: {
+  slot: React.MutableRefObject<HTMLDivElement | null>; height: number | undefined; onMeasured: (h: number) => void; children: React.ReactNode;
+}) {
+  useLayoutEffect(() => {
+    const el = slot.current;
+    if (!el) return;
+    const report = () => onMeasured(el.offsetHeight);
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [slot, onMeasured]);
+  return (
+    <div className="log-slot" ref={slot} style={height === undefined ? undefined : { flex: '0 0 auto', height, minHeight: 0 }}>
+      {children}
     </div>
   );
 }

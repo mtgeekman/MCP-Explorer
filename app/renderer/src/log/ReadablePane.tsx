@@ -63,9 +63,9 @@ function UnitReadable({ unit }: { unit: LogUnit }) {
   );
 }
 
-export function ReadablePane({ content, poppedOut, onPopOut }: { content: ReadableContent | null; poppedOut: boolean; onPopOut: () => void }) {
+export function ReadablePane({ content, poppedOut, onPopOut, width }: { content: ReadableContent | null; poppedOut: boolean; onPopOut: () => void; width?: number }) {
   return (
-    <aside className="readable-pane">
+    <aside className="readable-pane" style={width === undefined ? undefined : { flexBasis: width }}>
       <div className="pane-head">
         <span>Readable</span>
         {!poppedOut && <button onClick={onPopOut} title="Open this pane in its own window">Pop out</button>}

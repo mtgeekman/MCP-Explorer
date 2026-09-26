@@ -24,7 +24,8 @@
     "check:macos-prebuilds": "node scripts/check-macos-prebuilds.mjs",
     "capture:real": "node scripts/capture-real.mjs",
     "golden:db": "node scripts/golden-db.mjs",
-    "golden:versions": "node scripts/golden-versions.mjs"
+    "golden:versions": "node scripts/golden-versions.mjs",
+    "icons": "electron scripts/build-icons.cjs"
   },
   "devDependencies": {
     "@fontsource/ibm-plex-sans": "^5.3.0",
@@ -61,6 +62,9 @@
       "node_modules/**/*",
       "packages/*/package.json",
       "packages/*/dist/**/*"
+    ],
+    "extraResources": [
+      { "from": "build/icon.png", "to": "icon.png" }
     ],
     "asarUnpack": [
       "**/node_modules/better-sqlite3-multiple-ciphers/**",

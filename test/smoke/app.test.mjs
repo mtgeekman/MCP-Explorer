@@ -340,7 +340,7 @@ test('surface: connecting captures it; a tool opens on its exact bytes and the p
     assert.ok(await pane.locator('table.fields td', { hasText: 'What to echo.' }).first().isVisible(), 'the parameter description');
     await page.getByRole('tab', { name: 'Instructions' }).click();
     assert.equal(await page.locator('pre.instructions').innerText(), 'Phase 01 fixture. Modern era.');
-    assert.ok(await page.getByText('does not open. Refresh to see changes.').isVisible(), 'modern change notices are said to need a subscription');
+    assert.ok(await page.getByText('only on a listen stream: open one under Session').isVisible(), 'modern change notices are said to need a listen stream (phase 10)');
   } finally {
     await app.close();
   }
@@ -896,6 +896,121 @@ test('versions: every recent capture a different version is flagged unstable (de
     await page.locator('.versions .warn').waitFor();
     assert.equal(await page.locator('.versions .warn').innerText(), 'Unstable: the last 4 captures each produced a different version, over 3 hours.');
     assert.equal(await page.locator('.versions-table tr.identity').count(), 3, 'identity rows stay compact');
+  } finally {
+    await app.close();
+  }
+});
+
+// Phase 10: protocol completeness.
+
+const extrasServer = (name, script, env = {}) => ({ id: randomUUID(), name, transport: 'stdio', command: process.execPath, args: [script], env: { EXTRAS: '1', ...env } });
+const surfaceReady = (page) => page.locator('.surface .tabs').waitFor({ timeout: 20_000 });
+
+test('health check: one press connects, lists, and flags every malformed element (decision 12)', async () => {
+  const { dataDir } = seed([extrasServer('health', legacy, { MALFORMED_SURFACE: '1', LEGACY_REVISION: '2025-11-25' })]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await page.locator('.server-row', { hasText: 'health' }).click();
+    await page.getByRole('button', { name: 'Health check', exact: true }).click();
+    const report = page.locator('.health');
+    await report.locator('h3', { hasText: /problems? found/ }).waitFor({ timeout: 20_000 });
+    for (const text of ['Revision 2025-11-25 (legacy era)', 'tools/list no_schema', 'prompts/list bad_args', 'resources/list fixture://nameless', 'bad_schema inputSchema', 'Answered in']) {
+      await report.getByText(text, { exact: false }).first().waitFor();
+    }
+    await page.locator('.state-card h3', { hasText: /Connected, legacy era/ }).waitFor();
+    await shot(page, '10-1-health');
+  } finally {
+    await app.close();
+  }
+});
+
+test('logging: a level set on a legacy session, and its messages in the notifications timeline (decisions 5, 6)', async () => {
+  const { dataDir } = seed([extrasServer('logging', legacy)]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'logging');
+    await surfaceReady(page);
+    await page.locator('.session select').selectOption('critical');
+    // The select is the session's level as the backend holds it: it shows the choice once logging/setLevel is answered.
+    await page.waitForFunction(() => document.querySelector('.session select')?.value === 'critical', undefined, { timeout: 10_000 });
+    await openCall(page, 'log_burst');
+    await callButton(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    const panel = page.locator('.notifications');
+    await panel.getByRole('button', { name: 'Show' }).click();
+    await panel.getByText('critical from fixture: a critical message').waitFor({ timeout: 10_000 });
+    await panel.getByText('emergency from fixture: a emergency message').waitFor();
+    assert.equal(await panel.getByText('error from fixture').count(), 0, 'below the level, nothing');
+  } finally {
+    await app.close();
+  }
+});
+
+test('modern: a listen carries the change notice, and the banner\'s Refresh lists the new tool (decisions 1, 7)', async () => {
+  const { dataDir } = seed([extrasServer('listening', modern)]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'listening');
+    await surfaceReady(page);
+    await page.locator('.listen').getByRole('button', { name: 'Open listen' }).click();
+    await page.locator('.listen', { hasText: 'Open. The server agreed to send: tool list changes' }).waitFor({ timeout: 10_000 });
+    await openCall(page, 'mutate');
+    await callConfirmed(page);
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    const banner = page.locator('.banner', { hasText: 'The server says its tools changed' });
+    await banner.waitFor({ timeout: 10_000 });
+    assert.equal(await page.locator('.surface-items button', { hasText: /^mutated/ }).count(), 0, 'nothing re-listed on the notice');
+    await banner.getByRole('button', { name: 'Refresh' }).click();
+    await page.locator('.surface-items button', { hasText: /^mutated/ }).waitFor({ timeout: 10_000 });
+    await shot(page, '10-2-listen-refresh');
+  } finally {
+    await app.close();
+  }
+});
+
+test('legacy tasks: run as a task, nothing polls, Get result completes the call (decision 2)', async () => {
+  const { dataDir } = seed([extrasServer('tasks', legacy, { LEGACY_REVISION: '2025-11-25' })]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'tasks');
+    await surfaceReady(page);
+    await openCall(page, 'task_work');
+    await page.getByLabel(/Run as a task/).check();
+    await callConfirmed(page);
+    await page.locator('.call-panel .transcript .progress', { hasText: /Task task-\d+: working/ }).waitFor({ timeout: 10_000 });
+    await page.locator('.call-panel .transcript').getByRole('button', { name: 'Get result' }).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    await page.locator('.call-panel .transcript h4', { hasText: 'Round 2 (tasks/result)' }).waitFor();
+    await page.locator('.readable-pane .part-text', { hasText: /done after 300 ms/ }).waitFor();
+  } finally {
+    await app.close();
+  }
+});
+
+test('completions: Suggest sends one completion/complete and a suggestion fills the argument (decision 3)', async () => {
+  const { dataDir, path, id } = seed([extrasServer('complete', legacy)]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'complete');
+    await surfaceReady(page);
+    await page.getByRole('tab', { name: /^Prompts/ }).click();
+    await page.locator('.surface-items button', { hasText: /^pick/ }).click();
+    await page.getByRole('tab', { name: 'Get', exact: true }).click();
+    await page.locator('.call-form label.field', { has: page.locator('span.mono', { hasText: /^language$/ }) }).locator('input').fill('ty');
+    await page.locator('.suggest').getByRole('button', { name: 'Suggest' }).click();
+    await page.locator('.suggest').getByRole('button', { name: 'typescript' }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.call-form input')].some((i) => i.value === 'typescript'));
+    const ws = openWorkspaceDb({ path, workspaceId: id, custody: { kind: 'none' }, secrets: noSecrets });
+    try {
+      assert.equal(ws.db.prepare("SELECT count(*) AS n FROM frame WHERE method = 'completion/complete' AND direction = 'out'").get().n, 1, 'one request per press');
+    } finally {
+      ws.close();
+    }
   } finally {
     await app.close();
   }

@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import type { CallExport, CallView, RoundRecord } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
 import { progressText, statusLabel } from '../lib/content';
+import { missingCapabilityText, taskActions, taskLine } from '../lib/session';
 import { urlElicitationsInError } from '../lib/inputRequests';
 import { clock } from '../lib/logrows';
 import { InputSet, UrlBox } from './InputRequests';
@@ -62,15 +63,19 @@ export function CallTranscript({ client, callId, serverName, onRead, onReplay }:
         <span className="mono">{call.kind === 'resource' ? 'resources/read' : call.kind === 'prompt' ? 'prompts/get' : 'tools/call'} {call.target}</span>
         <span className="muted">{clock(call.startedAt)}{call.finishedAt !== null ? `, ${call.finishedAt - call.startedAt} ms` : ''}</span>
         <span className="header-spacer" />
-        {view.live?.status === 'running' && <button onClick={() => act(() => client.request('calls.cancel', { callId }))}>Cancel</button>}
-        {view.live?.status === 'awaiting-input' && <button onClick={() => act(() => client.request('calls.stop', { callId }))}>Stop the call</button>}
+        {view.live?.status === 'running' && !view.live.task && <button onClick={() => act(() => client.request('calls.cancel', { callId }))}>Cancel</button>}
+        {view.live?.status === 'awaiting-input' && !view.live.task && <button onClick={() => act(() => client.request('calls.stop', { callId }))}>Stop the call</button>}
+        {taskActions(view.live).map((a) => (
+          <button key={a.op} onClick={() => act(() => (a.op === 'cancel' ? client.request('calls.cancel', { callId }) : a.op === 'stop' ? client.request('calls.stop', { callId }) : client.request('calls.task', { callId, op: a.op })))}>{a.label}</button>
+        ))}
         <button onClick={() => onRead(view)}>Read</button>
         {onReplay && firstArgs !== undefined && !view.live && (
           <button title="Load these arguments into the form; nothing is sent until you call" onClick={() => onReplay((firstArgs ?? {}) as Record<string, unknown>)}>Replay</button>
         )}
         {!view.live && <button onClick={() => act(async () => setExported(await client.request('calls.export', { callId })))}>Export</button>}
       </header>
-      {view.live?.status === 'running' && (
+      {view.live?.task && <p className="progress">{taskLine(view.live)}</p>}
+      {view.live?.status === 'running' && !view.live.task && (
         <p className="progress">{view.live.progress ? `Progress ${progressText(view.live.progress)}` : 'Waiting for the server.'} Cancel tells the server to stop; it may still finish.</p>
       )}
       {view.live?.status === 'awaiting-input' && view.live.paused && (
@@ -107,12 +112,13 @@ export function CallTranscript({ client, callId, serverName, onRead, onReplay }:
 function Round({ client, round }: { client: BackendClient; round: RoundRecord }) {
   return (
     <div className="round">
-      <h4>Round {round.seq}</h4>
+      <h4>Round {round.seq}{round.method ? ` (${round.method})` : ''}</h4>
       <UnitBytes client={client} unitId={round.requestUnitId} label="Request" missing="The request never reached the wire." />
       {round.responseUnitId !== null
         ? <UnitBytes client={client} unitId={round.responseUnitId} label="Response" missing="" />
         : <p className="muted">{round.finishedAt === null ? 'No response yet.' : round.error ? `No response: ${JSON.stringify(round.error)}` : 'No response was recorded.'}</p>}
       {round.inputResponses !== null && <p className="muted">Answered, and the answers went in round {round.seq + 1}'s request.</p>}
+      {missingCapabilityText(round.error) && <p className="warn">{missingCapabilityText(round.error)}</p>}
       {urlElicitationsInError(round.error).map((e, i) => (
         <div key={i}>
           <p className="warn">The server needs you to visit a page first (error -32042). Visit it, then call again.</p>

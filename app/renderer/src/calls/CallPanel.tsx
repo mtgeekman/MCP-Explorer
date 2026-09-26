@@ -10,6 +10,7 @@ import type { BackendClient } from '../lib/client';
 import { ANNOTATIONS_LINE, annotationRows } from '../lib/surface';
 import { editorText, parseEditor, planForm, type Args } from '../lib/schemaForm';
 import { Fields } from './Fields';
+import { completionParams, taskSupport } from '../lib/session';
 import { CallTranscript } from './CallTranscript';
 
 export type CallTarget =
@@ -38,13 +39,18 @@ function promptSchema(args: unknown): Record<string, unknown> {
   };
 }
 
-export function CallPanel({ client, serverId, serverName, connected, target, onRead }: {
+export function CallPanel({ client, serverId, serverName, connected, target, onRead, era, revision, completions }: {
   client: BackendClient;
   serverId: string;
   serverName?: string;
   connected: boolean;
   target: CallTarget;
   onRead: (view: CallView) => void;
+  /** The captured surface's era and revision: what the tool's own fields mean. */
+  era?: 'legacy' | 'modern';
+  revision?: string;
+  /** The server declared completions: a Suggest button beside each argument (phase 10 decision 3). */
+  completions?: boolean;
 }) {
   // A prompt's schema built inline was a new object on every render, and each
   // verdict re-rendered, so validation re-ran without end (R07-1). Keyed on the
@@ -83,6 +89,9 @@ export function CallPanel({ client, serverId, serverName, connected, target, onR
   const [variables, setVariables] = useState<string[]>([]);
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const support = target.kind === 'tool' && era && revision ? taskSupport(target.tool, era, revision) : null;
+  const [asTask, setAsTask] = useState(false);
+  const runAsTask = support === 'required' || (support === 'optional' && asTask);
 
   const plan = useMemo(() => (schema === undefined ? null : planForm(schema)), [schema]);
 
@@ -126,6 +135,7 @@ export function CallPanel({ client, serverId, serverName, connected, target, onR
         serverId, kind, target: name,
         ...(kind === 'resource' ? {} : { args }),
         ...(confirmed ? { confirmed: true } : {}),
+        ...(kind === 'tool' && runAsTask ? { asTask: {} } : {}),
       });
       if (reply.started) {
         setConfirm(null);
@@ -171,6 +181,19 @@ export function CallPanel({ client, serverId, serverName, connected, target, onR
           ))}
         </div>
       )}
+      {completions && connected && revision && (target.kind === 'prompt' || target.kind === 'template') && (
+        <Suggest client={client} serverId={serverId} revision={revision}
+          target={target.kind === 'prompt' ? { kind: 'prompt', name: target.name } : { kind: 'template', uriTemplate: target.uriTemplate }}
+          names={target.kind === 'prompt' ? Object.keys((schema as { properties?: object } | undefined)?.properties ?? {}) : variables}
+          values={target.kind === 'prompt' ? args : values}
+          onPick={(name, value) => (target.kind === 'prompt' ? fromForm({ ...args, [name]: value }) : setValues((s) => ({ ...s, [name]: value })))} />
+      )}
+      {support && (
+        <label className="check">
+          <input type="checkbox" checked={runAsTask} disabled={support === 'required'} onChange={(e) => setAsTask(e.target.checked)} />
+          {' '}Run as a task {support === 'required' ? '(the tool requires it)' : '(the tool allows it)'}: the call answers with a task, and nothing checks on it until you ask
+        </label>
+      )}
       {verdict && verdict.valid === false && <p className="warn">The arguments do not match the schema: {verdict.message}. They can still be sent; the server decides.</p>}
       {verdict && verdict.valid === null && <p className="muted">The schema could not be used to check the arguments: {verdict.message}</p>}
       {verdict && verdict.valid === true && plan && <p className="ok-line">The arguments match the schema.</p>}
@@ -183,6 +206,44 @@ export function CallPanel({ client, serverId, serverName, connected, target, onR
       {callId !== null && (
         <CallTranscript key={callId} client={client} callId={callId} serverName={serverName} onRead={onRead} onReplay={plan ? (a) => fromForm(a) : undefined} />
       )}
+    </div>
+  );
+}
+
+/**
+ * Suggestions for one argument by completion/complete (decision 3): one
+ * request per press of Suggest, never as the user types.
+ */
+function Suggest({ client, serverId, revision, target, names, values, onPick }: {
+  client: BackendClient; serverId: string; revision: string;
+  target: { kind: 'prompt'; name: string } | { kind: 'template'; uriTemplate: string };
+  names: string[]; values: Record<string, unknown>; onPick: (name: string, value: string) => void;
+}) {
+  const [name, setName] = useState<string>('');
+  const [found, setFound] = useState<{ values: string[]; more: boolean } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const chosen = name || names[0];
+  if (!chosen) return null;
+  const suggest = () => {
+    setError(null);
+    client.request('session.request', { serverId, method: 'completion/complete', params: completionParams(target, chosen, values, revision) }).then((o) => {
+      if (o.kind !== 'result') return setError(o.kind === 'error' ? String(o.error.message) : o.kind === 'failed' ? o.message : 'cancelled');
+      const c = (o.result.completion ?? {}) as { values?: unknown; hasMore?: unknown };
+      setFound({ values: Array.isArray(c.values) ? c.values.filter((v): v is string => typeof v === 'string') : [], more: c.hasMore === true });
+    }, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  };
+  return (
+    <div className="suggest">
+      <div className="actions left">
+        <select value={chosen} onChange={(e) => { setName(e.target.value); setFound(null); }} aria-label="Argument to complete">
+          {names.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <button onClick={suggest} title="Sends one completion/complete for this argument, with what it holds now">Suggest</button>
+        {found && found.values.length === 0 && <span className="muted">No suggestions.</span>}
+        {found?.values.map((v) => <button key={v} className="chip mono" onClick={() => onPick(chosen, v)}>{v}</button>)}
+        {found?.more && <span className="muted">The server has more.</span>}
+      </div>
+      {error && <p className="error">{error}</p>}
     </div>
   );
 }
@@ -209,6 +270,7 @@ function ConfirmDialog({ prompt, busy, onCancel, onConfirm }: { prompt: ConfirmP
         <h4>What will be sent</h4>
         <p className="muted">These params, with the request id and _meta the client adds.</p>
         <pre className="mono json">{JSON.stringify(prompt.params, null, 2)}</pre>
+        {prompt.headers && (<><h4>Headers it will carry</h4><p className="muted">The tool declares these with x-mcp-header; the server routes on them.</p><pre className="mono json">{Object.entries(prompt.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}</pre></>)}
         {prompt.argumentsCheck?.valid === false && <p className="warn">The arguments do not match the tool's schema: {prompt.argumentsCheck.message}</p>}
         <p className="muted">Calls that are not declared read-only ask first. That is the workspace setting "Ask before calls", under Settings.</p>
         <div className="actions">

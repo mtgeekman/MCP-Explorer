@@ -159,8 +159,10 @@ export class AuthManager {
       const pending: Pending = { authorizationUrl: request.url, listener, startedAt: this.now() };
       this.pending.set(serverId, pending);
       this.host.changed(serverId);
-      const done = this.finish(serverId, def.url, pending, info, client, request, fetchFn, rec);
-      void done;
+      // Not awaited: the browser may take minutes. Anything it throws late is
+      // reported, never left as an unhandled rejection (R11-5).
+      this.finish(serverId, def.url, pending, info, client, request, fetchFn, rec)
+        .catch((e: unknown) => process.emitWarning(`sign-in for server ${serverId} failed while ending: ${e instanceof Error ? e.message : String(e)}`, 'MCPExplorerAuthWarning'));
       listener = undefined;
       return { authorizationUrl: request.url };
     } catch (e) {
@@ -186,8 +188,11 @@ export class AuthManager {
     } finally {
       await pending.listener.close();
       if (this.pending.get(serverId) === pending) this.pending.delete(serverId);
-      rec.close();
-      this.host.changed(serverId);
+      try {
+        rec.close();
+      } finally {
+        this.host.changed(serverId);
+      }
     }
   }
 

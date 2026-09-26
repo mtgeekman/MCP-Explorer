@@ -65,6 +65,11 @@ function createWindow(route = '', size = { width: 1400, height: 900, minWidth: 9
   const win = new BrowserWindow({
     ...size,
     title: route === 'readable' ? 'MCP Explorer: readable' : 'MCP Explorer',
+    // The packaged executable carries build/icon.ico; this is the window's
+    // own icon, which Linux shows and a dev run needs (npm run icons).
+    // electron-builder leaves build/ out of the app, so a package ships the
+    // PNG as an extra resource beside it.
+    icon: app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(app.getAppPath(), 'build', 'icon.png'),
     webPreferences: {
       preload: join(here, '..', 'preload', 'preload.cjs'),
       contextIsolation: true,

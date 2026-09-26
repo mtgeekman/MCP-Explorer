@@ -12,6 +12,8 @@ build/
 !/build/
 /build/*
 !/build/icon.svg
+!/build/icon.ico
+!/build/icon.png
 release/
 *.tsbuildinfo
 

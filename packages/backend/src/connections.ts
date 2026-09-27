@@ -319,6 +319,12 @@ export class ConnectionManager {
     return state;
   }
 
+  /** A root this manager just spawned: owned, and reported, until its tree is ended. */
+  private adopt(root: ServerRoot): void {
+    this.owned.set(root.pid, root);
+    this.announceProcesses();
+  }
+
   private announceProcesses(): void {
     this.opts.events.processes?.([...this.owned.values()]);
   }
@@ -374,8 +380,7 @@ export class ConnectionManager {
       const event = u.kind === 'app' ? appEvent(u) : undefined;
       if (event?.event === 'spawned' && typeof event.pid === 'number') {
         slot.root = { pid: event.pid, startedAt: this.now() };
-        this.owned.set(event.pid, slot.root);
-        this.announceProcesses();
+        this.adopt(slot.root);
       }
       if (event?.event === 'spawned' && this.state(serverId).status === 'connecting') {
         this.set(serverId, { status: 'connecting', step: 'negotiating', era, connectionId });

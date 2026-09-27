@@ -196,7 +196,13 @@ export class ConnectionManager {
         process.emitWarning(`server ${ids[i]} did not close cleanly: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`, 'MCPExplorerConnectionWarning');
       }
     });
-    await Promise.all([...this.owned].map((root) => this.endTree(root)));
+    // An end already under way when closeAll began is shared, not a fresh
+    // try: if it failed, the root gets the attempt this closeAll owes it.
+    const running = new Set(this.ending.keys());
+    await Promise.all([...this.owned].map(async (root) => {
+      await this.endTree(root);
+      if (running.has(root)) await this.endTree(root);
+    }));
   }
 
   captureStatus(serverId: string): CaptureStatus {

@@ -40,6 +40,60 @@ test('POSIX: a spawned root is reported with its start, so its PID cannot be mis
   assert.equal(reported.startToken, processStartToken(up.pid));
 });
 
+test('closeAll tries again a root whose end was already running and failed', async () => {
+  const reports = [];
+  const attempts = [];
+  let failFirst;
+  const manager = new ConnectionManager(workspace(), {
+    events: { processes: (roots) => reports.push(roots) },
+    // The first end fails when the test says; any later one succeeds.
+    killTree: (r) => { attempts.push(r); return attempts.length === 1 ? new Promise((_, reject) => { failFirst = () => reject(new Error('taskkill failed')); }) : Promise.resolve(); },
+  });
+  const r = { pid: 4343, startedAt: 1 };
+  manager['adopt'](r);
+  const warnings = [];
+  const onWarning = (w) => warnings.push(w.message);
+  process.on('warning', onWarning);
+  try {
+    const inFlight = manager['endTree'](r);
+    const closing = manager.closeAll();
+    failFirst();
+    await inFlight;
+    await closing;
+  } finally {
+    await new Promise((res) => setImmediate(res));
+    process.off('warning', onWarning);
+  }
+  assert.equal(attempts.length, 2, 'closeAll waited on the failed end and did not try again');
+  assert.deepEqual(reports.at(-1), []);
+  assert.ok(warnings.some((m) => m.includes('taskkill failed')), 'the failed attempt is still reported');
+});
+
+test('closeAll tries a root it started ending itself only once, even when that fails', async () => {
+  const attempts = [];
+  const manager = new ConnectionManager(workspace(), { events: {}, killTree: async (r) => { attempts.push(r); throw new Error('taskkill failed'); } });
+  manager['adopt']({ pid: 4444, startedAt: 1 });
+  const onWarning = () => {};
+  process.on('warning', onWarning);
+  try {
+    await manager.closeAll();
+  } finally {
+    await new Promise((res) => setImmediate(res));
+    process.off('warning', onWarning);
+  }
+  assert.equal(attempts.length, 1);
+});
+
+test('old valid input: closeAll ends each root once when nothing fails', async () => {
+  const attempts = [];
+  const manager = new ConnectionManager(workspace(), { events: {}, killTree: async (r) => { attempts.push(r); } });
+  const [a, b] = [{ pid: 1, startedAt: 1 }, { pid: 2, startedAt: 1 }];
+  manager['adopt'](a);
+  manager['adopt'](b);
+  await manager.closeAll();
+  assert.deepEqual(attempts, [a, b]);
+});
+
 test('a spawn that reuses an owned root\'s PID does not forget the old root: both are ended and reported', async () => {
   const reports = [];
   const ended = [];

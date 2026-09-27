@@ -217,6 +217,30 @@ test('acceptance: no secret value appears in any file the app writes', () => {
     'positive control: the plain value must be found in the unencrypted workspace, and only there');
 });
 
+test('servers: header names that differ only by case are one header, refused twice (RFC 9110 §5.1)', () => {
+  // fetch merges them: X-Api-Key plain and x-api-key secret reach the server
+  // as "plain-v, secret-v", neither value the user meant.
+  const { ws } = create({ kind: 'keychain' });
+  try {
+    const cases = [
+      [http({ headers: { 'X-Api-Key': 'p' }, secretHeaders: { 'x-api-key': 's' } }), /header x-api-key is both plain and secret/],
+      [http({ headers: { 'X-Api-Key': 'p' }, secretHeaders: undefined, unstoredSecrets: { headers: ['X-API-KEY'] } }), /header X-API-KEY is both plain and secret/],
+      [http({ secretHeaders: { 'X-Api-Key': 's' }, unstoredSecrets: { headers: ['x-api-key'] } }), /secret header x-api-key is given twice/],
+      [http({ headers: { Accept: 'a', accept: 'b' }, secretHeaders: undefined }), /header accept is given twice/],
+    ];
+    for (const [def, reason] of cases) {
+      assert.throws(() => saveServer(ws, def), (err) => err instanceof InvalidServerDefinitionError && reason.test(err.message), reason.source);
+    }
+    assert.deepEqual(listServers(ws), []);
+    // Old valid input: environment variable names stay case-sensitive, as on Linux.
+    const env = stdio({ env: { Path_Hint: 'a' }, secretEnv: { PATH_HINT: 's' } });
+    saveServer(ws, env);
+    assert.deepEqual(loadServer(ws, env.id).env, { Path_Hint: 'a' });
+  } finally {
+    ws.close();
+  }
+});
+
 test('servers: a credential header is refused as plain configuration, whatever its case (D31, D35)', () => {
   for (const custody of [{ kind: 'keychain' }, { kind: 'none' }]) {
     const { ws } = create(custody);

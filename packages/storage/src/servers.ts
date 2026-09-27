@@ -104,14 +104,22 @@ function validate(def: ServerDefinition): void {
     [def.headers, def.secretHeaders, def.unstoredSecrets?.headers, 'header'],
   ] as const;
   for (const [plain, secret, unstored, what] of lists) {
+    // Header names are case-insensitive (RFC 9110 §5.1): fetch merges X-Key
+    // and x-key into one "a, b" value. Environment names are not, as on Linux.
+    const key = what === 'header' ? (n: string) => n.trim().toLowerCase() : (n: string) => n;
+    const plainKeys = new Set<string>();
+    for (const name of Object.keys(plain ?? {})) {
+      if (plainKeys.has(key(name))) throw bad(`${what} ${name} is given twice`);
+      plainKeys.add(key(name));
+    }
     const seen = new Set<string>();
     for (const name of [...Object.keys(secret ?? {}), ...(unstored ?? [])]) {
       if (!name) throw bad(`a secret ${what} has an empty name`);
       // One name in two places would leave the app to guess which value the
       // server gets, and a plain one is readable on disk.
-      if (plain && Object.hasOwn(plain, name)) throw bad(`${what} ${name} is both plain and secret`);
-      if (seen.has(name)) throw bad(`secret ${what} ${name} is given twice`);
-      seen.add(name);
+      if (plainKeys.has(key(name))) throw bad(`${what} ${name} is both plain and secret`);
+      if (seen.has(key(name))) throw bad(`secret ${what} ${name} is given twice`);
+      seen.add(key(name));
     }
   }
   // The wire log redacts these whether or not they were marked (D35); stored

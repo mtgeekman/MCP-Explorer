@@ -217,6 +217,73 @@ test('acceptance: no secret value appears in any file the app writes', () => {
     'positive control: the plain value must be found in the unencrypted workspace, and only there');
 });
 
+test('servers: header names that differ only by case are one header, refused twice (RFC 9110 §5.1)', () => {
+  // fetch merges them: X-Api-Key plain and x-api-key secret reach the server
+  // as "plain-v, secret-v", neither value the user meant.
+  const { ws } = create({ kind: 'keychain' });
+  try {
+    const cases = [
+      [http({ headers: { 'X-Api-Key': 'p' }, secretHeaders: { 'x-api-key': 's' } }), /header x-api-key is both plain and secret/],
+      [http({ headers: { 'X-Api-Key': 'p' }, secretHeaders: undefined, unstoredSecrets: { headers: ['X-API-KEY'] } }), /header X-API-KEY is both plain and secret/],
+      [http({ secretHeaders: { 'X-Api-Key': 's' }, unstoredSecrets: { headers: ['x-api-key'] } }), /secret header x-api-key is given twice/],
+      [http({ headers: { Accept: 'a', accept: 'b' }, secretHeaders: undefined }), /header accept is given twice/],
+    ];
+    for (const [def, reason] of cases) {
+      assert.throws(() => saveServer(ws, def), (err) => err instanceof InvalidServerDefinitionError && reason.test(err.message), reason.source);
+    }
+    assert.deepEqual(listServers(ws), []);
+    // Old valid input: environment variable names stay case-sensitive, as on Linux.
+    const env = stdio({ env: { Path_Hint: 'a' }, secretEnv: { PATH_HINT: 's' } });
+    saveServer(ws, env);
+    assert.deepEqual(loadServer(ws, env.id).env, { Path_Hint: 'a' });
+  } finally {
+    ws.close();
+  }
+});
+
+test('servers: a credential header is refused as plain configuration, whatever its case (D31, D35)', () => {
+  for (const custody of [{ kind: 'keychain' }, { kind: 'none' }]) {
+    const { ws } = create(custody);
+    try {
+      for (const name of ['Authorization', 'proxy-authorization', 'COOKIE', 'Set-Cookie']) {
+        assert.throws(() => saveServer(ws, http({ headers: { [name]: 'Bearer x' }, secretHeaders: undefined })),
+          (err) => err instanceof InvalidServerDefinitionError && err.message.includes(`header ${name} is a credential`), `${custody.kind}: ${name}`);
+      }
+      assert.deepEqual(listServers(ws), []);
+      // Old valid input: an ordinary header, even one that looks credential-ish, is still plain configuration.
+      const ok = http({ headers: { Accept: 'application/json', 'X-Api-Key-Hint': 'none' }, secretHeaders: undefined });
+      saveServer(ws, ok);
+      assert.deepEqual(loadServer(ws, ok.id).headers, { Accept: 'application/json', 'X-Api-Key-Hint': 'none' });
+    } finally {
+      ws.close();
+    }
+  }
+});
+
+test('acceptance: a bearer token typed as a plain header is readable in no file the app writes', () => {
+  // The 2026-09-26 defect: `Authorization: Bearer <token>` in the plain Headers
+  // box was saved to headers_json, readable in an unencrypted workspace. The
+  // plain Accept value is the positive control.
+  const dir = mkdtempSync(join(root, 'disk-'));
+  const token = `typed-token-${randomUUID()}`;
+  const plainValue = `plain-accept-${randomUUID()}`;
+  const { ws } = create({ kind: 'none' }, dir);
+  let refused;
+  try {
+    try {
+      saveServer(ws, http({ headers: { Accept: plainValue, Authorization: `Bearer ${token}` }, secretHeaders: undefined }));
+    } catch (err) {
+      refused = err;
+    }
+    saveServer(ws, http({ headers: { Accept: plainValue }, secretHeaders: undefined, unstoredSecrets: { headers: ['Authorization'] } }));
+  } finally {
+    ws.close();
+  }
+  assert.deepEqual(findOnDisk(dir, token).map((p) => p.slice(dir.length + 1)), [], 'a typed bearer token is readable on disk');
+  assert.ok(findOnDisk(dir, plainValue).length > 0, 'positive control: the plain header value must be found');
+  assert.ok(refused instanceof InvalidServerDefinitionError, `the save was not refused: ${refused}`);
+});
+
 test('acceptance: the keychain holds workspace keys and no server secret', () => {
   const writes = [];
   const recording = { get: (a) => secrets.get(a), set: (a, v) => { writes.push([a, v]); secrets.set(a, v); }, delete: (a) => secrets.delete(a) };

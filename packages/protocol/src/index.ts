@@ -10,6 +10,7 @@ export * from './validate.js';
 export * from './textdiff.js';
 export * from './version.js';
 export * from './mcp-headers.js';
+export * from './secret-headers.js';
 export * from './errors.js';
 export * from './lint.js';
 export * from './redact.js';

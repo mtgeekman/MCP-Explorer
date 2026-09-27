@@ -8,7 +8,7 @@
 //
 // Platform-specific by nature, which is why it lives here (CLAUDE.md: no
 // platform-specific API outside the platform abstraction layer).
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -42,6 +42,37 @@ export function isAlive(pid: number): boolean {
   } catch {
     // Gone between the signal and the read.
     return false;
+  }
+}
+
+/**
+ * When the process holding `pid` started, as a token that only the same
+ * process reproduces: compared with the token recorded at spawn, it tells the
+ * root from a stranger that later got its PID. POSIX only; undefined on
+ * Windows, which checks reuse by creation time (orphans.ts), and for a PID no
+ * process holds.
+ *
+ * Linux: /proc/<pid>/stat field 22, the start in clock ticks since boot. Other
+ * POSIX (macOS): `ps -o lstart=`, to the second; written for the deferred
+ * macOS build (D11) and not run in CI.
+ */
+export function processStartToken(pid: number): string | undefined {
+  if (process.platform === 'win32') return undefined;
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      // Fields from the state (field 3) on; the command name before it may contain ") ".
+      const start = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+      return start ? `linux:${start}` : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    const start = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+    return start ? `ps:${start}` : undefined;
+  } catch {
+    return undefined;
   }
 }
 

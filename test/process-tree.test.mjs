@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { killProcessTree, isAlive, findOrphans, killServerTree } from '../packages/platform/dist/index.js';
+import { killProcessTree, isAlive, findOrphans, killServerTree, processStartToken, serverRoot } from '../packages/platform/dist/index.js';
 import { fixtures } from './support/fixture-servers.mjs';
 
 const work = mkdtempSync(join(tmpdir(), 'mcpx-tree-'));
@@ -86,6 +86,50 @@ test('a PID that cannot be a process is refused rather than signalled', async ()
   // process.kill(0) and process.kill(-1) signal a whole process group or every
   // process the user owns; neither may ever reach here.
   for (const pid of [0, -1, 1.5, Number.NaN]) await assert.rejects(killProcessTree(pid), RangeError);
+});
+
+// --- a root's PID reused on POSIX -----------------------------------------------------------
+
+const posixOnly = { skip: process.platform === 'win32' && 'Windows checks reuse by creation time instead' };
+const sleeper = () => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e6)'], { stdio: 'ignore' });
+  started.push(child.pid);
+  return child;
+};
+
+test('a stranger now holding a root\'s PID is not signalled: its start differs from the one recorded', posixOnly, async () => {
+  const stranger = sleeper();
+  await killServerTree({ pid: stranger.pid, startedAt: Date.now(), startToken: 'linux:0' });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.ok(isAlive(stranger.pid), 'the tree kill signalled a process that is not the recorded root');
+});
+
+test('old valid input: a root whose recorded start still matches is killed', posixOnly, async () => {
+  const child = sleeper();
+  const root = serverRoot(child.pid, Date.now());
+  assert.ok(root.startToken, 'the start was recorded at spawn');
+  await killServerTree(root);
+  await waitFor(() => !isAlive(child.pid), 'the root to exit');
+});
+
+test('a start token is the same for one process, differs between two, and is absent for no process', posixOnly, async () => {
+  const [a, b] = [sleeper(), sleeper()];
+  const token = processStartToken(a.pid);
+  assert.match(token, process.platform === 'linux' ? /^linux:\d+$/ : /^ps:/);
+  assert.equal(processStartToken(a.pid), token);
+  // Two spawns in one tick can share a clock tick; the second is started later to be sure.
+  await new Promise((r) => setTimeout(r, 50));
+  const c = sleeper();
+  assert.notEqual(processStartToken(c.pid), token);
+  assert.ok(processStartToken(b.pid));
+  const gone = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+  await new Promise((r) => gone.on('exit', r));
+  assert.equal(processStartToken(gone.pid), undefined);
+});
+
+test('Windows records no start token: reuse is checked by creation time there', { skip: process.platform !== 'win32' && 'Windows only' }, () => {
+  assert.equal(processStartToken(process.pid), undefined);
+  assert.deepEqual(serverRoot(process.pid, 5), { pid: process.pid, startedAt: 5 });
 });
 
 // --- a tree whose root is already gone (D36, Windows) ---------------------------------------

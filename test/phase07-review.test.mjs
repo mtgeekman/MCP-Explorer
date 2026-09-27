@@ -66,7 +66,7 @@ test('R07-4: a cancel pressed after the response arrived reports the result, and
 });
 
 async function backendWith(server) {
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(backend);
   const call = (method, params = {}) => backend.request(method, params);
   await call('workspaces.create', { name: 'R07', protection: { kind: 'none' } });

@@ -20,7 +20,7 @@ after(async () => {
 });
 
 async function workspace() {
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(backend);
   const call = (method, params = {}) => backend.request(method, params);
   await call('workspaces.create', { name: 'Health', protection: { kind: 'none' } });

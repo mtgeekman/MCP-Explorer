@@ -28,7 +28,7 @@ const until = async (check, what, ms = 10000) => {
 };
 
 async function connected(file) {
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(backend);
   const call = (method, params = {}) => backend.request(method, params);
   await call('workspaces.create', { name: 'Tasks', protection: { kind: 'none' } });

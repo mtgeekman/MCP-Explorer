@@ -33,7 +33,7 @@ const until = async (check, what, ms = 10000) => {
 };
 
 async function connected(file, env) {
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(backend);
   const call = (method, params = {}) => backend.request(method, params);
   await call('workspaces.create', { name: 'R10', protection: { kind: 'none' } });
@@ -119,7 +119,7 @@ test('R10-7: a legacy result carrying a task field, from a call not made as a ta
 
 test('R10-4 twin: notifications that arrived as HTTP event-stream events reach the timeline too', async () => {
   const url = await listen('http-server.mjs', children, { EXTRAS: '1', STREAMING: '1' });
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(backend);
   const call = (method, params = {}) => backend.request(method, params);
   await call('workspaces.create', { name: 'R10 http', protection: { kind: 'none' } });

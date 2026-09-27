@@ -28,7 +28,7 @@ async function waitFor(check, ms = 15000) {
 }
 
 async function connected() {
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(backend);
   const events = [];
   backend.on((name, data) => events.push({ name, data }));

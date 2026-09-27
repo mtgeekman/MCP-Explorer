@@ -58,7 +58,7 @@ const spawnLog = () => { const p = join(root, `${randomUUID()}.spawns`); writeFi
 const pidsIn = (log) => readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => Number(/pid=(\d+)/.exec(l)[1]));
 
 test('R04-1: a failed switch to another workspace leaves the open one working, sessions included', async () => {
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   cleanups.push(() => backend.shutdown());
   const call = (m, p = {}) => backend.request(m, p);
   const locked = await call('workspaces.create', { name: 'Locked', protection: { kind: 'passphrase', passphrase: 'right' } });
@@ -79,7 +79,7 @@ test('R04-2: a failed connect of a shell-wrapped server leaves no process of its
   const s = { id: randomUUID(), name: 'w', transport: 'stdio', ...wrapped(modern, { STUBBORN: '1', INITIALIZE_UNSUPPORTED: '1', SPAWN_LOG: spawns }) };
   saveServer(ws, s);
   pinEra(ws, s.id, 'legacy', '2025-06-18');
-  const manager = new ConnectionManager(ws, { probeTimeoutMs: 1000, events: {} });
+  const manager = new ConnectionManager(ws, { events: {} });
   const failed = await manager.connect(s.id);
   assert.equal(failed.failure.kind, 'unsupported-version');
   const [server] = pidsIn(spawns);

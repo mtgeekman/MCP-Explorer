@@ -38,7 +38,7 @@ async function waitFor(check, ms = 5000) {
 }
 
 async function backend(protection = { kind: 'none' }) {
-  const b = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const b = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(b);
   const call = (method, params = {}) => b.request(method, params);
   await call('workspaces.create', { name: 'Review', protection });

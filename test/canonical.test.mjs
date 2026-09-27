@@ -2,7 +2,12 @@
 // cache hints on every response must still produce ONE surface hash.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { captureSurface, hashSurface, hashAll, canonicalJson, unavailableFields, eraOf, revisionIndex } from '../packages/protocol/dist/index.js';
+import { readdirSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import * as protocol from '../packages/protocol/dist/index.js';
+
+const { captureSurface, hashSurface, hashAll, canonicalJson, unavailableFields, eraOf, compareRevisions, REVISIONS } = protocol;
 
 const TOOLS = [
   { name: 'bravo', description: 'B', inputSchema: { type: 'object', properties: { b: { type: 'string' }, a: { type: 'number' } } } },
@@ -82,9 +87,40 @@ test('unavailable fields follow the revision window, withdrawals included', () =
   assert.ok(!unavailableFields('2025-11-25').includes('tool.execution'), 'tool.execution existed in 2025-11-25');
 });
 
-test('an unknown revision sorts as newer than every known one', () => {
-  assert.ok(revisionIndex('2099-01-01') > revisionIndex('2026-07-28'));
+test('a revision later than the table sorts after every known one, by its date', () => {
+  assert.ok(compareRevisions('2099-01-01', '2026-07-28') > 0);
   assert.equal(eraOf('2099-01-01'), 'modern');
+  assert.ok(unavailableFields('2099-01-01').includes('tool.execution'), 'a withdrawal stays withdrawn after the table ends');
+  assert.ok(!unavailableFields('2099-01-01').includes('tool.outputSchema'));
+});
+
+// The SDK accepts a server's initialize answer on any of its supported
+// revisions, and decides the wire era by date (isModernProtocolVersion). A
+// revision the table lacks must get the SDK's era, or every era branch in the
+// app takes the modern path on a legacy connection.
+test('a revision earlier than the table is legacy and carries none of the later fields', () => {
+  assert.equal(eraOf('2024-01-01'), 'legacy');
+  assert.ok(compareRevisions('2024-01-01', '2024-11-05') < 0);
+  const fields = unavailableFields('2024-01-01');
+  for (const f of ['tool.annotations', 'tool.title', 'tool.outputSchema', 'tool.icons', 'tool.execution', 'capabilities.extensions']) assert.ok(fields.includes(f), f);
+});
+
+test('a revision that is not a date is refused, not guessed', () => {
+  for (const r of ['draft', '2025-6-18', '', 'v2']) {
+    assert.throws(() => eraOf(r), /not a protocol revision/, r);
+    assert.throws(() => unavailableFields(r), /not a protocol revision/, r);
+  }
+});
+
+test('every revision the installed SDK can negotiate is in the table', async () => {
+  const { SUPPORTED_PROTOCOL_VERSIONS } = await import('@modelcontextprotocol/client');
+  for (const r of SUPPORTED_PROTOCOL_VERSIONS) assert.ok(REVISIONS.includes(r), `the SDK negotiates ${r}, which the revision table lacks`);
+  // The modern list is internal to the SDK: its source is pinned, so an SDK
+  // that adds a modern revision fails here instead of reaching the fallback.
+  const dist = dirname(createRequire(import.meta.url).resolve('@modelcontextprotocol/client'));
+  const source = readdirSync(dist).filter((f) => f.endsWith('.mjs')).map((f) => readFileSync(join(dist, f), 'utf8')).join('\n');
+  assert.match(source, /const FIRST_MODERN_PROTOCOL_VERSION = "2026-07-28";/);
+  assert.match(source, /const SUPPORTED_MODERN_PROTOCOL_VERSIONS = \[FIRST_MODERN_PROTOCOL_VERSION\];/, 'the SDK changed its modern revisions: add each to REVISIONS');
 });
 
 // The ten-captures test above is an end-to-end property, and it survives the

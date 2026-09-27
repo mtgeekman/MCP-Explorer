@@ -68,6 +68,32 @@ for (const [era, file] of [['modern', MODERN], ['legacy', LEGACY]]) {
     }
   });
 
+  test(`${era}: progress read in the same chunk as the result still reaches onProgress`, async () => {
+    const { conn, frames } = await stdio(file, { COALESCE: '1' });
+    try {
+      const seen = [];
+      const outcome = await conn.call({ kind: 'tool', target: 'slow', args: { steps: 3, delayMs: 0 }, onProgress: (p) => seen.push(p) });
+      assert.equal(outcome.kind, 'result');
+      assert.equal(frames.filter((f) => f.direction === 'in' && f.frame.method === 'notifications/progress').length, 3);
+      assert.deepEqual(seen.map((p) => [p.progress, p.total, p.message]), [[1, 3, 'step 1 of 3'], [2, 3, 'step 2 of 3'], [3, 3, 'step 3 of 3']]);
+    } finally {
+      await conn.close();
+    }
+  });
+
+  test(`${era}: a progress notification without a numeric progress is logged, not delivered`, async () => {
+    const { conn, frames } = await stdio(file, { BAD_PROGRESS: '1' });
+    try {
+      const seen = [];
+      const outcome = await conn.call({ kind: 'tool', target: 'slow', args: { steps: 2, delayMs: 0 }, onProgress: (p) => seen.push(p) });
+      assert.equal(outcome.kind, 'result');
+      assert.equal(frames.filter((f) => f.direction === 'in' && f.frame.method === 'notifications/progress').length, 3);
+      assert.deepEqual(seen.map((p) => p.progress), [1, 2]);
+    } finally {
+      await conn.close();
+    }
+  });
+
   test(`${era}: cancelling sends notifications/cancelled for that request and reports cancelled`, async () => {
     const { conn, frames } = await stdio(file);
     try {

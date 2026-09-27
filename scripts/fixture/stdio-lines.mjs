@@ -36,14 +36,27 @@ export function readFrames(stream, onFrame, { onUnparseable } = {}) {
  * re-serialization instead of the bytes it received cannot pass. The message
  * itself is unchanged: the SDK rejects an envelope with an extra key. WIRE_LOG: append every byte written to stdout to
  * that file, so a test can compare what the client logged with what was sent.
+ * COALESCE: hold each notification and write it in one write with the next
+ * message that has an id, so a client reads a call's progress in the same
+ * chunk as its response, as a loaded machine's pipe delivers them.
  */
 export function writer(stream) {
   const odd = Boolean(process.env.ODD_BYTES);
+  const coalesce = Boolean(process.env.COALESCE);
+  let held = [];
   const write = (bytes) => {
+    if (coalesce && held.length > 0) {
+      bytes = Buffer.concat([...held, bytes]);
+      held = [];
+    }
     if (process.env.WIRE_LOG) appendFileSync(process.env.WIRE_LOG, bytes);
     stream.write(bytes);
   };
   const send = (m) => {
+    if (coalesce && m.id === undefined) {
+      held.push(Buffer.from(JSON.stringify(m) + '\n', 'utf8'));
+      return;
+    }
     if (!odd) return write(Buffer.from(JSON.stringify(m) + '\n', 'utf8'));
     // Indented JSON with its newlines removed: a newline inside a JSON string
     // is always escaped, so every raw newline here is formatting.

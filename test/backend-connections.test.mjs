@@ -34,7 +34,6 @@ function setup(servers) {
   for (const s of servers) saveServer(ws, s);
   const log = { states: [], units: [], processes: [] };
   const manager = new ConnectionManager(ws, {
-    probeTimeoutMs: 1000,
     closeGraceMs: 300,
     events: {
       state: (id, s) => log.states.push([id, s]),
@@ -211,7 +210,7 @@ test('D36: disconnecting a server behind a shell ends the shell and the server u
   const ws = createWorkspaceDb({ path, workspaceId: randomUUID(), name: 'tree', custody: { kind: 'none' }, secrets: noSecrets });
   workspaces.push(ws);
   saveServer(ws, s);
-  const manager = new ConnectionManager(ws, { probeTimeoutMs: 1000, events: {} });
+  const manager = new ConnectionManager(ws, { events: {} });
   managers.push(manager);
   const up = await manager.connect(s.id);
   assert.equal(up.status, 'connected', JSON.stringify(up));

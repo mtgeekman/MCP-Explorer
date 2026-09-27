@@ -26,7 +26,7 @@ const text = (bytes) => Buffer.from(bytes).toString('utf8');
 const enc = (s) => new Uint8Array(Buffer.from(s, 'utf8'));
 
 async function connectedBackend(server) {
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(backend);
   const call = (method, params = {}) => backend.request(method, params);
   await call('workspaces.create', { name: 'Entries', protection: { kind: 'none' } });

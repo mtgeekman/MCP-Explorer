@@ -18,7 +18,7 @@ after(async () => {
 });
 
 async function setup() {
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(backend);
   const events = [];
   backend.on((name, data) => { if (name === 'surface.changed') events.push(data.serverId); });

@@ -42,7 +42,7 @@ async function setup(env = {}, protection = { kind: 'none' }) {
   const authLog = file('auth.log');
   const headerLog = file('headers.log');
   const url = await listen('http-server.mjs', children, { AUTH: '1', AUTH_LOG: authLog, HEADER_LOG: headerLog, ...env });
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(backend);
   const events = [];
   backend.on((name, data) => events.push({ name, data }));
@@ -240,7 +240,7 @@ test('no registration route is a named failure that says what to enter', async (
 
 test('decision 14: the deprecated HTTP+SSE transport reports the 401 the same way, and connects once signed in', async () => {
   const url = await listen('sse-server.mjs', children, { AUTH: '1' });
-  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), probeTimeoutMs: 1000, closeGraceMs: 300 });
+  const backend = new Backend({ dataDir: mkdtempSync(join(root, 'data-')), secrets: memoryStore(), closeGraceMs: 300 });
   backends.push(backend);
   const call = (method, params = {}) => backend.request(method, params);
   await call('workspaces.create', { name: 'SSE auth', protection: { kind: 'none' } });

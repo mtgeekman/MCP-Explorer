@@ -21,7 +21,7 @@ after(async () => {
 function setup({ secrets = memoryStore() } = {}) {
   const dataDir = mkdtempSync(join(root, 'data-'));
   const seen = { notices: [], states: [], units: [], processes: [] };
-  const backend = new Backend({ dataDir, secrets, probeTimeoutMs: 1000, closeGraceMs: 300, onProcesses: (p) => seen.processes.push(p) });
+  const backend = new Backend({ dataDir, secrets, closeGraceMs: 300, onProcesses: (p) => seen.processes.push(p) });
   backend.on((name, data) => {
     if (name === 'notice') seen.notices.push(data);
     if (name === 'connection.state') seen.states.push(data);

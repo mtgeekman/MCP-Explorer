@@ -6,7 +6,8 @@ import { useEffect, useState } from 'react';
 import type { ServerForm, ServerRow } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
 import { commandLine } from '../lib/describe';
-import { formatArgs, formatEnv, formatHeaders, parseArgs, parseEnv, parseHeaders } from '../lib/form';
+import { formatArgs, formatEnv, formatHeaders, moveCredentialHeaders, parseArgs, parseEnv, parseHeaders } from '../lib/form';
+import { isAlwaysSecretHeader } from '../../../../packages/protocol/dist/secret-headers.js';
 
 type Transport = ServerForm['transport'];
 interface SecretRow { kind: 'env' | 'header'; name: string; value: string; stored: boolean }
@@ -64,6 +65,19 @@ export function ServerEditor({ client, encrypted, serverId, onSaved, onCancel }:
   const problems = [...parsedEnv.errors.map((e) => `Environment ${e}`), ...(stdio ? [] : parsedHeaders.errors.map((e) => `Headers ${e}`))];
   const secretKind = stdio ? 'env' : 'header';
   const shownSecrets = secrets.filter((s) => (stdio ? s.kind === 'env' : true));
+  // Storage refuses these as plain headers (D31); the user moves them, the editor does not.
+  const credentials = stdio ? [] : Object.keys(parsedHeaders.value).filter(isAlwaysSecretHeader);
+
+  const moveToSecrets = () => {
+    const { headers: rest, moved } = moveCredentialHeaders(headers);
+    const names = Object.keys(moved);
+    const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+    setHeaders(rest);
+    setSecrets((rows) => [
+      ...rows.filter((r) => !(r.kind === 'header' && names.some((n) => sameName(n, r.name)))),
+      ...names.map((n) => ({ kind: 'header' as const, name: n, value: encrypted ? moved[n] : '', stored: false })),
+    ]);
+  };
 
   const save = async () => {
     setError(null);
@@ -131,6 +145,13 @@ export function ServerEditor({ client, encrypted, serverId, onSaved, onCancel }:
         <>
           <label className="field"><span>URL</span><input className="mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/mcp" /></label>
           <label className="field"><span>Headers, Name: value per line</span><textarea className="mono" rows={2} value={headers} onChange={(e) => setHeaders(e.target.value)} /></label>
+          {credentials.length > 0 && (
+            <p className="error">
+              {credentials.join(', ')} {credentials.length === 1 ? 'is a credential' : 'are credentials'}, so {credentials.length === 1 ? 'it' : 'they'} can only be saved as a secret.
+              {encrypted ? '' : ' This workspace is not encrypted, so the value is not kept: you enter it each session.'}
+              {' '}<button type="button" onClick={moveToSecrets}>Move to Secrets</button>
+            </p>
+          )}
           <fieldset className="secrets">
             <legend>OAuth client (optional)</legend>
             <p className="hint">Only for a server whose authorization server does not let apps register themselves. Enter the client you registered with it, and the redirect URI you gave it, exactly.</p>
@@ -171,7 +192,7 @@ export function ServerEditor({ client, encrypted, serverId, onSaved, onCancel }:
       {error && <p className="error">{error}</p>}
       <div className="actions">
         <button type="button" onClick={onCancel}>Cancel</button>
-        <button type="submit" className="primary" disabled={!name.trim() || (stdio ? !command.trim() : !url.trim()) || problems.length > 0}>Save</button>
+        <button type="submit" className="primary" disabled={!name.trim() || (stdio ? !command.trim() : !url.trim()) || problems.length > 0 || credentials.length > 0}>Save</button>
       </div>
     </form>
   );

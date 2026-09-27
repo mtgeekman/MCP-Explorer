@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { describeState, commandLine } from '../app/renderer/src/lib/describe.ts';
-import { parseArgs, formatArgs, parseEnv, parseHeaders } from '../app/renderer/src/lib/form.ts';
+import { parseArgs, formatArgs, parseEnv, parseHeaders, moveCredentialHeaders } from '../app/renderer/src/lib/form.ts';
 import { toFields, parseFields, describePurge, formatBytes, MB } from '../app/renderer/src/lib/settings.ts';
 import { initialState, outcomes, plan, toggle } from '../app/renderer/src/lib/importReview.ts';
 
@@ -64,6 +64,15 @@ test('environment and headers parse by line, and a bad line is reported, not gue
   assert.deepEqual(parseEnv('A=1\nB=x=y\n'), { value: { A: '1', B: 'x=y' }, errors: [] });
   assert.deepEqual(parseEnv('=nope\nNOEQUALS\nA=1\nA=2').errors, ['line 1: expected NAME=value', 'line 2: expected NAME=value', 'line 4: A is given twice']);
   assert.deepEqual(parseHeaders('Accept: application/json\nX-Empty:').value, { Accept: 'application/json', 'X-Empty': '' });
+});
+
+test('headers: a credential typed as a plain header moves out, whatever its case, and nothing else does (D31)', () => {
+  const r = moveCredentialHeaders('Accept: application/json\nauthorization: Bearer t0k\r\nX-Trace: 1\nCOOKIE: a=b; c=d\nnot a header');
+  assert.deepEqual(r.moved, { authorization: 'Bearer t0k', COOKIE: 'a=b; c=d' });
+  assert.equal(r.headers, 'Accept: application/json\nX-Trace: 1\nnot a header');
+  // Old valid input: text with no credential comes back byte for byte.
+  const plain = 'Accept: application/json\r\n\nX-Api-Key-Hint: none';
+  assert.deepEqual(moveCredentialHeaders(plain), { headers: plain, moved: {} });
 });
 
 // --- the settings screen (phase 05) --------------------------------------------------

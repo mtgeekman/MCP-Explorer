@@ -1,6 +1,7 @@
 // Turning the server editor's text fields into a definition and back. One
 // argument per line, so no shell quoting is ever guessed at; NAME=value lines
 // for environment variables and `Name: value` lines for headers.
+import { isAlwaysSecretHeader } from '../../../../packages/protocol/dist/secret-headers.js';
 
 export interface ParseResult<T> {
   value: T;
@@ -33,8 +34,26 @@ function parsePairs(text: string, separator: RegExp, what: string): ParseResult<
   return { value, errors };
 }
 
+const HEADER_SEPARATOR = /:\s?/;
+
 export const parseEnv = (text: string) => parsePairs(text, /=/, 'NAME=value');
-export const parseHeaders = (text: string) => parsePairs(text, /:\s?/, 'Name: value');
+export const parseHeaders = (text: string) => parsePairs(text, HEADER_SEPARATOR, 'Name: value');
+
+/**
+ * The editor's Move to Secrets: takes the credential headers (Authorization,
+ * Cookie, ...) out of the plain Headers text, which storage refuses to keep
+ * them in (D31). Every other line is left as typed.
+ */
+export function moveCredentialHeaders(text: string): { headers: string; moved: Record<string, string> } {
+  const moved: Record<string, string> = {};
+  const kept = text.split(/\r?\n/).filter((line) => {
+    const m = HEADER_SEPARATOR.exec(line);
+    if (!m || m.index === 0 || !isAlwaysSecretHeader(line.slice(0, m.index))) return true;
+    moved[line.slice(0, m.index).trim()] = line.slice(m.index + m[0].length);
+    return false;
+  });
+  return Object.keys(moved).length ? { headers: kept.join('\n'), moved } : { headers: text, moved };
+}
 
 export function formatEnv(env: Record<string, string> = {}): string {
   return Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n');

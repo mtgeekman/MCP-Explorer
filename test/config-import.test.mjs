@@ -143,6 +143,15 @@ test('fields for the other kind of server are dropped with why, and unknown ones
   assert.deepEqual(parsed.entries[0].dropped, ['headers: has no effect on a local server', 'autoApprove: not something this app uses']);
 });
 
+test('import: every credential header is marked secret and hidden, Cookie included (D31, D35)', () => {
+  const text = JSON.stringify({ servers: { r: { type: 'http', url: 'https://x.test/mcp', headers: { Cookie: 'sid=c00k1e', 'set-cookie': 'a=1', Authorization: 'Bearer t0k', 'X-Client': 'plain-client' } } } });
+  const { entries: [e] } = parseConfig(text, source('vscode', 'vscode'));
+  assert.deepEqual([...e.server.suggestedSecrets.headers].sort(), ['Authorization', 'Cookie', 'set-cookie']);
+  assert.deepEqual([...e.sensitive].sort(), ['Bearer t0k', 'a=1', 'sid=c00k1e']);
+  // Old valid input: an ordinary header stays plain and shown.
+  assert.equal(e.server.headers['X-Client'], 'plain-client');
+});
+
 test('looksSecret: credential-looking names are pre-marked; ordinary ones are not', () => {
   for (const n of ['API_KEY', 'GITHUB_TOKEN', 'Authorization', 'DB_PASSWORD', 'DB_PASSWD', 'CLIENT_SECRET', 'AWS_CREDENTIALS', 'X-Api-Key']) assert.ok(looksSecret(n), n);
   for (const n of ['LOG_LEVEL', 'PORT', 'MODE', 'X-Client', 'HOME_DIR']) assert.ok(!looksSecret(n), n);

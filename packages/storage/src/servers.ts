@@ -1,5 +1,6 @@
 import { StorageError } from './errors.js';
 import type { Workspace } from './workspace-db.js';
+import { isAlwaysSecretHeader } from '../../protocol/dist/index.js';
 
 /**
  * Server definitions (spec D31). Plain configuration is stored in `server`;
@@ -18,7 +19,10 @@ export interface ServerDefinition {
   cwd?: string;
   /** streamable-http and sse only. */
   url?: string;
-  /** Stored as plain configuration: never put a credential here. */
+  /**
+   * Stored as plain configuration: never put a credential here. A header in
+   * ALWAYS_SECRET_HEADERS (Authorization, Cookie, ...) is refused.
+   */
   env?: Record<string, string>;
   headers?: Record<string, string>;
   /** Stored as secrets. Refused for an unencrypted workspace. */
@@ -67,7 +71,7 @@ export interface ServerSummary {
   transport: Transport;
 }
 
-/** The definition is malformed: wrong fields for its transport, a name in both plain and secret maps. */
+/** The definition is malformed: wrong fields for its transport, a name in both plain and secret maps, a credential header stored plain. */
 export class InvalidServerDefinitionError extends StorageError {}
 
 /** A secret was about to be written to a workspace that is not encrypted (D31). */
@@ -100,15 +104,28 @@ function validate(def: ServerDefinition): void {
     [def.headers, def.secretHeaders, def.unstoredSecrets?.headers, 'header'],
   ] as const;
   for (const [plain, secret, unstored, what] of lists) {
+    // Header names are case-insensitive (RFC 9110 §5.1): fetch merges X-Key
+    // and x-key into one "a, b" value. Environment names are not, as on Linux.
+    const key = what === 'header' ? (n: string) => n.trim().toLowerCase() : (n: string) => n;
+    const plainKeys = new Set<string>();
+    for (const name of Object.keys(plain ?? {})) {
+      if (plainKeys.has(key(name))) throw bad(`${what} ${name} is given twice`);
+      plainKeys.add(key(name));
+    }
     const seen = new Set<string>();
     for (const name of [...Object.keys(secret ?? {}), ...(unstored ?? [])]) {
       if (!name) throw bad(`a secret ${what} has an empty name`);
       // One name in two places would leave the app to guess which value the
       // server gets, and a plain one is readable on disk.
-      if (plain && Object.hasOwn(plain, name)) throw bad(`${what} ${name} is both plain and secret`);
-      if (seen.has(name)) throw bad(`secret ${what} ${name} is given twice`);
-      seen.add(name);
+      if (plainKeys.has(key(name))) throw bad(`${what} ${name} is both plain and secret`);
+      if (seen.has(key(name))) throw bad(`secret ${what} ${name} is given twice`);
+      seen.add(key(name));
     }
+  }
+  // The wire log redacts these whether or not they were marked (D35); stored
+  // plain, the value would be readable on disk in an unencrypted workspace.
+  for (const name of Object.keys(def.headers ?? {})) {
+    if (isAlwaysSecretHeader(name)) throw bad(`header ${name} is a credential, so it can only be stored as a secret`);
   }
 }
 

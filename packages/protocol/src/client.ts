@@ -10,6 +10,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { LineSplitter, SseEventSplitter, type HttpDetails, type UnitListener, type WireUnit } from './wire.js';
 import { redactAuthBody } from './redact.js';
 import { encodeHeaderValue } from './mcp-headers.js';
+import { isAlwaysSecretHeader } from './secret-headers.js';
 
 /**
  * Subclassing StdioClientTransport is what opts out of the SDK's disposable
@@ -1119,17 +1120,11 @@ export function authChallengeOf(e: unknown, last: AuthChallenge | undefined): Au
   return undefined;
 }
 
-/**
- * Headers whose values are credentials whether or not the user marked them
- * secret. The wire log never records their values (D35).
- */
-const ALWAYS_SECRET_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'set-cookie'];
-
 /** Headers as the log records them: a secret's value is replaced by its name (D35). */
 function loggedHeaders(headers: HeadersInit | undefined, secretNames: Set<string>): Record<string, string> {
   const out: Record<string, string> = {};
   new Headers(headers).forEach((value, name) => {
-    out[name] = secretNames.has(name) || ALWAYS_SECRET_HEADERS.includes(name) ? `<secret: ${name}>` : value;
+    out[name] = secretNames.has(name) || isAlwaysSecretHeader(name) ? `<secret: ${name}>` : value;
   });
   return out;
 }

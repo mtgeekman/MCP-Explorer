@@ -191,7 +191,7 @@ test('a server under a cmd.exe root that died alone is still ended, found by its
 // the SDK's own SIGTERM ends it before taskkill has walked the tree. taskkill
 // reports "not found" (code 128), which reads as success, and the server under
 // the root is left running. The kill here stands in for that taskkill: it
-// resolves and ends nothing, as a kill that found no root does.
+// ends nothing and reports the root not found, as taskkill's 128 does.
 test('a root that dies while its tree is being killed still has its orphans found and ended', { skip: process.platform !== 'win32' && 'orphans are found by parent on Windows only' }, async () => {
   const startedAt = Date.now();
   // A live PID this test owns, so the root reads as alive and not reused.
@@ -201,9 +201,18 @@ test('a root that dies while its tree is being killed still has its orphans foun
     { pid: 999_991, ppid: process.pid, created: startedAt + 5 },
   ];
   const killed = [];
-  const orphans = await killServerTree(root, { listProcesses: async () => listing, kill: async (pid) => { killed.push(pid); } });
+  const orphans = await killServerTree(root, { listProcesses: async () => listing, kill: async (pid) => { killed.push(pid); return 'not-found'; } });
   assert.deepEqual(killed, [process.pid, 999_991]);
   assert.deepEqual(orphans, [999_991]);
+});
+
+test('R05-5: a tree taskkill walked from its live root is not listed again for orphans', { skip: process.platform !== 'win32' && 'Windows only' }, async () => {
+  const child = sleeper();
+  let listings = 0;
+  const orphans = await killServerTree({ pid: child.pid, startedAt: Date.now() }, { listProcesses: async () => { listings++; return []; } });
+  assert.deepEqual(orphans, []);
+  await waitFor(() => !isAlive(child.pid), 'the root to exit');
+  assert.equal(listings, 1, 'only the PID-reuse check lists processes; the orphan search ran after a clean taskkill');
 });
 
 test('a root whose tree kill left nothing behind reports no orphans', { skip: process.platform !== 'win32' && 'orphans are found by parent on Windows only' }, async () => {

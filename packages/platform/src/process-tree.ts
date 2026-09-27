@@ -83,20 +83,29 @@ export function processStartToken(pid: number): string | undefined {
  * gone; rejects naming what is still running (POSIX: after SIGKILL and a
  * short wait; Windows: what taskkill could not end). Never rejects for a
  * process that has already exited.
+ *
+ * `ended`: the tree was walked from the live root and ended. `not-found`
+ * (Windows): taskkill found no root, so it walked nothing, and what the root
+ * started may still be running.
  */
-export async function killProcessTree(pid: number, opts: KillTreeOptions = {}): Promise<void> {
+export type KillOutcome = 'ended' | 'not-found';
+
+export async function killProcessTree(pid: number, opts: KillTreeOptions = {}): Promise<KillOutcome> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new RangeError(`not a process id: ${pid}`);
   if (process.platform === 'win32') return killWindowsTree(pid);
-  return killPosixTree(pid, opts.graceMs ?? 2000, opts.signal ?? ((p, s) => process.kill(p, s)));
+  await killPosixTree(pid, opts.graceMs ?? 2000, opts.signal ?? ((p, s) => process.kill(p, s)));
+  return 'ended';
 }
 
 /** taskkill walks the tree from a live root and terminates it; /F because a console server ignores WM_CLOSE. */
-function killWindowsTree(pid: number): Promise<void> {
+function killWindowsTree(pid: number): Promise<KillOutcome> {
   const taskkill = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
   return new Promise((resolve, reject) => {
     execFile(taskkill, ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, (error, _stdout, stderr) => {
-      // 128: no such process. It exited on its own, which is the outcome wanted.
-      if (!error || (error as { code?: unknown }).code === 128 || !isAlive(pid)) return resolve();
+      if (!error) return resolve('ended');
+      // 128: no such process. It exited on its own, which is the outcome wanted
+      // for the root; what it started is the caller's to look for.
+      if ((error as { code?: unknown }).code === 128 || !isAlive(pid)) return resolve('not-found');
       reject(new Error(`taskkill could not end process tree ${pid}: ${stderr.trim() || error.message}`));
     });
   });

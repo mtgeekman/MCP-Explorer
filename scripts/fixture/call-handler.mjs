@@ -43,6 +43,8 @@
 //                   notifications/elicitation/complete for it (2025-11-25)
 // ROOTS_ON_INIT: a legacy server sends roots/list as soon as the client says
 // it is initialized, outside any call, as real servers do.
+// BAD_PROGRESS: `slow` sends one progress notification whose progress is a
+// string, ahead of its well-formed ones.
 //
 // The handler is async: `send` writes a notification (progress) before the
 // response. A call cancelled by notifications/cancelled is never answered, as
@@ -373,6 +375,7 @@ export async function handleCall(msg, send, extra = {}) {
       const pending = { cancelled: false };
       inFlight.set(key(id), pending);
       try {
+        if (token !== undefined && process.env.BAD_PROGRESS) send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: 'one', total: steps } });
         for (let i = 1; i <= steps; i++) {
           await sleep(delayMs, pending);
           if (pending.cancelled) return undefined;

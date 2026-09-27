@@ -637,8 +637,17 @@ const idKey = (id: unknown) => JSON.stringify(id);
  * takes the id of the next outgoing request with its method.
  */
 class CallTracker {
-  private armed: { method: string; id?: string | number } | undefined;
+  private armed: { method: string; id?: string | number; onProgress?: (p: CallProgress) => void } | undefined;
   private readonly responses = new Map<string, Record<string, unknown>>();
+  /**
+   * Progress listeners by the token the request went out with, and each
+   * request's token by its id. Progress is delivered here, in wire order, and
+   * not by the SDK: the SDK runs a notification's handler a microtask late but
+   * a response's at once, so a progress notification read in the same chunk as
+   * its response found its handler already deleted and was dropped.
+   */
+  private readonly progress = new Map<string, (p: CallProgress) => void>();
+  private readonly progressTokens = new Map<string, string>();
   private readonly watched = new Set<string>();
   private readonly cancels = new Map<string, (reason: unknown) => void>();
   /** Requests whose event stream ended without their response (phase 10 decision 13). */
@@ -651,26 +660,58 @@ class CallTracker {
     if (direction === 'in' && m && typeof m === 'object' && m.method === 'notifications/cancelled' && m.params) {
       this.cancels.get(idKey(m.params.requestId))?.(m.params.reason);
     }
+    if (direction === 'in' && m && typeof m === 'object' && m.method === 'notifications/progress' && m.params) {
+      this.deliverProgress(m.params as Record<string, unknown>);
+    }
     if (!m || typeof m !== 'object' || m.id === undefined || m.id === null) return;
     if (direction === 'out' && this.armed && m.method === this.armed.method && this.armed.id === undefined) {
       this.armed.id = m.id as string | number;
       this.watched.add(idKey(m.id));
+      const token = (m.params as { _meta?: { progressToken?: unknown } } | undefined)?._meta?.progressToken;
+      if (this.armed.onProgress && token !== undefined && token !== null) {
+        this.progress.set(idKey(token), this.armed.onProgress);
+        this.progressTokens.set(idKey(m.id), idKey(token));
+      }
     } else if (direction === 'in' && m.method === undefined && this.waiters.has(idKey(m.id))) {
       const waiter = this.waiters.get(idKey(m.id))!;
       this.waiters.delete(idKey(m.id));
       waiter.resolve(m as Record<string, unknown>);
     } else if (direction === 'in' && m.method === undefined && this.watched.has(idKey(m.id))) {
       this.responses.set(idKey(m.id), m as Record<string, unknown>);
+      this.forgetProgress(idKey(m.id));
     }
+  }
+
+  /**
+   * A progress notification to the listener its token was sent with. One with
+   * no numeric progress is not delivered; the wire log has it, and the SDK's
+   * own validation still reports it.
+   */
+  private deliverProgress(params: Record<string, unknown>): void {
+    if (params.progressToken === undefined || params.progressToken === null) return;
+    const listener = this.progress.get(idKey(params.progressToken));
+    if (!listener || typeof params.progress !== 'number') return;
+    listener({
+      progress: params.progress,
+      ...(typeof params.total === 'number' ? { total: params.total } : {}),
+      ...(typeof params.message === 'string' ? { message: params.message } : {}),
+    });
+  }
+
+  private forgetProgress(key: string): void {
+    const token = this.progressTokens.get(key);
+    if (token !== undefined) this.progress.delete(token);
+    this.progressTokens.delete(key);
   }
 
   /**
    * Runs send() with the slot armed and returns the id it produced. No id means
    * no frame went out: the SDK refused the request first (not connected).
+   * `onProgress` hears the request's progress notifications until its response.
    */
-  send<T>(method: string, send: () => T): { id?: string | number; sent: T } {
+  send<T>(method: string, send: () => T, onProgress?: (p: CallProgress) => void): { id?: string | number; sent: T } {
     if (this.armed) throw new Error('a call is already being sent');
-    this.armed = { method };
+    this.armed = { method, ...(onProgress ? { onProgress } : {}) };
     try {
       const sent = send();
       return { ...(this.armed.id === undefined ? {} : { id: this.armed.id }), sent };
@@ -737,6 +778,7 @@ class CallTracker {
     const response = this.responses.get(key);
     this.responses.delete(key);
     this.watched.delete(key);
+    this.forgetProgress(key);
     return response;
   }
 }
@@ -757,19 +799,12 @@ export function callParams(req: Pick<CallRequest, 'kind' | 'target' | 'args' | '
 async function callOn(session: Session, req: CallRequest): Promise<CallOutcome> {
   const method = CALL_METHOD[req.kind];
   const params = callParams(req);
-  const onProgress = req.onProgress;
   const options = {
     allowInputRequired: true,
     timeout: NO_TIMEOUT_MS,
     ...(req.signal ? { signal: req.signal } : {}),
     ...(req.headers ? { headers: req.headers } : {}),
-    ...(onProgress ? {
-      onprogress: (p: CallProgress) => onProgress({
-        progress: p.progress,
-        ...(p.total === undefined ? {} : { total: p.total }),
-        ...(p.message === undefined ? {} : { message: p.message }),
-      }),
-    } : {}),
+    ...(req.onProgress ? { onProgress: req.onProgress } : {}),
   };
 
   const r = await rawRequest(session, method, params, options);
@@ -810,10 +845,13 @@ interface RawResponse {
 async function rawRequest(session: Session, method: string, params: Record<string, unknown>, options: Record<string, unknown>): Promise<RawResponse> {
   const { client, calls } = session;
   // onSent is ours: told the id the moment the frame is out, before any reply.
-  const { onSent, ...sdkOptions } = options as Record<string, unknown> & { onSent?: (id: string | number) => void };
+  // So is onProgress: the tap delivers it (CallTracker), and the SDK gets a
+  // no-op onprogress only so that it puts a progressToken in _meta.
+  const { onSent, onProgress, ...rest } = options as Record<string, unknown> & { onSent?: (id: string | number) => void; onProgress?: (p: CallProgress) => void };
+  const sdkOptions = onProgress ? { ...rest, onprogress: () => undefined } : rest;
   let sent: { id?: string | number; sent: Promise<unknown> };
   try {
-    sent = calls.send(method, () => client.request({ method, params: withLogLevel(session, params) }, PASS_THROUGH, sdkOptions) as Promise<unknown>);
+    sent = calls.send(method, () => client.request({ method, params: withLogLevel(session, params) }, PASS_THROUGH, sdkOptions) as Promise<unknown>, onProgress);
   } catch (e) {
     return { failure: e };
   }

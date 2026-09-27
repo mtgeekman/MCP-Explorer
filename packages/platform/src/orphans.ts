@@ -6,7 +6,7 @@
 // parent exits, so the orphans can still be found by it.
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
-import { isAlive, killProcessTree, processStartToken } from './process-tree.js';
+import { isAlive, killProcessTree, processStartToken, type KillOutcome } from './process-tree.js';
 
 export interface ProcessInfo {
   pid: number;
@@ -89,7 +89,7 @@ function windowsProcesses(): Promise<ProcessInfo[]> {
  */
 export async function killServerTree(
   root: ServerRoot,
-  opts: { listProcesses?: () => Promise<ProcessInfo[]>; kill?: (pid: number) => Promise<void> } = {},
+  opts: { listProcesses?: () => Promise<ProcessInfo[]>; kill?: (pid: number) => Promise<KillOutcome | void> } = {},
 ): Promise<number[]> {
   const list = opts.listProcesses ?? windowsProcesses;
   const kill = opts.kill ?? killProcessTree;
@@ -99,16 +99,18 @@ export async function killServerTree(
     const results = await Promise.allSettled(pids.map((pid) => kill(pid)));
     const failed = results.flatMap((r, i) => (r.status === 'rejected' ? [`${pids[i]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`] : []));
     if (failed.length) throw new Error(`could not end process tree ${failed.join('; ')}`);
+    return results.map((r) => (r.status === 'fulfilled' ? r.value : undefined));
   };
   const reused = process.platform === 'win32' ? () => rootWasReused(root, list) : async () => posixRootWasReused(root);
   if (isAlive(root.pid) && !(await reused())) {
-    await endAll([root.pid]);
-    if (process.platform !== 'win32') return [];
+    const [outcome] = await endAll([root.pid]);
+    // taskkill walked the tree from the live root: nothing is left to look for (R05-5).
+    if (process.platform !== 'win32' || outcome === 'ended') return [];
     // The root can die after it was seen alive and before taskkill walks the
     // tree from it: the SDK's own close SIGTERMs the root on a timer, and
     // taskkill takes hundreds of milliseconds to start. taskkill then reports
-    // no such process, which reads as success, and the server under the root
-    // is left running. Whatever the root left behind is found by its parent.
+    // no such process, and the server under the root is left running.
+    // Whatever the root left behind is found by its parent.
     let after: ProcessInfo[];
     try {
       after = await list();

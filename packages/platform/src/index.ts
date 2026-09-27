@@ -1,4 +1,4 @@
-export { killProcessTree, isAlive, processStartToken, type KillTreeOptions } from './process-tree.js';
+export { killProcessTree, isAlive, processStartToken, type KillTreeOptions, type KillOutcome } from './process-tree.js';
 export { killServerTree, findOrphans, serverRoot, type ProcessInfo, type ServerRoot } from './orphans.js';
 export {
   userConfigLocations,

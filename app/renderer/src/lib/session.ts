@@ -3,7 +3,7 @@
 // listen stream, task actions, the notifications timeline, the health report,
 // completions, and the -32021 refusal.
 import type { HealthReport, ListenView, LiveCall, LogUnit, NotificationRow, SessionInfo } from '../../../../packages/backend/dist/index.js';
-import { LOG_LEVELS, requiredCapabilities, revisionIndex, unavailableFields, type LogLevel } from '../../../../packages/protocol/dist/index.js';
+import { LOG_LEVELS, requiredCapabilities, compareRevisions, unavailableFields, type LogLevel } from '../../../../packages/protocol/dist/index.js';
 
 export { LOG_LEVELS };
 export type { LogLevel };
@@ -149,6 +149,6 @@ export function completionParams(target: { kind: 'prompt'; name: string } | { ki
   const ref = target.kind === 'prompt' ? { type: 'ref/prompt', name: target.name } : { type: 'ref/resource', uri: target.uriTemplate };
   const others = Object.fromEntries(Object.entries(values).filter(([k, v]) => k !== argument && typeof v === 'string' && v !== ''));
   // CompleteRequest.context arrived in 2025-06-18.
-  const hasContext = revisionIndex(revision) >= revisionIndex('2025-06-18') && Object.keys(others).length > 0;
+  const hasContext = compareRevisions(revision, '2025-06-18') >= 0 && Object.keys(others).length > 0;
   return { ref, argument: { name: argument, value: typeof values[argument] === 'string' ? values[argument] : '' }, ...(hasContext ? { context: { arguments: others } } : {}) };
 }

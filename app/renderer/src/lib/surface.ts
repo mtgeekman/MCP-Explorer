@@ -4,7 +4,7 @@
 // field the server omitted, and a field the connected revision cannot carry.
 import type { EntryList } from '../../../../packages/backend/dist/index.js';
 import type { NormalizedSurface } from '../../../../packages/protocol/dist/model.js';
-import { FIELD_WINDOWS, REVISIONS, revisionIndex } from '../../../../packages/protocol/dist/model.js';
+import { FIELD_WINDOWS, REVISIONS, compareRevisions, revisionIndex } from '../../../../packages/protocol/dist/model.js';
 
 /** Board 5.1A: every annotations view carries this line. Annotations are never a security boundary. */
 export const ANNOTATIONS_LINE = 'Hints the server declares about itself. The app does not trust them: any tool not marked read-only asks before it runs.';
@@ -73,11 +73,10 @@ export type FieldState =
 export function fieldState(kind: ItemKind, field: string, item: Record<string, unknown>, revision: string): FieldState {
   const window = FIELD_WINDOWS[`${kind}.${field}`];
   if (window) {
-    const at = revisionIndex(revision);
-    if (window.since !== undefined && at < revisionIndex(window.since)) {
+    if (window.since !== undefined && compareRevisions(revision, window.since) < 0) {
       return { kind: 'not-on-revision', label: `not on ${revision} (added in ${window.since})` };
     }
-    if (window.until !== undefined && at > revisionIndex(window.until)) {
+    if (window.until !== undefined && compareRevisions(revision, window.until) > 0) {
       const removedIn = REVISIONS[revisionIndex(window.until) + 1];
       return { kind: 'not-on-revision', label: `not on ${revision} (removed in ${removedIn})` };
     }

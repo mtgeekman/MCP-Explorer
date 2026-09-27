@@ -7,7 +7,15 @@
 
 export type Era = 'legacy' | 'modern';
 
+/**
+ * Every revision the pinned SDK can negotiate, oldest first. `2024-10-07` is
+ * not a published revision (the spec has no schema or page for it): the SDK
+ * accepts it from a server's initialize as a pre-release string and speaks it
+ * exactly as 2024-11-05, and its surface is assumed to be 2024-11-05's.
+ * test/canonical.test.mjs fails when the SDK adds a revision this lacks.
+ */
 export const REVISIONS = [
+  '2024-10-07',
   '2024-11-05',
   '2025-03-26',
   '2025-06-18',
@@ -20,22 +28,38 @@ export type Revision = (typeof REVISIONS)[number];
 export const FIRST_MODERN_REVISION: Revision = '2026-07-28';
 
 export function eraOf(revision: string): Era {
-  return revisionIndex(revision) >= revisionIndex(FIRST_MODERN_REVISION) ? 'modern' : 'legacy';
+  return compareRevisions(revision, FIRST_MODERN_REVISION) >= 0 ? 'modern' : 'legacy';
 }
 
 /**
- * Position of a revision in the published order. Unknown revisions sort AFTER
- * every known one: a revision we have never heard of is newer than the ones we
- * have, and treating it as oldest would silently downgrade every feature check.
+ * Orders two revisions by their dates. A revision the table lacks is placed
+ * by its date too: the SDK negotiates revisions this table may not list, and
+ * decides the wire era by the same comparison (isModernProtocolVersion,
+ * `version >= "2026-07-28"`), so the era here always agrees with the one on
+ * the wire. A string that is not a YYYY-MM-DD date is refused, never guessed;
+ * the SDK negotiates none.
  */
-export function revisionIndex(revision: string): number {
+export function compareRevisions(a: string, b: string): number {
+  assertRevision(a);
+  assertRevision(b);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function assertRevision(revision: string): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(revision)) throw new RangeError(`not a protocol revision: ${JSON.stringify(revision)}`);
+}
+
+/** Position of a revision in the table, which must list it. */
+export function revisionIndex(revision: Revision): number {
   const i = (REVISIONS as readonly string[]).indexOf(revision);
-  return i === -1 ? REVISIONS.length : i;
+  if (i === -1) throw new RangeError(`${revision} is not in the revision table`);
+  return i;
 }
 
 /**
  * When each surface field became expressible. A field missing from this table
- * has existed since the first revision.
+ * has existed since the first published revision, 2024-11-05, and is assumed
+ * for 2024-10-07, which has no schema to check.
  *
  * Withdrawals matter as much as additions: `tool.execution` and the core
  * `tasks/*` surface arrived in 2025-11-25 and were REMOVED in 2026-07-28, so
@@ -64,10 +88,10 @@ export const FIELD_WINDOWS: Record<string, FieldWindow> = {
 
 /** Fields the given revision cannot express, sorted for stable output. */
 export function unavailableFields(revision: string): string[] {
-  const at = revisionIndex(revision);
+  assertRevision(revision);
   return Object.entries(FIELD_WINDOWS)
-    .filter(([, w]) => (w.since !== undefined && at < revisionIndex(w.since))
-      || (w.until !== undefined && at > revisionIndex(w.until)))
+    .filter(([, w]) => (w.since !== undefined && compareRevisions(revision, w.since) < 0)
+      || (w.until !== undefined && compareRevisions(revision, w.until) > 0))
     .map(([field]) => field)
     .sort();
 }

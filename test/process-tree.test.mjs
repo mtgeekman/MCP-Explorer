@@ -44,6 +44,15 @@ async function startTree(command, args, depth, spawnOptions = {}) {
   return { root: root.pid, pids };
 }
 
+const posixOnly = { skip: process.platform === 'win32' && 'POSIX only' };
+
+/** A node process that runs until killed. */
+const sleeper = () => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e6)'], { stdio: 'ignore' });
+  started.push(child.pid);
+  return child;
+};
+
 // On Windows, libuv puts every process node spawns into a job object that
 // ends with the parent, so a node-under-node tree dies from a root-only kill
 // too and this test could not tell the difference (measured 2026-09-24: it
@@ -62,6 +71,16 @@ test('a server behind a Windows cmd.exe shim, the npx shape, is killed with its 
   assert.ok(!pids.includes(root), 'the root is cmd.exe, not a node process');
   await killProcessTree(root);
   await waitFor(() => ![root, ...pids].some(isAlive), 'cmd.exe and both node processes to exit');
+});
+
+test('a process the OS will not let us signal makes the kill fail, naming it and why', posixOnly, async () => {
+  const child = sleeper();
+  const refuse = () => { throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' }); };
+  await assert.rejects(
+    killProcessTree(child.pid, { graceMs: 50, signal: refuse }),
+    (e) => { assert.match(e.message, new RegExp(`${child.pid} \\(EPERM\\).*still running after SIGKILL`)); return true; },
+  );
+  assert.ok(isAlive(child.pid), 'the refused process is still there to be reported');
 });
 
 test('killing a process that has already exited resolves', async () => {
@@ -89,13 +108,6 @@ test('a PID that cannot be a process is refused rather than signalled', async ()
 });
 
 // --- a root's PID reused on POSIX -----------------------------------------------------------
-
-const posixOnly = { skip: process.platform === 'win32' && 'Windows checks reuse by creation time instead' };
-const sleeper = () => {
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e6)'], { stdio: 'ignore' });
-  started.push(child.pid);
-  return child;
-};
 
 test('a stranger now holding a root\'s PID is not signalled: its start differs from the one recorded', posixOnly, async () => {
   const stranger = sleeper();

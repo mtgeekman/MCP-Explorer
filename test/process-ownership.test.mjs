@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createWorkspaceDb, saveServer } from '../packages/storage/dist/index.js';
-import { processStartToken } from '../packages/platform/dist/index.js';
+import { spawn } from 'node:child_process';
+import { isAlive, killServerTree, processStartToken } from '../packages/platform/dist/index.js';
 import { ConnectionManager } from '../packages/backend/dist/index.js';
 import { fixtures } from './support/fixture-servers.mjs';
 
@@ -20,6 +21,14 @@ after(async () => {
 });
 
 const noSecrets = { get: () => null, set: () => { throw new Error('unexpected keychain write'); }, delete: () => false };
+
+async function waitFor(check, ms = 10_000) {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
 
 function workspace() {
   const ws = createWorkspaceDb({ path: join(root, `${randomUUID()}.db`), workspaceId: randomUUID(), name: 'own', custody: { kind: 'none' }, secrets: noSecrets });
@@ -92,6 +101,54 @@ test('old valid input: closeAll ends each root once when nothing fails', async (
   manager['adopt'](b);
   await manager.closeAll();
   assert.deepEqual(attempts, [a, b]);
+});
+
+// R05-6: while the backend holds a root it spawned and has not seen exit,
+// the OS cannot give its PID to anyone else (Windows keeps a PID while a
+// handle is open; POSIX while the child is unreaped), so the tree kill skips
+// the PID-reuse listing and starts at once.
+test('R05-6: a live root is ended as held; a root seen exiting is not', async () => {
+  const ws = workspace();
+  // STUBBORN ignores a closed stdin and SIGTERM, so the root is still alive when its tree is killed.
+  const live = { id: randomUUID(), name: 'live', transport: 'stdio', command: process.execPath, args: [join(fixtures, 'modern-server.mjs')], env: { STUBBORN: '1' } };
+  const dies = { id: randomUUID(), name: 'dies', transport: 'stdio', command: process.execPath, args: [join(fixtures, 'legacy-server.mjs')], env: { HOSTILE_PREINIT: '1' } };
+  saveServer(ws, live);
+  saveServer(ws, dies);
+  const calls = [];
+  const manager = new ConnectionManager(ws, {
+    closeGraceMs: 200,
+    events: {},
+    killTree: async (root, opts) => { calls.push({ root, rootHeld: opts?.rootHeld }); await killServerTree(root, opts); },
+  });
+  cleanups.push(() => manager.closeAll());
+  const up = await manager.connect(live.id);
+  assert.equal(up.status, 'connected', JSON.stringify(up));
+  await manager.disconnect(live.id);
+  const ends = calls.filter((c) => c.root.pid === up.pid);
+  assert.equal(ends[0]?.rootHeld, true, 'a live root was not ended as held');
+  await waitFor(() => !isAlive(up.pid));
+
+  const failed = await manager.connect(dies.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.failure.kind, 'exited', 'precondition: the server died on the probe');
+  assert.equal(calls.at(-1).rootHeld, false, 'a root seen exiting was ended as held');
+});
+
+test('R05-6: a held root is killed with no process listing at all', { skip: process.platform !== 'win32' && 'the listing is Windows only' }, async () => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e6)'], { stdio: 'ignore' });
+  cleanups.push(() => { try { process.kill(child.pid, 'SIGKILL'); } catch { /* gone */ } });
+  let listings = 0;
+  await killServerTree({ pid: child.pid, startedAt: Date.now() }, { rootHeld: true, listProcesses: async () => { listings++; return []; } });
+  assert.equal(listings, 0);
+  assert.equal(isAlive(child.pid), false);
+});
+
+test('old valid input: a root not known to be held is still checked for PID reuse', { skip: process.platform !== 'win32' && 'the listing is Windows only' }, async () => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e6)'], { stdio: 'ignore' });
+  cleanups.push(() => { try { process.kill(child.pid, 'SIGKILL'); } catch { /* gone */ } });
+  let listings = 0;
+  await killServerTree({ pid: child.pid, startedAt: Date.now() }, { listProcesses: async () => { listings++; return []; } });
+  assert.equal(listings, 1);
 });
 
 test('a spawn that reuses an owned root\'s PID does not forget the old root: both are ended and reported', async () => {

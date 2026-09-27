@@ -7,8 +7,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { createWorkspaceDb } from '../packages/storage/dist/index.js';
+import { createWorkspaceDb, saveServer } from '../packages/storage/dist/index.js';
+import { processStartToken } from '../packages/platform/dist/index.js';
 import { ConnectionManager } from '../packages/backend/dist/index.js';
+import { fixtures } from './support/fixture-servers.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'mcpx-own-'));
 const cleanups = [];
@@ -24,6 +26,19 @@ function workspace() {
   cleanups.push(() => ws.close());
   return ws;
 }
+
+test('POSIX: a spawned root is reported with its start, so its PID cannot be mistaken later', { skip: process.platform === 'win32' && 'Windows checks reuse by creation time' }, async () => {
+  const ws = workspace();
+  const s = { id: randomUUID(), name: 'm', transport: 'stdio', command: process.execPath, args: [join(fixtures, 'modern-server.mjs')] };
+  saveServer(ws, s);
+  const reports = [];
+  const manager = new ConnectionManager(ws, { closeGraceMs: 200, events: { processes: (roots) => reports.push(roots) } });
+  cleanups.push(() => manager.closeAll());
+  const up = await manager.connect(s.id);
+  assert.equal(up.status, 'connected', JSON.stringify(up));
+  const [reported] = reports.find((r) => r.length === 1);
+  assert.equal(reported.startToken, processStartToken(up.pid));
+});
 
 test('a spawn that reuses an owned root\'s PID does not forget the old root: both are ended and reported', async () => {
   const reports = [];

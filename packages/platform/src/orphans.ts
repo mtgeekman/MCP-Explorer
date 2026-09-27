@@ -6,7 +6,7 @@
 // parent exits, so the orphans can still be found by it.
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
-import { isAlive, killProcessTree } from './process-tree.js';
+import { isAlive, killProcessTree, processStartToken } from './process-tree.js';
 
 export interface ProcessInfo {
   pid: number;
@@ -20,6 +20,14 @@ export interface ServerRoot {
   pid: number;
   /** When the backend saw it spawn, milliseconds since the epoch. */
   startedAt: number;
+  /** POSIX: processStartToken at spawn, so a later holder of the PID is known for a stranger. */
+  startToken?: string;
+}
+
+/** The root a spawn just produced, with what identifies it later. */
+export function serverRoot(pid: number, startedAt: number): ServerRoot {
+  const startToken = processStartToken(pid);
+  return { pid, startedAt, ...(startToken === undefined ? {} : { startToken }) };
 }
 
 /**
@@ -92,7 +100,8 @@ export async function killServerTree(
     const failed = results.flatMap((r, i) => (r.status === 'rejected' ? [`${pids[i]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`] : []));
     if (failed.length) throw new Error(`could not end process tree ${failed.join('; ')}`);
   };
-  if (isAlive(root.pid) && !(process.platform === 'win32' && (await rootWasReused(root, list)))) {
+  const reused = process.platform === 'win32' ? () => rootWasReused(root, list) : async () => posixRootWasReused(root);
+  if (isAlive(root.pid) && !(await reused())) {
     await endAll([root.pid]);
     if (process.platform !== 'win32') return [];
     // The root can die after it was seen alive and before taskkill walks the
@@ -133,4 +142,17 @@ async function rootWasReused(root: ServerRoot, list: () => Promise<ProcessInfo[]
   }
   const holder = processes.find((p) => p.pid === root.pid);
   return holder !== undefined && holder.created > root.startedAt + START_SLACK_MS;
+}
+
+/**
+ * POSIX: whether the process now holding the root's PID started at another
+ * time than the root did. A root with no recorded start is killed from its PID
+ * as before, and the warning says what was not checked.
+ */
+function posixRootWasReused(root: ServerRoot): boolean {
+  if (root.startToken === undefined) {
+    process.emitWarning(`killing process tree ${root.pid} without checking its PID was not reused: its start was not recorded`, 'MCPExplorerProcessWarning');
+    return false;
+  }
+  return processStartToken(root.pid) !== root.startToken;
 }

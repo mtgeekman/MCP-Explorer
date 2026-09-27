@@ -10,7 +10,7 @@ import {
   HistoryRecorder, loadServer, pinEra, clearEra, readDetectedEra, recordCapture,
   type ServerDefinition, type SecretNames, type Workspace,
 } from '../../storage/dist/index.js';
-import { killServerTree, type ServerRoot } from '../../platform/dist/index.js';
+import { killServerTree, serverRoot, type ServerRoot } from '../../platform/dist/index.js';
 
 /**
  * What the app offers after a stdio failure that a second spawn could get
@@ -381,7 +381,7 @@ export class ConnectionManager {
       this.opts.events.unit?.(serverId, connectionId, unitId, u);
       const event = u.kind === 'app' ? appEvent(u) : undefined;
       if (event?.event === 'spawned' && typeof event.pid === 'number') {
-        slot.root = { pid: event.pid, startedAt: this.now() };
+        slot.root = serverRoot(event.pid, this.now());
         this.adopt(slot.root);
       }
       if (event?.event === 'spawned' && this.state(serverId).status === 'connecting') {

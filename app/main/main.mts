@@ -14,6 +14,15 @@ const SHUTDOWN_GRACE_MS = 10_000;
 // run cannot inherit another's. Unset, both stay in the default userData.
 if (process.env.MCPX_DATA_DIR) app.setPath('userData', process.env.MCPX_DATA_DIR);
 
+// One app per data directory. It holds the workspace registry and every
+// workspace database, and two apps on it lose each other's registry writes and
+// repair each other's running calls as crashed (call-history.ts). Electron
+// keys the lock on userData, so it is taken after the line above: another data
+// directory runs beside this one. A second launch here exits before anything
+// starts, and the first app's window comes forward.
+const primary = app.requestSingleInstanceLock();
+if (!primary) app.exit(0);
+
 let backend: UtilityProcess | undefined;
 /** The live stdio servers' root processes, as the backend last reported them. */
 let serverRoots: ServerRoot[] = [];
@@ -139,7 +148,15 @@ ipcMain.on('backend-restart', () => {
   for (const win of BrowserWindow.getAllWindows()) connect(win);
 });
 
+app.on('second-instance', () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+});
+
 app.whenReady().then(() => {
+  // Nothing starts in an app that did not get the lock, however it exits.
+  if (!primary) return;
   backend = startBackend();
   mainWindow = createWindow();
   mainWindow.on('closed', () => {

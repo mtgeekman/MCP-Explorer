@@ -118,7 +118,9 @@ export function readCall(ws: Workspace, callId: number): CallRecord | undefined 
  * becomes `interrupted` the same way (migration 7).
  *
  * Safe only because one process opens a workspace at a time: a second process
- * with the same workspace open would have its live calls marked here.
+ * with the same workspace open would have its live calls marked here. The app
+ * holds a lock per data directory (app/main/main.mts), which is where every
+ * workspace lives.
  */
 export function repairInterrupted(ws: Workspace): { calls: number; connections: number; serverRequests: number } {
   return ws.db.transaction(() => {

@@ -252,7 +252,8 @@ export class Backend {
 
   private startConnections(open: OpenWorkspace): void {
     // A call or session a crash left open is closed before anything new starts
-    // (phase 07 decision 7). Safe while one process opens a workspace at a time.
+    // (phase 07 decision 7). Safe while one process opens a workspace at a
+    // time, which the main process's lock per data directory holds.
     repairInterrupted(open.ws);
     // The connection manager asks the auth manager for tokens, and the auth
     // manager records through the connection manager: each reaches the other lazily.

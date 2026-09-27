@@ -14,8 +14,10 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { addToRegistry, createWorkspaceDb, saveServer, openWorkspaceDb, recordCapture } from '../../packages/storage/dist/index.js';
 import { connectStdio, captureSurface } from '../../packages/protocol/dist/index.js';
-import { isAlive } from '../../packages/platform/dist/index.js';
+import { isAlive, killProcessTree } from '../../packages/platform/dist/index.js';
 import { fixtures, listen } from '../support/fixture-servers.mjs';
+import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 
 // No trailing separator: on Windows a backslash before the closing quote of an
 // argument escapes the quote, and Electron is handed a mangled path.
@@ -1226,5 +1228,69 @@ test('readable JSON: text that is JSON is shown decoded in Pretty, marked, and a
     assert.ok((await unit.innerText()).includes('\\"page\\"'), 'the string as it is, escapes and all');
   } finally {
     await app.close();
+  }
+});
+
+// --- one app per data directory ------------------------------------------------------------
+
+/**
+ * Starts the app as a person would a second time, outside playwright (which
+ * waits for a window that a refused instance never opens). Resolves to its
+ * exit code, or 'still running' after `ms`, when its whole tree is ended.
+ */
+function launchPlain(dataDir, ms = 15_000) {
+  const sandbox = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
+  const exe = process.env.MCPX_APP_EXE ?? createRequire(import.meta.url)('electron');
+  const args = process.env.MCPX_APP_EXE ? sandbox : [repo, ...sandbox];
+  const child = spawn(exe, args, { env: { ...process.env, MCPX_DATA_DIR: dataDir }, stdio: 'ignore' });
+  return new Promise((resolveExit) => {
+    const timer = setTimeout(async () => {
+      await killProcessTree(child.pid).catch(() => undefined);
+      resolveExit('still running');
+    }, ms);
+    child.on('exit', (code) => { clearTimeout(timer); resolveExit(code); });
+  });
+}
+
+test('a second launch on the same data directory exits at once and brings the first window forward', async () => {
+  const { dataDir } = seed([]);
+  const first = await launch(dataDir);
+  try {
+    await first.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].minimize());
+    assert.equal(await launchPlain(dataDir), 0, 'the second launch did not exit on its own');
+    assert.equal(await first.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1, 'the second launch opened a window in the first');
+    assert.equal(await first.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized()), false, 'the first window was not brought forward');
+    await openWorkspace(first.page);
+  } finally {
+    await first.app.close();
+  }
+});
+
+test('old valid input: a launch on another data directory runs beside the first', async () => {
+  const [a, b] = [seed([]), seed([])];
+  const first = await launch(a.dataDir);
+  try {
+    const other = await launch(b.dataDir);
+    try {
+      await openWorkspace(other.page);
+    } finally {
+      await other.app.close();
+    }
+  } finally {
+    await first.app.close();
+  }
+});
+
+test('an app that was killed leaves no lock behind: the next launch on its data directory runs', async () => {
+  const { dataDir } = seed([]);
+  const first = await launch(dataDir);
+  const pid = first.app.process().pid;
+  await killProcessTree(pid);
+  assert.ok(await gone(pid), 'the first app outlived its kill');
+  const next = await launch(dataDir);
+  try {
+    await openWorkspace(next.page);
+  } finally {
+    await next.app.close();
   }
 });

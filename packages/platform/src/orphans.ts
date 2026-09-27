@@ -89,7 +89,19 @@ function windowsProcesses(): Promise<ProcessInfo[]> {
  */
 export async function killServerTree(
   root: ServerRoot,
-  opts: { listProcesses?: () => Promise<ProcessInfo[]>; kill?: (pid: number) => Promise<KillOutcome | void> } = {},
+  opts: {
+    listProcesses?: () => Promise<ProcessInfo[]>;
+    kill?: (pid: number) => Promise<KillOutcome | void>;
+    /**
+     * The caller spawned this root and has not seen it exit, so no other
+     * process can hold its PID: Windows keeps a PID while a handle to the
+     * process is open, POSIX until its parent reaps it. The reuse check is
+     * skipped, and the kill starts at once (R05-6). Never set by a caller
+     * that is not the root's parent: the main process, after the backend
+     * died, holds nothing.
+     */
+    rootHeld?: boolean;
+  } = {},
 ): Promise<number[]> {
   const list = opts.listProcesses ?? windowsProcesses;
   const kill = opts.kill ?? killProcessTree;
@@ -102,7 +114,7 @@ export async function killServerTree(
     return results.map((r) => (r.status === 'fulfilled' ? r.value : undefined));
   };
   const reused = process.platform === 'win32' ? () => rootWasReused(root, list) : async () => posixRootWasReused(root);
-  if (isAlive(root.pid) && !(await reused())) {
+  if (isAlive(root.pid) && (opts.rootHeld || !(await reused()))) {
     const [outcome] = await endAll([root.pid]);
     // taskkill walked the tree from the live root: nothing is left to look for (R05-5).
     if (process.platform !== 'win32' || outcome === 'ended') return [];

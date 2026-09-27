@@ -72,7 +72,7 @@ export interface ConnectionManagerOptions {
    */
   closeGraceMs?: number;
   /** Ends a server's process tree; the platform's killServerTree unless a test stands in. */
-  killTree?: (root: ServerRoot) => Promise<unknown>;
+  killTree?: (root: ServerRoot, opts?: { rootHeld?: boolean }) => Promise<unknown>;
   /**
    * A server's own request (legacy era), with the recorder of the session it
    * arrived on. Resolves with a person's answer. Without it a request waits
@@ -119,10 +119,10 @@ export interface PartialCapture {
 const SDK_STDIN_CLOSE_WAIT_MS = 2000;
 const DEFAULT_CLOSE_GRACE_MS = 1000;
 /**
- * Room for the tree kill before the SDK's SIGTERM. Not always enough on
- * Windows: the PID-reuse check lists processes (about 700 ms) and taskkill
- * takes about 400 ms to start (both measured 2026-09-25), so the root can die
- * first. killServerTree then finds what it left behind by its parent.
+ * Room for the tree kill before the SDK's SIGTERM. taskkill takes about 400
+ * ms to start (measured 2026-09-25); a root this backend still holds skips
+ * the PID-reuse listing (about 700 ms, R05-6), so the kill fits. If the root
+ * dies first anyway, killServerTree finds what it left behind by its parent.
  */
 const TREE_KILL_MARGIN_MS = 500;
 
@@ -140,6 +140,8 @@ export class ConnectionManager {
   private readonly owned = new Set<ServerRoot>();
   /** Attempts under way, by root: a PID can pass to a new root while an old one is still being ended. */
   private readonly ending = new Map<ServerRoot, Promise<void>>();
+  /** Roots whose exit this backend has seen: their PIDs are free for the OS to reuse. */
+  private readonly exited = new WeakSet<ServerRoot>();
   private readonly sessionSecrets = new Map<string, SecretValues>();
   private readonly now: () => number;
 
@@ -349,7 +351,7 @@ export class ConnectionManager {
     if (inFlight) return inFlight;
     const attempt = (async () => {
       try {
-        await (this.opts.killTree ?? killServerTree)(root);
+        await (this.opts.killTree ?? killServerTree)(root, { rootHeld: !this.exited.has(root) });
         // Only this root: its PID may have passed to a newer one meanwhile.
         this.owned.delete(root);
       } catch (e) {
@@ -382,14 +384,19 @@ export class ConnectionManager {
     slot.recorder = recorder;
     this.set(serverId, { status: 'connecting', step: def.transport === 'stdio' ? 'starting' : 'negotiating', era, connectionId });
 
+    // This connection's root, kept here: slot.root is cleared when the session
+    // ends, and a root whose end failed can exit long after.
+    let spawned: ServerRoot | undefined;
     const onUnit = (u: WireUnit) => {
       const unitId = recorder.unit(u);
       this.opts.events.unit?.(serverId, connectionId, unitId, u);
       const event = u.kind === 'app' ? appEvent(u) : undefined;
       if (event?.event === 'spawned' && typeof event.pid === 'number') {
-        slot.root = serverRoot(event.pid, this.now());
-        this.adopt(slot.root);
+        spawned = serverRoot(event.pid, this.now());
+        slot.root = spawned;
+        this.adopt(spawned);
       }
+      if (event?.event === 'exited' && spawned) this.exited.add(spawned);
       if (event?.event === 'spawned' && this.state(serverId).status === 'connecting') {
         this.set(serverId, { status: 'connecting', step: 'negotiating', era, connectionId });
       }

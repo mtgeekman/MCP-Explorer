@@ -133,9 +133,11 @@ export class ConnectionManager {
    * by PID (D36). A root enters at its spawn and leaves only once its whole
    * tree was ended; one that could not be stays, is reported to the main
    * process, and is tried again by closeAll. This is the one record of what
-   * the app is still running, and the processes report is exactly it.
+   * the app is still running, and the processes report is exactly it. Held by
+   * root, not PID: a new spawn can get the PID of a root not yet ended, and
+   * the old root's leftovers are still ours to end.
    */
-  private readonly owned = new Map<number, ServerRoot>();
+  private readonly owned = new Set<ServerRoot>();
   /** Attempts under way, by root: a PID can pass to a new root while an old one is still being ended. */
   private readonly ending = new Map<ServerRoot, Promise<void>>();
   private readonly sessionSecrets = new Map<string, SecretValues>();
@@ -194,7 +196,7 @@ export class ConnectionManager {
         process.emitWarning(`server ${ids[i]} did not close cleanly: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`, 'MCPExplorerConnectionWarning');
       }
     });
-    await Promise.all([...this.owned.values()].map((root) => this.endTree(root)));
+    await Promise.all([...this.owned].map((root) => this.endTree(root)));
   }
 
   captureStatus(serverId: string): CaptureStatus {
@@ -321,12 +323,12 @@ export class ConnectionManager {
 
   /** A root this manager just spawned: owned, and reported, until its tree is ended. */
   private adopt(root: ServerRoot): void {
-    this.owned.set(root.pid, root);
+    this.owned.add(root);
     this.announceProcesses();
   }
 
   private announceProcesses(): void {
-    this.opts.events.processes?.([...this.owned.values()]);
+    this.opts.events.processes?.([...this.owned]);
   }
 
   /**
@@ -336,14 +338,14 @@ export class ConnectionManager {
    * attempt.
    */
   private endTree(root: ServerRoot): Promise<void> {
-    if (this.owned.get(root.pid) !== root) return Promise.resolve();
+    if (!this.owned.has(root)) return Promise.resolve();
     const inFlight = this.ending.get(root);
     if (inFlight) return inFlight;
     const attempt = (async () => {
       try {
         await (this.opts.killTree ?? killServerTree)(root);
         // Only this root: its PID may have passed to a newer one meanwhile.
-        if (this.owned.get(root.pid) === root) this.owned.delete(root.pid);
+        this.owned.delete(root);
       } catch (e) {
         process.emitWarning(`server process ${root.pid} and what it started could not all be ended: ${e instanceof Error ? e.message : String(e)}`, 'MCPExplorerProcessWarning');
       } finally {
@@ -414,7 +416,7 @@ export class ConnectionManager {
           era, onUnit, onClose, onNotification, onServerRequest, probeTimeoutMs: this.opts.probeTimeoutMs,
           // A failed connect ends the whole tree, not just its root (D36),
           // before the SDK's own close signals the root alone.
-          terminate: (pid) => { const root = this.owned.get(pid); return root ? this.endTree(root) : Promise.resolve(); },
+          terminate: (pid) => (slot.root?.pid === pid ? this.endTree(slot.root) : Promise.resolve()),
         })
         : await connectHttp({
           url: def.url!, kind: def.transport, era,

@@ -80,8 +80,9 @@ export function processStartToken(pid: number): string | undefined {
 
 /**
  * Ends `pid` and every process descended from it. Resolves once the tree is
- * gone or nothing more can be done; never rejects for a process that has
- * already exited.
+ * gone; rejects naming what is still running (POSIX: after SIGKILL and a
+ * short wait; Windows: what taskkill could not end). Never rejects for a
+ * process that has already exited.
  */
 export async function killProcessTree(pid: number, opts: KillTreeOptions = {}): Promise<void> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new RangeError(`not a process id: ${pid}`);
@@ -107,18 +108,37 @@ async function killPosixTree(root: number, graceMs: number, send: Send): Promise
   // Snapshot the tree first: once a parent dies its children are re-parented
   // and can no longer be found from it.
   const tree = [root, ...(await descendants(root))];
-  signalAll(tree, 'SIGTERM', send);
-  const deadline = Date.now() + graceMs;
-  while (Date.now() < deadline && tree.some(isAlive)) await new Promise((r) => setTimeout(r, 25));
-  signalAll(tree.filter(isAlive), 'SIGKILL', send);
+  const refused = new Map<number, string>();
+  signalAll(tree, 'SIGTERM', send, refused);
+  await gone(tree, graceMs);
+  signalAll(tree.filter(isAlive), 'SIGKILL', send, refused);
+  // SIGKILL is not instant, and it can be refused (EPERM) or not land: what is
+  // still running is named, so the root stays owned and reported (D36).
+  await gone(tree, KILL_WAIT_MS);
+  const survivors = tree.filter(isAlive);
+  if (survivors.length) {
+    const named = survivors.map((pid) => (refused.has(pid) ? `${pid} (${refused.get(pid)})` : String(pid)));
+    throw new Error(`process tree ${root}: ${named.join(', ')} still running after SIGKILL`);
+  }
 }
 
-function signalAll(pids: number[], signal: NodeJS.Signals, send: Send): void {
+/** How long a tree gets to be gone after SIGKILL before the kill is reported failed. */
+const KILL_WAIT_MS = 1000;
+
+async function gone(pids: number[], ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline && pids.some(isAlive)) await new Promise((r) => setTimeout(r, 25));
+}
+
+/** Signals each PID; one the OS refused is kept in `refused` with the reason. */
+function signalAll(pids: number[], signal: NodeJS.Signals, send: Send, refused: Map<number, string>): void {
   for (const pid of pids) {
     try {
       send(pid, signal);
-    } catch {
-      // Already gone between the snapshot and the signal.
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      // ESRCH: gone between the snapshot and the signal, which is the outcome wanted.
+      if (code !== 'ESRCH') refused.set(pid, code ?? (e instanceof Error ? e.message : String(e)));
     }
   }
 }

@@ -15,6 +15,8 @@ import { join } from 'node:path';
 export interface KillTreeOptions {
   /** How long the tree gets to exit after SIGTERM before SIGKILL. POSIX only. */
   graceMs?: number;
+  /** Sends one signal; process.kill unless a test stands in. POSIX only. */
+  signal?: (pid: number, signal: NodeJS.Signals) => void;
 }
 
 /**
@@ -84,7 +86,7 @@ export function processStartToken(pid: number): string | undefined {
 export async function killProcessTree(pid: number, opts: KillTreeOptions = {}): Promise<void> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new RangeError(`not a process id: ${pid}`);
   if (process.platform === 'win32') return killWindowsTree(pid);
-  return killPosixTree(pid, opts.graceMs ?? 2000);
+  return killPosixTree(pid, opts.graceMs ?? 2000, opts.signal ?? ((p, s) => process.kill(p, s)));
 }
 
 /** taskkill walks the tree from a live root and terminates it; /F because a console server ignores WM_CLOSE. */
@@ -99,20 +101,22 @@ function killWindowsTree(pid: number): Promise<void> {
   });
 }
 
-async function killPosixTree(root: number, graceMs: number): Promise<void> {
+type Send = (pid: number, signal: NodeJS.Signals) => void;
+
+async function killPosixTree(root: number, graceMs: number, send: Send): Promise<void> {
   // Snapshot the tree first: once a parent dies its children are re-parented
   // and can no longer be found from it.
   const tree = [root, ...(await descendants(root))];
-  signalAll(tree, 'SIGTERM');
+  signalAll(tree, 'SIGTERM', send);
   const deadline = Date.now() + graceMs;
   while (Date.now() < deadline && tree.some(isAlive)) await new Promise((r) => setTimeout(r, 25));
-  signalAll(tree.filter(isAlive), 'SIGKILL');
+  signalAll(tree.filter(isAlive), 'SIGKILL', send);
 }
 
-function signalAll(pids: number[], signal: NodeJS.Signals): void {
+function signalAll(pids: number[], signal: NodeJS.Signals, send: Send): void {
   for (const pid of pids) {
     try {
-      process.kill(pid, signal);
+      send(pid, signal);
     } catch {
       // Already gone between the snapshot and the signal.
     }

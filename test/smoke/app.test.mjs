@@ -495,13 +495,18 @@ test('R-tabs-1: a raw view hidden by a tab keeps its rows; it is not re-flowed a
     const rows = page.locator('.entry-definition .raw-toolbar .muted').first();
     await rows.waitFor();
     const shown = await rows.textContent();
+    // A ResizeObserver reports after layout: two frames, then read the hidden view.
+    const frames = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     await page.locator('.surface-entry .tabs').getByRole('tab', { name: 'Call', exact: true }).click();
     await page.locator('.call-editor textarea').waitFor();
-    assert.equal(await rows.textContent(), shown, 'hidden, the definition keeps the rows it had');
-    await serverTab(page, 'Versions');
-    await serverTab(page, 'Surface');
+    await frames();
+    assert.equal(await rows.textContent(), shown, 'hidden by the entry Call tab, the definition keeps the rows it had');
     await page.locator('.surface-entry .tabs').getByRole('tab', { name: 'Definition', exact: true }).click();
-    assert.equal(await rows.textContent(), shown, 'and shows them again');
+    await frames();
+    assert.equal(await rows.textContent(), shown);
+    await serverTab(page, 'Versions');
+    await frames();
+    assert.equal(await rows.textContent(), shown, 'hidden by the server Versions tab, the same');
   } finally {
     await app.close();
   }
@@ -1297,11 +1302,13 @@ test('R-tabs-2: a list dragged wide gives way when the readable pane widens; the
     await connectAndCapture(page, 'squeezed', 2);
     await page.locator('.surface-items .item', { hasText: 'echo' }).click();
     const entryWidth = () => page.locator('.surface-entry').evaluate((el) => el.getBoundingClientRect().width);
+    const paneWidth = () => page.locator('.readable-pane').evaluate((el) => el.getBoundingClientRect().width);
     await handle(page, 'Surface list width').focus();
     await page.keyboard.press('End');
-    assert.ok(await entryWidth() >= 318, `at the list's widest the entry has its minimum: ${await entryWidth()}`);
+    const pane = await paneWidth();
     await dragBy(handle(page, 'Readable pane width'), -200, 0, 20);
-    assert.ok(await entryWidth() >= 318, `the readable pane took 200 px, and the list gave them up: entry ${await entryWidth()} px`);
+    assert.ok((await paneWidth()) - pane >= 190, `the readable pane widened: ${pane} to ${await paneWidth()}`);
+    assert.ok(await entryWidth() >= 318, `the list gave up the space, not the entry: entry ${await entryWidth()} px`);
   } finally {
     await app.close();
   }

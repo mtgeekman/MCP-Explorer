@@ -251,7 +251,8 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .surface-items .item { width: 100%; height: auto; min-height: var(--control); padding: 4px 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 0; text-align: left; border-color: transparent; background: transparent; word-break: break-all; }
 .surface-items .item small { color: var(--muted); }
 .surface-items .item.on { border-color: var(--accent); background: var(--panel); }
-.surface-entry { flex: 1 1 0; min-width: 0; padding-left: 12px; container-type: inline-size; }
+/* The entry never goes below its minimum (panes.ts ENTRY_MIN, padding included); when the split narrows, the list gives way, down to its own. */
+.surface-entry { flex: 1 1 0; min-width: 320px; padding-left: 12px; container-type: inline-size; }
 .entry-source { margin: 0 0 4px; font-size: 12px; }
 .entry-source-row { display: flex; align-items: flex-start; gap: 12px; }
 .entry-source-row .entry-source { flex: 1; }

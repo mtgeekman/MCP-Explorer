@@ -407,7 +407,7 @@ async function openCall(page, tool) {
 /** One of the server view's tabs (Surface, Calls, Notifications, Versions); the others stay mounted and hidden. */
 const serverTab = (page, name) => page.locator('.server-tabs').getByRole('tab', { name, exact: true }).click();
 
-const callButton = (page) => page.locator('.call-panel > .actions').getByRole('button', { name: 'Call', exact: true });
+const callButton = (page) => page.locator('.call-form-view > .actions').getByRole('button', { name: 'Call', exact: true });
 const transcriptStatus = (page, text) => page.locator('.call-panel .transcript .call-status', { hasText: text });
 
 test('calls: a read-only tool runs from the form without a confirm, and its result is read in the pane', async () => {
@@ -432,6 +432,37 @@ test('calls: a read-only tool runs from the form without a confirm, and its resu
     await shot(page, '07-2-result');
     await serverTab(page, 'Calls');
     await page.locator('.call-history td', { hasText: 'add' }).first().waitFor();
+  } finally {
+    await app.close();
+  }
+});
+
+test('calls: a call opens its Response tab; the form keeps its arguments, and Replay takes them back to Call', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'responding', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'responding');
+    await openCall(page, 'add');
+    const entryTab = (name) => page.locator('.surface-entry .tabs').getByRole('tab', { name, exact: true });
+    const editor = page.locator('.call-editor textarea');
+    assert.equal(await entryTab('Response').count(), 0, 'no Response tab before a call');
+    await editor.fill('{ "a": 1, "b": 2 }');
+    await callButton(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    assert.equal(await entryTab('Response').getAttribute('aria-selected'), 'true', 'the call opened its response');
+    assert.equal(await editor.isVisible(), false, 'the form is a tab away');
+    await entryTab('Definition').click();
+    await page.locator('.entry-definition .raw-viewer').waitFor();
+    assert.equal(await page.locator('.call-panel .transcript').isVisible(), false);
+    await entryTab('Call').click();
+    assert.equal(await editor.inputValue(), '{ "a": 1, "b": 2 }', 'the arguments sent are still in the form');
+    await editor.fill('{}');
+    await entryTab('Response').click();
+    await page.locator('.call-panel .transcript').getByRole('button', { name: 'Replay' }).click();
+    assert.equal(await entryTab('Call').getAttribute('aria-selected'), 'true', 'Replay shows the form');
+    assert.match(await editor.inputValue(), /"a": 1/, 'with the arguments the call sent');
+    assert.equal(await page.locator('.call-panel .transcript').count(), 1, 'the response is still a tab away');
   } finally {
     await app.close();
   }
@@ -514,13 +545,13 @@ test('calls: a prompt is got from its argument form, and a template resource is 
     await page.locator('.surface-items button', { hasText: 'review' }).click();
     await page.getByRole('tab', { name: 'Get', exact: true }).click();
     await page.locator('.call-form label', { hasText: 'language' }).locator('input').fill('rust');
-    await page.locator('.call-panel > .actions').getByRole('button', { name: 'Get', exact: true }).click();
+    await page.locator('.call-form-view > .actions').getByRole('button', { name: 'Get', exact: true }).click();
     await page.locator('.readable-pane .part-text', { hasText: 'Review this rust code' }).waitFor({ timeout: 10_000 });
     await page.getByRole('tab', { name: /^Templates/ }).click();
     await page.locator('.surface-items button', { hasText: 'fixture://notes/{day}' }).click();
     await page.getByRole('tab', { name: 'Read', exact: true }).click();
     await page.locator('.call-form label', { hasText: 'day' }).locator('input').fill('monday');
-    await page.locator('.call-panel > .actions').getByRole('button', { name: 'Read', exact: true }).click();
+    await page.locator('.call-form-view > .actions').getByRole('button', { name: 'Read', exact: true }).click();
     await page.locator('.readable-pane .part-text', { hasText: 'Notes for monday.' }).waitFor({ timeout: 10_000 });
     await shot(page, '07-6-template');
   } finally {

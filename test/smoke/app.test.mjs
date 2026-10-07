@@ -116,6 +116,7 @@ test('both eras connect over all three transports from the GUI, and every unit s
     for (const s of servers) {
       const era = s.name.endsWith('legacy') ? 'legacy' : 'modern';
       assert.match(await connect(page, s.name), new RegExp(`Connected, ${era} era`), s.name);
+      if (s.transport !== 'stdio') assert.equal(await page.locator('.auth').count(), 0, `${s.name}: no sign of OAuth, so no Sign-in panel`);
       shown += await page.locator('.log-line').count();
       await disconnect(page);
     }

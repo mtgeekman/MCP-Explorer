@@ -16,6 +16,9 @@ function useColumns() {
     const el = box.current;
     if (!el) return;
     const measure = () => {
+      // A view a tab away is display: none and has no width; it keeps the rows
+      // it had rather than re-flowing all its bytes at the narrowest, twice.
+      if (el.clientWidth === 0) return;
       const charWidth = (probe.current?.getBoundingClientRect().width ?? 750) / 100;
       // Width minus the offset gutter (90 px), the gap and padding (32 px), and the scroll bar.
       setCols(Math.max(16, Math.floor((el.clientWidth - 140) / charWidth)));

@@ -237,6 +237,12 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .tabs { display: flex; gap: 2px; margin: 12px 0 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .tab { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; }
 .tab.on { border-bottom-color: var(--accent); font-weight: 500; }
+/* A hidden tab view stays mounted; no display rule may show it. */
+[hidden] { display: none !important; }
+/* The server view's tabs: Surface, Calls, Notifications, Versions. */
+.server-tabs { margin: 20px 0 0; }
+.server-tabs .tab { font-size: 14px; padding: 0 14px; }
+[role="tabpanel"] > .surface, [role="tabpanel"] > .call-history, [role="tabpanel"] > .notifications, [role="tabpanel"] > .versions { margin-top: 10px; }
 .instructions { margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
 /* The list above, the entry's bytes below at full width: the raw viewer needs the room. */
 .surface-split { display: flex; flex-direction: column; gap: 8px; }

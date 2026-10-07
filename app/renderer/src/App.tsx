@@ -8,7 +8,7 @@ import { CreateWorkspace } from './workspace/CreateWorkspace';
 import { WorkspacePicker } from './workspace/WorkspacePicker';
 import { WorkspaceSwitcher } from './workspace/WorkspaceSwitcher';
 import { ServerList } from './servers/ServerList';
-import { ServerDetail } from './servers/ServerDetail';
+import { ServerDetail, type ServerTab } from './servers/ServerDetail';
 import { ServerEditor } from './servers/ServerEditor';
 import { ImportServers } from './servers/ImportServers';
 import { Notices } from './Notices';
@@ -58,6 +58,8 @@ export function App({ client }: { client: BackendClient }) {
   // The surface entry chosen is its own state, not whatever the pane shows:
   // reading a call's result or a log row must not close the entry's call view.
   const [surfaceItem, setSurfaceItem] = useState<SelectedItem | null>(null);
+  // The server view's tab stays as chosen when another server is chosen.
+  const [serverTab, setServerTab] = useState<ServerTab>('surface');
 
   const selectItem = useCallback((item: SelectedItem | null) => {
     setSurfaceItem(item);
@@ -180,6 +182,8 @@ export function App({ client }: { client: BackendClient }) {
               selectedItem={surfaceItem}
               onSelectItem={selectItem}
               onReadCall={readCall}
+              tab={serverTab}
+              onTab={setServerTab}
             />
           )}
         </main>

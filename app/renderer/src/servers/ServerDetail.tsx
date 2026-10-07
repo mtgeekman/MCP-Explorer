@@ -1,7 +1,7 @@
 // One server's connection (round 3): every state, every failure leading with
 // what the process did, and the two offers D20 allows. Starting a server
 // again is always a button the user presses (P2).
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { CallView, HealthReport, ServerForm, ServerRow } from '../../../../packages/backend/dist/index.js';
 import { CallHistory } from '../calls/CallHistory';
 import { ServerRequestsPanel } from '../calls/ServerRequestsPanel';
@@ -14,9 +14,20 @@ import { NotificationsPanel } from './NotificationsPanel';
 import { AuthPanel } from './AuthPanel';
 import { signInParams } from '../lib/auth';
 
-export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, selectedItem, onSelectItem, onReadCall }: {
+/** The views below the connection, one shown at a time. */
+export type ServerTab = 'surface' | 'calls' | 'notifications' | 'versions';
+
+const TABS: { id: ServerTab; label: string }[] = [
+  { id: 'surface', label: 'Surface' },
+  { id: 'calls', label: 'Calls' },
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'versions', label: 'Versions' },
+];
+
+export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, selectedItem, onSelectItem, onReadCall, tab, onTab }: {
   client: BackendClient; server: ServerRow; onEdit: () => void; onDeleted: () => void; onChanged: () => void;
   selectedItem: SelectedItem | null; onSelectItem: (item: SelectedItem | null) => void; onReadCall: (view: CallView) => void;
+  tab: ServerTab; onTab: (tab: ServerTab) => void;
 }) {
   const [form, setForm] = useState<ServerForm | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -122,12 +133,26 @@ export function ServerDetail({ client, server, onEdit, onDeleted, onChanged, sel
       <AuthPanel client={client} server={server} />
       <SessionPanel client={client} server={server} />
       <ServerRequestsPanel client={client} serverId={server.id} />
-      <NotificationsPanel client={client} serverId={server.id} modernStdio={server.transport === 'stdio' && server.era?.era === 'modern'} />
-      <SurfacePanel client={client} server={server} selected={selectedItem} onSelect={onSelectItem} onReadCall={onReadCall} />
-      <VersionsPanel client={client} serverId={server.id} />
-      <CallHistory client={client} serverId={server.id} onRead={onReadCall} />
+      <div className="tabs server-tabs" role="tablist" aria-label="Server views">
+        {TABS.map((t) => (
+          <button key={t.id} role="tab" id={`server-tab-${t.id}`} aria-controls={`server-view-${t.id}`} aria-selected={tab === t.id}
+            className={tab === t.id ? 'tab on' : 'tab'} onClick={() => onTab(t.id)}>{t.label}</button>
+        ))}
+      </div>
+      {/* Every view stays mounted and only hides, so a half-typed call or one
+          waiting for an answer survives a switch of tab. */}
+      <View id="surface" tab={tab}><SurfacePanel client={client} server={server} selected={selectedItem} onSelect={onSelectItem} onReadCall={onReadCall} /></View>
+      <View id="calls" tab={tab}><CallHistory client={client} serverId={server.id} onRead={onReadCall} /></View>
+      <View id="notifications" tab={tab}>
+        <NotificationsPanel client={client} serverId={server.id} modernStdio={server.transport === 'stdio' && server.era?.era === 'modern'} open={tab === 'notifications'} />
+      </View>
+      <View id="versions" tab={tab}><VersionsPanel client={client} serverId={server.id} /></View>
     </section>
   );
+}
+
+function View({ id, tab, children }: { id: ServerTab; tab: ServerTab; children: ReactNode }) {
+  return <div role="tabpanel" id={`server-view-${id}`} aria-labelledby={`server-tab-${id}`} hidden={tab !== id}>{children}</div>;
 }
 
 function Steps({ step, stdio }: { step: 'starting' | 'negotiating'; stdio: boolean }) {

@@ -66,7 +66,6 @@ export function SurfacePanel({ client, server, selected, onSelect, onReadCall }:
   return (
     <section className="surface">
       <div className="surface-head">
-        <h3>Surface</h3>
         <span className="muted">
           {capture ? `Captured ${new Date(capture.observedAt).toLocaleString()} on revision ${surface!.revision}` : 'Nothing captured yet. Connecting captures it.'}
         </span>

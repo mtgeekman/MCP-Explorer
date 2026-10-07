@@ -38,6 +38,18 @@ export function authLines(r: AuthReport, now: number): string[] {
   return lines;
 }
 
+/**
+ * Whether a remote server's Sign-in panel shows at all: only when something
+ * says the server uses OAuth. A client entered in its settings, a sign-in or a
+ * registration held, a sign-in waiting or stopped, or a connect refused for
+ * authorization. Most OAuth servers need no settings, so the refused connect
+ * is usually the first sign, and its Sign in needs the panel for the page.
+ */
+export function showsSignIn(r: AuthReport, state: { status: string; failure?: { kind: string } }): boolean {
+  return r.preRegistered || r.signedIn || r.registration !== undefined || r.pending !== undefined || r.lastFailure !== undefined
+    || (state.status === 'failed' && state.failure?.kind === 'unauthorized');
+}
+
 /** Which buttons the panel shows. */
 export function authActions(r: AuthReport): AuthAction[] {
   if (r.pending) return ['open', 'cancel'];

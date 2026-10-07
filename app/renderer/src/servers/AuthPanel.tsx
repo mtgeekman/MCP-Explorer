@@ -1,10 +1,11 @@
 // A remote server's sign-in (plan phase 11 decisions 5 and 12): what the app
 // holds, never a token value, and one button per step. The browser opens only
-// when the user presses Open in browser.
+// when the user presses Open in browser. A server with no sign of OAuth shows
+// no panel (showsSignIn).
 import { useCallback, useEffect, useState } from 'react';
 import type { AuthReport, ServerRow } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
-import { ACTION_LABEL, authActions, authLines, type AuthAction } from '../lib/auth';
+import { ACTION_LABEL, authActions, authLines, showsSignIn, type AuthAction } from '../lib/auth';
 
 export function AuthPanel({ client, server }: { client: BackendClient; server: ServerRow }) {
   const [report, setReport] = useState<AuthReport | null>(null);
@@ -22,7 +23,7 @@ export function AuthPanel({ client, server }: { client: BackendClient; server: S
     });
   }, [client, server.id, load, server.state.status]);
 
-  if (server.transport === 'stdio' || !report) return null;
+  if (server.transport === 'stdio' || !report || !showsSignIn(report, server.state)) return null;
 
   const act = async (a: AuthAction) => {
     setError(null);

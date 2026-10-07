@@ -341,6 +341,23 @@ test('surface: connecting captures it; a tool opens on its exact bytes and the p
     const pane = page.locator('.readable-pane');
     await pane.getByText('Hints the server declares about itself').waitFor();
     assert.ok(await pane.locator('.params .param-desc', { hasText: 'What to echo.' }).first().isVisible(), 'the parameter description');
+    // Raw first, with a switch to two readings of the same bytes (spec D10, amended 2026-10-07).
+    const view = (name) => page.locator('.surface-entry .json-toggle').getByRole('button', { name, exact: true });
+    assert.equal(await view('Raw').getAttribute('aria-pressed'), 'true', 'the definition opens raw');
+    await view('Pretty').click();
+    const json = page.locator('.entry-json .json-view');
+    assert.match(await json.innerText(), /^\{\n {2}"/, 'Pretty is indented');
+    assert.match(await json.innerText(), /"name": "echo"/);
+    await page.locator('.entry-source', { hasText: 'parsed: not the bytes as sent' }).waitFor();
+    await shot(page, 'definition-pretty');
+    await view('Compact').click();
+    assert.match(await page.locator('.entry-json .json-view.compact').innerText(), /^\{[^\n]*"name":"echo"[^\n]*\}$/, 'Compact is one line, in whatever order the fixture shuffled the keys');
+    await view('Raw').click();
+    assert.ok(await page.locator('.entry-definition .raw-viewer').isVisible(), 'and back to the bytes');
+    await view('Pretty').click();
+    await page.locator('.surface-items .item', { hasText: 'needs_input' }).click();
+    await page.locator('.entry-definition .raw-viewer').waitFor();
+    assert.equal(await view('Raw').getAttribute('aria-pressed'), 'true', 'the next entry chosen opens raw again');
     await page.getByRole('tab', { name: 'Instructions' }).click();
     assert.equal(await page.locator('pre.instructions').innerText(), 'Phase 01 fixture. Modern era.');
     assert.ok(await page.getByText('only on a listen stream: open one under Session').isVisible(), 'modern change notices are said to need a listen stream (phase 10)');

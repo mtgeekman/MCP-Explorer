@@ -253,6 +253,10 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .surface-items .item.on { border-color: var(--accent); background: var(--panel); }
 .surface-entry { flex: 1 1 0; min-width: 0; padding-left: 12px; container-type: inline-size; }
 .entry-source { margin: 0 0 4px; font-size: 12px; }
+.entry-source-row { display: flex; align-items: flex-start; gap: 12px; }
+.entry-source-row .entry-source { flex: 1; }
+.entry-json { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+.entry-json .json-view { margin: 0; padding: 8px 10px; }
 table.fields { border-collapse: collapse; margin: 4px 0 10px; font-size: 13px; }
 table.fields td { padding: 2px 10px 2px 0; vertical-align: top; overflow-wrap: anywhere; }
 table.fields td:first-child { white-space: nowrap; overflow-wrap: normal; }
@@ -268,7 +272,8 @@ table.fields td:first-child { white-space: nowrap; overflow-wrap: normal; }
 .json-toggle { display: inline-flex; }
 .json-toggle button { height: 22px; padding: 0 8px; font-size: 11px; border-radius: 0; }
 .json-toggle button:first-child { border-radius: 4px 0 0 4px; }
-.json-toggle button:last-child { border-radius: 0 4px 4px 0; margin-left: -1px; }
+.json-toggle button:last-child { border-radius: 0 4px 4px 0; }
+.json-toggle button + button { margin-left: -1px; }
 .json-toggle button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .json-view { white-space: pre-wrap; overflow-wrap: anywhere; }
 .json-view.compact { white-space: pre-wrap; word-break: break-all; }

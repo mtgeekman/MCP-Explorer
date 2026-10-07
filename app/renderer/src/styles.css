@@ -294,7 +294,7 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Calling (round 6): form and editor side by side, the confirm, the transcript. */
 .tabs.small { margin: 0 0 8px; }
-.call-panel { display: flex; flex-direction: column; gap: 8px; }
+.call-panel, .call-form-view { display: flex; flex-direction: column; gap: 8px; }
 .call-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 /* The entry's own width, not the window's: the list and the readable pane take some of it. */
 @container (max-width: 640px) { .call-inputs { grid-template-columns: minmax(0, 1fr); } }

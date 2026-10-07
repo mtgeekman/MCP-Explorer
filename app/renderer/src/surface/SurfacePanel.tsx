@@ -195,24 +195,44 @@ function callTarget(list: EntryList, item: Record<string, unknown>): CallTarget 
   return { kind: 'template', uriTemplate: String(item.uriTemplate) };
 }
 
-/** An entry opens on its definition (board 5.1A); the call view is one click over (board 6.1). */
+type EntryMode = 'definition' | 'call' | 'response';
+
+/**
+ * An entry opens on its definition (board 5.1A); the call view is one click
+ * over (board 6.1), and the response a third tab once a call has started.
+ * The call panel mounts on the first visit to Call and then only hides, so
+ * the arguments typed and the call's transcript survive a switch of tab.
+ * Choosing another entry starts afresh; the call stays under Calls.
+ */
 function Entry({ client, serverId, serverName, connected, list, entryKey: key, item, onReadCall, surface }: {
   client: BackendClient; serverId: string; serverName: string; connected: boolean; list: EntryList; entryKey: string;
   item: Record<string, unknown> | undefined; onReadCall: (view: CallView) => void; surface: NonNullable<SurfaceView['capture']>['surface'];
 }) {
   const caps = (surface.capabilities ?? {}) as { resources?: { subscribe?: unknown }; completions?: unknown };
-  const [mode, setMode] = useState<'definition' | 'call'>('definition');
+  const [mode, setMode] = useState<EntryMode>('definition');
+  const [callOpened, setCallOpened] = useState(false);
+  const [callId, setCallId] = useState<number | null>(null);
+  const show = (m: EntryMode) => { setMode(m); if (m !== 'definition') setCallOpened(true); };
+  const tab = (m: EntryMode, label: string) => (
+    <button role="tab" aria-selected={mode === m} className={mode === m ? 'tab on' : 'tab'} onClick={() => show(m)}>{label}</button>
+  );
   return (
     <>
       <div className="tabs small" role="tablist">
-        <button role="tab" aria-selected={mode === 'definition'} className={mode === 'definition' ? 'tab on' : 'tab'} onClick={() => setMode('definition')}>Definition</button>
-        {item && <button role="tab" aria-selected={mode === 'call'} className={mode === 'call' ? 'tab on' : 'tab'} onClick={() => setMode('call')}>{VERB[list]}</button>}
+        {tab('definition', 'Definition')}
+        {item && tab('call', VERB[list])}
+        {item && callId !== null && tab('response', 'Response')}
         {list === 'resources' && connected && caps.resources?.subscribe === true && <Subscribe client={client} serverId={serverId} uri={key} />}
       </div>
-      {mode === 'definition' || !item
-        ? <EntryRaw client={client} serverId={serverId} list={list} entryKey={key} />
-        : <CallPanel client={client} serverId={serverId} serverName={serverName} connected={connected} target={callTarget(list, item)} onRead={onReadCall}
-          era={surface.era} revision={surface.revision} completions={caps.completions !== undefined} />}
+      <div className="entry-definition" hidden={mode !== 'definition'}><EntryRaw client={client} serverId={serverId} list={list} entryKey={key} /></div>
+      {item && callOpened && (
+        <div hidden={mode === 'definition'}>
+          <CallPanel client={client} serverId={serverId} serverName={serverName} connected={connected} target={callTarget(list, item)} onRead={onReadCall}
+            era={surface.era} revision={surface.revision} completions={caps.completions !== undefined}
+            view={mode === 'response' ? 'response' : 'form'} callId={callId}
+            onStarted={(id) => { setCallId(id); setMode('response'); }} onShowForm={() => setMode('call')} />
+        </div>
+      )}
     </>
   );
 }

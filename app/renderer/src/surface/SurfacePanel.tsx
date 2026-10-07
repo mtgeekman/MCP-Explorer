@@ -1,8 +1,10 @@
 // A server's captured surface (round 5): instructions, tools, prompts,
-// resources and templates. Each entry opens on its exact bytes from the list
-// reply (board 5.1A); the readable pane beside it is where a person reads.
+// resources and templates. A list's entries sit in a column, left of the
+// entry chosen; the column's width is dragged and kept per machine. Each
+// entry opens on its exact bytes from the list reply (board 5.1A); the
+// readable pane beside it is where a person reads.
 // Refresh is the only way anything is listed again (P2, phase 06 decision 3).
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CallView, EntryList, RawEntry, ServerRow, SessionInfo, SurfaceView } from '../../../../packages/backend/dist/index.js';
 import type { NormalizedTool } from '../../../../packages/protocol/dist/index.js';
 import { CallPanel, type CallTarget } from '../calls/CallPanel';
@@ -10,6 +12,11 @@ import type { BackendClient } from '../lib/client';
 import { LISTS, entryKey, listLabel, listState, reselect, type Selection } from '../lib/surface';
 import { latestOnly } from '../lib/latest';
 import { RawViewer } from '../log/RawViewer';
+import { JsonView } from '../log/JsonView';
+import type { JsonMode } from '../lib/json';
+import { Splitter } from '../layout/Splitter';
+import { paneStore } from '../layout/paneStore';
+import { KEYS, LIST_DEFAULT, listBounds, readSize, remember } from '../lib/panes';
 
 export type SelectedItem = Selection;
 
@@ -24,6 +31,8 @@ export function SurfacePanel({ client, server, selected, onSelect, onReadCall }:
   const [view, setView] = useState<SurfaceView | null>(null);
   const [tab, setTab] = useState<Tab>('tools');
   const [error, setError] = useState<string | null>(null);
+  // One width for every list's column, so a switch of list does not move it.
+  const [listWidth, setListWidth] = useState(() => readSize(paneStore(), KEYS.surfaceListWidth) ?? LIST_DEFAULT);
 
   // Loads overlap (a capture's start and end each announce a change); only
   // the newest reply is shown (R06-5).
@@ -66,7 +75,6 @@ export function SurfacePanel({ client, server, selected, onSelect, onReadCall }:
   return (
     <section className="surface">
       <div className="surface-head">
-        <h3>Surface</h3>
         <span className="muted">
           {capture ? `Captured ${new Date(capture.observedAt).toLocaleString()} on revision ${surface!.revision}` : 'Nothing captured yet. Connecting captures it.'}
         </span>
@@ -115,7 +123,8 @@ export function SurfacePanel({ client, server, selected, onSelect, onReadCall }:
             ? (surface.instructions === undefined
               ? <p className="muted">None sent. The server gave no instructions.</p>
               : <pre className="mono instructions">{surface.instructions}</pre>)
-            : <ListTab client={client} serverId={server.id} serverName={server.name} connected={live} list={tab} surface={surface} selected={selected} onSelect={onSelect} onReadCall={onReadCall} />}
+            : <ListTab client={client} serverId={server.id} serverName={server.name} connected={live} list={tab} surface={surface} selected={selected} onSelect={onSelect} onReadCall={onReadCall}
+              width={listWidth} onResize={setListWidth} />}
         </>
       )}
     </section>
@@ -139,10 +148,12 @@ function Capabilities({ surface }: { surface: NonNullable<SurfaceView['capture']
   );
 }
 
-function ListTab({ client, serverId, serverName, connected, list, surface, selected, onSelect, onReadCall }: {
+function ListTab({ client, serverId, serverName, connected, list, surface, selected, onSelect, onReadCall, width, onResize }: {
   client: BackendClient; serverId: string; serverName: string; connected: boolean; list: EntryList; surface: NonNullable<SurfaceView['capture']>['surface'];
   selected: SelectedItem | null; onSelect: (item: SelectedItem | null) => void; onReadCall: (view: CallView) => void;
+  width: number; onResize: (width: number) => void;
 }) {
+  const split = useRef<HTMLDivElement | null>(null);
   const state = listState(surface, list);
   if (state.kind === 'not-advertised') return <p className="muted">Not advertised: the server's capabilities do not include this, so nothing was asked.</p>;
   if (state.kind === 'failed') return <p className="error">Advertised, and the list failed: {state.message}</p>;
@@ -150,8 +161,8 @@ function ListTab({ client, serverId, serverName, connected, list, surface, selec
   const items = surface[list] as unknown as Record<string, unknown>[];
   const current = selected && selected.serverId === serverId && selected.list === list ? selected.key : null;
   return (
-    <div className="surface-split">
-      <ul className="surface-items">
+    <div className="surface-split" ref={split}>
+      <ul className="surface-items" style={{ flexBasis: width }}>
         {items.map((item, i) => {
           const key = entryKey(list, item);
           const title = typeof item.title === 'string' ? item.title : undefined;
@@ -165,6 +176,8 @@ function ListTab({ client, serverId, serverName, connected, list, surface, selec
           );
         })}
       </ul>
+      <Splitter axis="x" edge="far" label="Surface list width" size={width} bounds={() => listBounds(split.current?.clientWidth ?? 0)}
+        onResize={onResize} onCommit={(w) => remember(paneStore(), KEYS.surfaceListWidth, w)} />
       <div className="surface-entry">
         {current === null
           ? <p className="muted pad">Choose an entry to see it exactly as the server listed it.</p>
@@ -184,24 +197,44 @@ function callTarget(list: EntryList, item: Record<string, unknown>): CallTarget 
   return { kind: 'template', uriTemplate: String(item.uriTemplate) };
 }
 
-/** An entry opens on its definition (board 5.1A); the call view is one click over (board 6.1). */
+type EntryMode = 'definition' | 'call' | 'response';
+
+/**
+ * An entry opens on its definition (board 5.1A); the call view is one click
+ * over (board 6.1), and the response a third tab once a call has started.
+ * The call panel mounts on the first visit to Call and then only hides, so
+ * the arguments typed and the call's transcript survive a switch of tab.
+ * Choosing another entry starts afresh; the call stays under Calls.
+ */
 function Entry({ client, serverId, serverName, connected, list, entryKey: key, item, onReadCall, surface }: {
   client: BackendClient; serverId: string; serverName: string; connected: boolean; list: EntryList; entryKey: string;
   item: Record<string, unknown> | undefined; onReadCall: (view: CallView) => void; surface: NonNullable<SurfaceView['capture']>['surface'];
 }) {
   const caps = (surface.capabilities ?? {}) as { resources?: { subscribe?: unknown }; completions?: unknown };
-  const [mode, setMode] = useState<'definition' | 'call'>('definition');
+  const [mode, setMode] = useState<EntryMode>('definition');
+  const [callOpened, setCallOpened] = useState(false);
+  const [callId, setCallId] = useState<number | null>(null);
+  const show = (m: EntryMode) => { setMode(m); if (m !== 'definition') setCallOpened(true); };
+  const tab = (m: EntryMode, label: string) => (
+    <button role="tab" aria-selected={mode === m} className={mode === m ? 'tab on' : 'tab'} onClick={() => show(m)}>{label}</button>
+  );
   return (
     <>
       <div className="tabs small" role="tablist">
-        <button role="tab" aria-selected={mode === 'definition'} className={mode === 'definition' ? 'tab on' : 'tab'} onClick={() => setMode('definition')}>Definition</button>
-        {item && <button role="tab" aria-selected={mode === 'call'} className={mode === 'call' ? 'tab on' : 'tab'} onClick={() => setMode('call')}>{VERB[list]}</button>}
+        {tab('definition', 'Definition')}
+        {item && tab('call', VERB[list])}
+        {item && callId !== null && tab('response', 'Response')}
         {list === 'resources' && connected && caps.resources?.subscribe === true && <Subscribe client={client} serverId={serverId} uri={key} />}
       </div>
-      {mode === 'definition' || !item
-        ? <EntryRaw client={client} serverId={serverId} list={list} entryKey={key} />
-        : <CallPanel client={client} serverId={serverId} serverName={serverName} connected={connected} target={callTarget(list, item)} onRead={onReadCall}
-          era={surface.era} revision={surface.revision} completions={caps.completions !== undefined} />}
+      <div className="entry-definition" hidden={mode !== 'definition'}><EntryRaw client={client} serverId={serverId} list={list} entryKey={key} /></div>
+      {item && callOpened && (
+        <div hidden={mode === 'definition'}>
+          <CallPanel client={client} serverId={serverId} serverName={serverName} connected={connected} target={callTarget(list, item)} onRead={onReadCall}
+            era={surface.era} revision={surface.revision} completions={caps.completions !== undefined}
+            view={mode === 'response' ? 'response' : 'form'} callId={callId}
+            onStarted={(id) => { setCallId(id); setMode('response'); }} onShowForm={() => setMode('call')} />
+        </div>
+      )}
     </>
   );
 }
@@ -232,8 +265,23 @@ function Subscribe({ client, serverId, uri }: { client: BackendClient; serverId:
   );
 }
 
+type DefinitionView = 'raw' | JsonMode;
+
+const DEFINITION_VIEWS: { view: DefinitionView; label: string; title: string }[] = [
+  { view: 'raw', label: 'Raw', title: 'The exact bytes from the list reply' },
+  { view: 'pretty', label: 'Pretty', title: 'Parsed, indented and colored; JSON inside a string is shown decoded' },
+  { view: 'compact', label: 'Compact', title: 'Parsed, one line, every string as it is' },
+];
+
+/**
+ * The definition's exact bytes, with a Raw / Pretty / Compact switch (spec
+ * D10, amended 2026-10-07). It opens on Raw for every entry chosen and is
+ * not remembered: Pretty and Compact are readings of the bytes, never them.
+ */
 function EntryRaw({ client, serverId, list, entryKey: key }: { client: BackendClient; serverId: string; list: EntryList; entryKey: string }) {
   const [entry, setEntry] = useState<RawEntry | null>(null);
+  const [view, setView] = useState<DefinitionView>('raw');
+  const text = useMemo(() => (entry?.found ? new TextDecoder().decode(entry.bytes) : ''), [entry]);
   useEffect(() => {
     let stale = false;
     setEntry(null);
@@ -247,8 +295,21 @@ function EntryRaw({ client, serverId, list, entryKey: key }: { client: BackendCl
   if (!entry.found) return <p className="muted pad">{entry.reason} The readable pane shows what was captured.</p>;
   return (
     <>
-      <p className="muted entry-source">Exact bytes from wire log unit {entry.unitId}, offset {entry.offset.toLocaleString()}</p>
-      <RawViewer bytes={entry.bytes} height={360} />
+      <div className="entry-source-row">
+        <p className="muted entry-source">
+          {view === 'raw'
+            ? `Exact bytes from wire log unit ${entry.unitId}, offset ${entry.offset.toLocaleString()}`
+            : `Wire log unit ${entry.unitId}, offset ${entry.offset.toLocaleString()}, parsed: not the bytes as sent`}
+        </p>
+        <span className="json-toggle" role="group" aria-label="Definition view">
+          {DEFINITION_VIEWS.map((d) => (
+            <button key={d.view} aria-pressed={view === d.view} title={d.title} onClick={() => setView(d.view)}>{d.label}</button>
+          ))}
+        </span>
+      </div>
+      {view === 'raw'
+        ? <RawViewer bytes={entry.bytes} height={360} />
+        : <div className="entry-json"><JsonView text={text} mode={view} /></div>}
     </>
   );
 }

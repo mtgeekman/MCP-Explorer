@@ -36,7 +36,6 @@ export function VersionsPanel({ client, serverId }: { client: BackendClient; ser
   return (
     <section className="versions">
       <div className="surface-head">
-        <h3>Versions</h3>
         <span className="muted">{entries.length === 0 ? 'Nothing captured yet.' : 'Newest first. Each row is a run of captures of one surface.'}</span>
       </div>
       {error && <p className="error">{error}</p>}

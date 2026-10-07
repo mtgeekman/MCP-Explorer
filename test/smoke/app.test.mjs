@@ -404,6 +404,9 @@ async function openCall(page, tool) {
   await page.getByRole('tab', { name: 'Call', exact: true }).click();
 }
 
+/** One of the server view's tabs (Surface, Calls, Notifications, Versions); the others stay mounted and hidden. */
+const serverTab = (page, name) => page.locator('.server-tabs').getByRole('tab', { name, exact: true }).click();
+
 const callButton = (page) => page.locator('.call-panel > .actions').getByRole('button', { name: 'Call', exact: true });
 const transcriptStatus = (page, text) => page.locator('.call-panel .transcript .call-status', { hasText: text });
 
@@ -427,6 +430,7 @@ test('calls: a read-only tool runs from the form without a confirm, and its resu
     await page.locator('.readable-pane .part-text', { hasText: '42' }).waitFor();
     await page.locator('.readable-pane .ok-line', { hasText: 'Matches the outputSchema' }).waitFor();
     await shot(page, '07-2-result');
+    await serverTab(page, 'Calls');
     await page.locator('.call-history td', { hasText: 'add' }).first().waitFor();
   } finally {
     await app.close();
@@ -848,10 +852,13 @@ test('versions: a changed description is a new version whose diff opens on what 
   try {
     await openWorkspace(page);
     await connectAndCapture(page, 'versioned', 2);
+    await serverTab(page, 'Versions');
     const rows = page.locator('.versions-table tr');
     await rows.nth(1).waitFor();
     assert.equal(await rows.count(), 2, 'the connect captured the identity entry again: still two rows');
+    await serverTab(page, 'Surface');
     await page.getByRole('button', { name: 'Refresh' }).click();
+    await serverTab(page, 'Versions');
     await rows.nth(2).waitFor({ timeout: 20_000 });
     assert.deepEqual(await rows.locator('.version-title').allInnerTexts(), ['Version 2', 'Identity only', 'Version 1'], 'newest first');
     assert.equal(await rows.nth(1).getAttribute('data-kind'), 'identity');
@@ -896,6 +903,7 @@ test('versions: every recent capture a different version is flagged unstable (de
   try {
     await openWorkspace(page);
     await page.locator('.server-row', { hasText: 'flaky' }).click();
+    await serverTab(page, 'Versions');
     await page.locator('.versions .warn').waitFor();
     assert.equal(await page.locator('.versions .warn').innerText(), 'Unstable: the last 4 captures each produced a different version, over 3 hours.');
     assert.equal(await page.locator('.versions-table tr.identity').count(), 3, 'identity rows stay compact');
@@ -942,7 +950,7 @@ test('logging: a level set on a legacy session, and its messages in the notifica
     await callButton(page).click();
     await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
     const panel = page.locator('.notifications');
-    await panel.getByRole('button', { name: 'Show' }).click();
+    await serverTab(page, 'Notifications');
     // Raw first (D10, R10-4): the unit as it arrived, then the Readable view.
     await panel.locator('.raw-params', { hasText: '"level":"critical"' }).waitFor({ timeout: 10_000 });
     await panel.getByLabel('Readable').check();
@@ -1073,6 +1081,38 @@ test('OAuth: a refused refresh on Connect says to sign in again, and offers it',
     await page.locator('.state-card h3', { hasText: 'The sign-in has expired: sign in again' }).waitFor({ timeout: 20_000 });
     await page.locator('.state-card').getByRole('button', { name: 'Sign in again' }).waitFor();
     await shot(page, '11-2-sign-in-again');
+  } finally {
+    await app.close();
+  }
+});
+
+// The server view's tabs: one view shown at a time, every view kept mounted,
+// and the tab chosen kept when another server is chosen.
+test('tabs: a half-typed call survives a switch of tab, and the tab chosen stays with the next server', async () => {
+  const { dataDir } = seed([
+    { id: randomUUID(), name: 'tabbed', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } },
+    { id: randomUUID(), name: 'other', transport: 'stdio', command: process.execPath, args: [legacy] },
+  ]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'tabbed');
+    const tab = (name) => page.locator('.server-tabs').getByRole('tab', { name, exact: true });
+    assert.equal(await tab('Surface').getAttribute('aria-selected'), 'true', 'opens on Surface');
+    await openCall(page, 'add');
+    const editor = page.locator('.call-editor textarea');
+    await editor.fill('{ "a": 20 }');
+    for (const name of ['Calls', 'Notifications', 'Versions']) {
+      await serverTab(page, name);
+      assert.equal(await page.locator('.surface').isVisible(), false, `${name} hides the surface`);
+    }
+    await serverTab(page, 'Surface');
+    assert.equal(await editor.inputValue(), '{ "a": 20 }', 'the arguments typed are still there');
+    await serverTab(page, 'Versions');
+    await page.locator('.server-row', { hasText: 'other' }).click();
+    await page.locator('.detail-head h2', { hasText: 'other' }).waitFor();
+    assert.equal(await tab('Versions').getAttribute('aria-selected'), 'true', 'still on Versions');
+    assert.ok(await page.locator('.versions').isVisible());
   } finally {
     await app.close();
   }

@@ -1,8 +1,10 @@
 // A server's captured surface (round 5): instructions, tools, prompts,
-// resources and templates. Each entry opens on its exact bytes from the list
-// reply (board 5.1A); the readable pane beside it is where a person reads.
+// resources and templates. A list's entries sit in a column, left of the
+// entry chosen; the column's width is dragged and kept per machine. Each
+// entry opens on its exact bytes from the list reply (board 5.1A); the
+// readable pane beside it is where a person reads.
 // Refresh is the only way anything is listed again (P2, phase 06 decision 3).
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CallView, EntryList, RawEntry, ServerRow, SessionInfo, SurfaceView } from '../../../../packages/backend/dist/index.js';
 import type { NormalizedTool } from '../../../../packages/protocol/dist/index.js';
 import { CallPanel, type CallTarget } from '../calls/CallPanel';
@@ -10,6 +12,9 @@ import type { BackendClient } from '../lib/client';
 import { LISTS, entryKey, listLabel, listState, reselect, type Selection } from '../lib/surface';
 import { latestOnly } from '../lib/latest';
 import { RawViewer } from '../log/RawViewer';
+import { Splitter } from '../layout/Splitter';
+import { paneStore } from '../layout/paneStore';
+import { KEYS, LIST_DEFAULT, listBounds, readSize, remember } from '../lib/panes';
 
 export type SelectedItem = Selection;
 
@@ -24,6 +29,8 @@ export function SurfacePanel({ client, server, selected, onSelect, onReadCall }:
   const [view, setView] = useState<SurfaceView | null>(null);
   const [tab, setTab] = useState<Tab>('tools');
   const [error, setError] = useState<string | null>(null);
+  // One width for every list's column, so a switch of list does not move it.
+  const [listWidth, setListWidth] = useState(() => readSize(paneStore(), KEYS.surfaceListWidth) ?? LIST_DEFAULT);
 
   // Loads overlap (a capture's start and end each announce a change); only
   // the newest reply is shown (R06-5).
@@ -114,7 +121,8 @@ export function SurfacePanel({ client, server, selected, onSelect, onReadCall }:
             ? (surface.instructions === undefined
               ? <p className="muted">None sent. The server gave no instructions.</p>
               : <pre className="mono instructions">{surface.instructions}</pre>)
-            : <ListTab client={client} serverId={server.id} serverName={server.name} connected={live} list={tab} surface={surface} selected={selected} onSelect={onSelect} onReadCall={onReadCall} />}
+            : <ListTab client={client} serverId={server.id} serverName={server.name} connected={live} list={tab} surface={surface} selected={selected} onSelect={onSelect} onReadCall={onReadCall}
+              width={listWidth} onResize={setListWidth} />}
         </>
       )}
     </section>
@@ -138,10 +146,12 @@ function Capabilities({ surface }: { surface: NonNullable<SurfaceView['capture']
   );
 }
 
-function ListTab({ client, serverId, serverName, connected, list, surface, selected, onSelect, onReadCall }: {
+function ListTab({ client, serverId, serverName, connected, list, surface, selected, onSelect, onReadCall, width, onResize }: {
   client: BackendClient; serverId: string; serverName: string; connected: boolean; list: EntryList; surface: NonNullable<SurfaceView['capture']>['surface'];
   selected: SelectedItem | null; onSelect: (item: SelectedItem | null) => void; onReadCall: (view: CallView) => void;
+  width: number; onResize: (width: number) => void;
 }) {
+  const split = useRef<HTMLDivElement | null>(null);
   const state = listState(surface, list);
   if (state.kind === 'not-advertised') return <p className="muted">Not advertised: the server's capabilities do not include this, so nothing was asked.</p>;
   if (state.kind === 'failed') return <p className="error">Advertised, and the list failed: {state.message}</p>;
@@ -149,8 +159,8 @@ function ListTab({ client, serverId, serverName, connected, list, surface, selec
   const items = surface[list] as unknown as Record<string, unknown>[];
   const current = selected && selected.serverId === serverId && selected.list === list ? selected.key : null;
   return (
-    <div className="surface-split">
-      <ul className="surface-items">
+    <div className="surface-split" ref={split}>
+      <ul className="surface-items" style={{ flexBasis: width }}>
         {items.map((item, i) => {
           const key = entryKey(list, item);
           const title = typeof item.title === 'string' ? item.title : undefined;
@@ -164,6 +174,8 @@ function ListTab({ client, serverId, serverName, connected, list, surface, selec
           );
         })}
       </ul>
+      <Splitter axis="x" edge="far" label="Surface list width" size={width} bounds={() => listBounds(split.current?.clientWidth ?? 0)}
+        onResize={onResize} onCommit={(w) => remember(paneStore(), KEYS.surfaceListWidth, w)} />
       <div className="surface-entry">
         {current === null
           ? <p className="muted pad">Choose an entry to see it exactly as the server listed it.</p>

@@ -485,6 +485,28 @@ test('calls: a call opens its Response tab; the form keeps its arguments, and Re
   }
 });
 
+test('R-tabs-1: a raw view hidden by a tab keeps its rows; it is not re-flowed at zero width', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'hiding', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'hiding');
+    await page.locator('.surface-items button', { hasText: /^add/ }).first().click();
+    const rows = page.locator('.entry-definition .raw-toolbar .muted').first();
+    await rows.waitFor();
+    const shown = await rows.textContent();
+    await page.locator('.surface-entry .tabs').getByRole('tab', { name: 'Call', exact: true }).click();
+    await page.locator('.call-editor textarea').waitFor();
+    assert.equal(await rows.textContent(), shown, 'hidden, the definition keeps the rows it had');
+    await serverTab(page, 'Versions');
+    await serverTab(page, 'Surface');
+    await page.locator('.surface-entry .tabs').getByRole('tab', { name: 'Definition', exact: true }).click();
+    assert.equal(await rows.textContent(), shown, 'and shows them again');
+  } finally {
+    await app.close();
+  }
+});
+
 test('calls: a tool not declared read-only asks first; "Do not send" sends nothing', async () => {
   const { dataDir, path, id } = seed([{ id: randomUUID(), name: 'calls', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
   const { app, page } = await launch(dataDir);

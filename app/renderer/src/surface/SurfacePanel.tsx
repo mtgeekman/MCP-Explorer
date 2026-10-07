@@ -12,6 +12,8 @@ import type { BackendClient } from '../lib/client';
 import { LISTS, entryKey, listLabel, listState, reselect, type Selection } from '../lib/surface';
 import { latestOnly } from '../lib/latest';
 import { RawViewer } from '../log/RawViewer';
+import { JsonView } from '../log/JsonView';
+import type { JsonMode } from '../lib/json';
 import { Splitter } from '../layout/Splitter';
 import { paneStore } from '../layout/paneStore';
 import { KEYS, LIST_DEFAULT, listBounds, readSize, remember } from '../lib/panes';
@@ -263,8 +265,23 @@ function Subscribe({ client, serverId, uri }: { client: BackendClient; serverId:
   );
 }
 
+type DefinitionView = 'raw' | JsonMode;
+
+const DEFINITION_VIEWS: { view: DefinitionView; label: string; title: string }[] = [
+  { view: 'raw', label: 'Raw', title: 'The exact bytes from the list reply' },
+  { view: 'pretty', label: 'Pretty', title: 'Parsed, indented and colored; JSON inside a string is shown decoded' },
+  { view: 'compact', label: 'Compact', title: 'Parsed, one line, every string as it is' },
+];
+
+/**
+ * The definition's exact bytes, with a Raw / Pretty / Compact switch (spec
+ * D10, amended 2026-10-07). It opens on Raw for every entry chosen and is
+ * not remembered: Pretty and Compact are readings of the bytes, never them.
+ */
 function EntryRaw({ client, serverId, list, entryKey: key }: { client: BackendClient; serverId: string; list: EntryList; entryKey: string }) {
   const [entry, setEntry] = useState<RawEntry | null>(null);
+  const [view, setView] = useState<DefinitionView>('raw');
+  const text = useMemo(() => (entry?.found ? new TextDecoder().decode(entry.bytes) : ''), [entry]);
   useEffect(() => {
     let stale = false;
     setEntry(null);
@@ -278,8 +295,21 @@ function EntryRaw({ client, serverId, list, entryKey: key }: { client: BackendCl
   if (!entry.found) return <p className="muted pad">{entry.reason} The readable pane shows what was captured.</p>;
   return (
     <>
-      <p className="muted entry-source">Exact bytes from wire log unit {entry.unitId}, offset {entry.offset.toLocaleString()}</p>
-      <RawViewer bytes={entry.bytes} height={360} />
+      <div className="entry-source-row">
+        <p className="muted entry-source">
+          {view === 'raw'
+            ? `Exact bytes from wire log unit ${entry.unitId}, offset ${entry.offset.toLocaleString()}`
+            : `Wire log unit ${entry.unitId}, offset ${entry.offset.toLocaleString()}, parsed: not the bytes as sent`}
+        </p>
+        <span className="json-toggle" role="group" aria-label="Definition view">
+          {DEFINITION_VIEWS.map((d) => (
+            <button key={d.view} aria-pressed={view === d.view} title={d.title} onClick={() => setView(d.view)}>{d.label}</button>
+          ))}
+        </span>
+      </div>
+      {view === 'raw'
+        ? <RawViewer bytes={entry.bytes} height={360} />
+        : <div className="entry-json"><JsonView text={text} mode={view} /></div>}
     </>
   );
 }

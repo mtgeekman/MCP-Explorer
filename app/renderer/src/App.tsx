@@ -18,16 +18,8 @@ import type { SelectedItem } from './surface/SurfacePanel';
 import { Settings } from './settings/Settings';
 import { ContextScreen } from './context/ContextScreen';
 import { Splitter } from './layout/Splitter';
-import { KEYS, LOG_HEAD, READABLE_DEFAULT, logBounds, readFlag, readSize, readableBounds, remember, type SizeStore } from './lib/panes';
-
-/** The renderer's own storage for pane sizes; absent where the page cannot reach it. */
-function paneStore(): SizeStore | undefined {
-  try {
-    return window.localStorage;
-  } catch {
-    return undefined;
-  }
-}
+import { KEYS, LOG_HEAD, READABLE_DEFAULT, logBounds, readFlag, readSize, readableBounds, remember } from './lib/panes';
+import { paneStore } from './layout/paneStore';
 
 type Main = { kind: 'server'; id: string } | { kind: 'add' } | { kind: 'edit'; id: string } | { kind: 'settings' } | { kind: 'import' } | { kind: 'context' } | { kind: 'none' };
 

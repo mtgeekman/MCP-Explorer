@@ -245,12 +245,13 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 [role="tabpanel"] > .surface, [role="tabpanel"] > .call-history, [role="tabpanel"] > .notifications, [role="tabpanel"] > .versions { margin-top: 10px; }
 .instructions { margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
 /* The list above, the entry's bytes below at full width: the raw viewer needs the room. */
-.surface-split { display: flex; flex-direction: column; gap: 8px; }
-.surface-items { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; max-height: 180px; overflow: auto; }
-.surface-items .item { height: auto; max-width: 100%; min-height: var(--control); padding: 4px 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 0; text-align: left; border-color: transparent; background: transparent; word-break: break-all; }
+.surface-split { display: flex; align-items: stretch; }
+/* The list's width is its flex-basis, set from the drag; it shrinks no further than its minimum (panes.ts LIST_MIN). */
+.surface-items { list-style: none; margin: 0; padding: 0 8px 0 0; flex: 0 1 auto; min-width: 160px; display: flex; flex-direction: column; gap: 2px; max-height: 70vh; overflow: auto; }
+.surface-items .item { width: 100%; height: auto; min-height: var(--control); padding: 4px 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 0; text-align: left; border-color: transparent; background: transparent; word-break: break-all; }
 .surface-items .item small { color: var(--muted); }
 .surface-items .item.on { border-color: var(--accent); background: var(--panel); }
-.surface-entry { flex: 1; min-width: 0; }
+.surface-entry { flex: 1 1 0; min-width: 0; padding-left: 12px; container-type: inline-size; }
 .entry-source { margin: 0 0 4px; font-size: 12px; }
 table.fields { border-collapse: collapse; margin: 4px 0 10px; font-size: 13px; }
 table.fields td { padding: 2px 10px 2px 0; vertical-align: top; overflow-wrap: anywhere; }
@@ -295,7 +296,8 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .tabs.small { margin: 0 0 8px; }
 .call-panel { display: flex; flex-direction: column; gap: 8px; }
 .call-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
-@media (max-width: 900px) { .call-inputs { grid-template-columns: minmax(0, 1fr); } }
+/* The entry's own width, not the window's: the list and the readable pane take some of it. */
+@container (max-width: 640px) { .call-inputs { grid-template-columns: minmax(0, 1fr); } }
 .call-form, .call-editor { min-width: 0; }
 .call-form h4, .call-editor h4 { margin: 0 0 8px; }
 .call-editor textarea { width: 100%; min-height: 220px; resize: vertical; box-sizing: border-box; font-size: 12px; }

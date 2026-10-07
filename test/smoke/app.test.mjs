@@ -1118,22 +1118,26 @@ test('tabs: a half-typed call survives a switch of tab, and the tab chosen stays
   }
 });
 
+/** Drags a handle in two moves, from its middle, or from `fromTop` px below its top when its middle may be out of sight. */
+async function dragBy(target, dx, dy, fromTop) {
+  const page = target.page();
+  const box = await target.boundingBox();
+  const x = box.x + box.width / 2;
+  const y = fromTop === undefined ? box.y + box.height / 2 : box.y + fromTop;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx / 2, y + dy / 2);
+  await page.mouse.move(x + dx, y + dy);
+  await page.mouse.up();
+}
+const handle = (page, label) => page.getByRole('separator', { name: label, exact: true });
+
 // Pane sizes: the wire log's height and the readable pane's width follow a
 // drag, the log collapses to its header, and all of it survives a restart.
 test('panes: the wire log and the readable pane resize by drag, the log collapses, and the sizes survive a restart', async () => {
   const { dataDir } = seed([{ id: randomUUID(), name: 'panes', transport: 'stdio', command: process.execPath, args: [modern] }]);
   const height = (page) => page.locator('.log-slot').evaluate((el) => el.getBoundingClientRect().height);
   const width = (page) => page.locator('.readable-pane').evaluate((el) => el.getBoundingClientRect().width);
-  const dragBy = async (page, selector, dx, dy) => {
-    const box = await page.locator(selector).boundingBox();
-    const x = box.x + box.width / 2;
-    const y = box.y + box.height / 2;
-    await page.mouse.move(x, y);
-    await page.mouse.down();
-    await page.mouse.move(x + dx / 2, y + dy / 2);
-    await page.mouse.move(x + dx, y + dy);
-    await page.mouse.up();
-  };
   let grown;
   let wide;
   {
@@ -1142,11 +1146,11 @@ test('panes: the wire log and the readable pane resize by drag, the log collapse
       await openWorkspace(page);
       await connect(page, 'panes');
       const before = await height(page);
-      await dragBy(page, '.splitter.y', 0, -150);
+      await dragBy(handle(page, 'Wire log height'), 0, -150);
       grown = await height(page);
       assert.ok(Math.abs(grown - (before + 150)) <= 2, `the log grew by the drag: ${before} to ${grown}`);
       const w0 = await width(page);
-      await dragBy(page, '.splitter.x', -100, 0);
+      await dragBy(handle(page, 'Readable pane width'), -100, 0);
       wide = await width(page);
       assert.ok(Math.abs(wide - (w0 + 100)) <= 2, `the readable pane grew by the drag: ${w0} to ${wide}`);
       await page.locator('.log-toggle').click();
@@ -1172,6 +1176,49 @@ test('panes: the wire log and the readable pane resize by drag, the log collapse
   }
 });
 
+test('surface: the list is a column left of the entry; its width follows a drag and the keys, and survives a restart', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'listed', transport: 'stdio', command: process.execPath, args: [modern] }]);
+  const listWidth = (page) => page.locator('.surface-items').evaluate((el) => el.getBoundingClientRect().width);
+  let wide;
+  {
+    const { app, page } = await launch(dataDir);
+    try {
+      await openWorkspace(page);
+      await connectAndCapture(page, 'listed', 2);
+      await page.locator('.surface-items .item', { hasText: 'echo' }).click();
+      await page.locator('.surface-entry .raw-viewer').waitFor();
+      const list = await page.locator('.surface-items').boundingBox();
+      const entry = await page.locator('.surface-entry').boundingBox();
+      assert.ok(entry.x >= list.x + list.width, 'the entry sits right of the list');
+      assert.ok(entry.y < list.y + list.height, 'beside it, not below it');
+      const before = await listWidth(page);
+      // From near its top: the main column scrolls, and the wire log covers the handle's lower part.
+      await dragBy(handle(page, 'Surface list width'), 80, 0, 20);
+      wide = await listWidth(page);
+      assert.ok(Math.abs(wide - (before + 80)) <= 2, `dragged right, the list grew: ${before} to ${wide}`);
+      await handle(page, 'Surface list width').focus();
+      await page.keyboard.press('ArrowRight');
+      assert.ok(Math.abs((await listWidth(page)) - (wide + 16)) <= 2, 'ArrowRight grows it, toward the entry');
+      await page.keyboard.press('ArrowLeft');
+      assert.ok(Math.abs((await listWidth(page)) - wide) <= 2, 'ArrowLeft takes it back');
+      await shot(page, 'surface-list');
+    } finally {
+      await app.close();
+    }
+  }
+  {
+    const { app, page } = await launch(dataDir);
+    try {
+      await openWorkspace(page);
+      await page.locator('.server-row', { hasText: 'listed' }).click();
+      await page.locator('.surface-items').waitFor({ timeout: 20_000 });
+      assert.ok(Math.abs((await listWidth(page)) - wide) <= 2, 'the list width survived the restart');
+    } finally {
+      await app.close();
+    }
+  }
+});
+
 test('surface: at the narrowest readable pane a parameter\'s type stays on one line', async () => {
   const { dataDir } = seed([{ id: randomUUID(), name: 'narrow', transport: 'stdio', command: process.execPath, args: [modern] }]);
   const { app, page } = await launch(dataDir);
@@ -1179,7 +1226,7 @@ test('surface: at the narrowest readable pane a parameter\'s type stays on one l
     await openWorkspace(page);
     await connectAndCapture(page, 'narrow', 2);
     await page.locator('.surface-items .item', { hasText: 'echo' }).click();
-    await page.locator('.splitter.x').focus();
+    await handle(page, 'Readable pane width').focus();
     await page.keyboard.press('Home');
     const pane = page.locator('.readable-pane');
     assert.equal(Math.round((await pane.boundingBox()).width), 240, 'the pane is at its minimum');

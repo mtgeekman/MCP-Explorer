@@ -16,7 +16,7 @@ export const CENTER_MIN = 360;
 /** The surface's list of entries, left of the entry it opens. */
 export const LIST_MIN = 160;
 export const LIST_DEFAULT = 260;
-/** The entry beside the list keeps at least this much. */
+/** The entry beside the list keeps at least this much, its padding included; styles.css holds it there when the split narrows. */
 export const ENTRY_MIN = 320;
 
 /** One arrow key press moves this far; with Shift, four times as far. */

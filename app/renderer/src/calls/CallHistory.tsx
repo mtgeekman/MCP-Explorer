@@ -38,7 +38,7 @@ export function CallHistory({ client, serverId, onRead }: { client: BackendClien
 
   return (
     <section className="call-history">
-      <div className="surface-head"><h3>Calls</h3><span className="muted">{rows.length === 0 ? 'None yet.' : 'Newest first.'}</span></div>
+      <div className="surface-head"><span className="muted">{rows.length === 0 ? 'None yet.' : 'Newest first.'}</span></div>
       {error && <p className="error">{error}</p>}
       {rows.length > 0 && (
         <table className="calls"><tbody>

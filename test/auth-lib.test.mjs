@@ -1,7 +1,7 @@
 // Phase 11's renderer logic, imported as TypeScript; Node strips the types.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { authLines, authActions, expiryText, scopeUnion, challengeIn, callAuthOffer } from '../app/renderer/src/lib/auth.ts';
+import { authLines, authActions, expiryText, scopeUnion, challengeIn, callAuthOffer, showsSignIn } from '../app/renderer/src/lib/auth.ts';
 import { describeState } from '../app/renderer/src/lib/describe.ts';
 import { logRows } from '../app/renderer/src/lib/logrows.ts';
 
@@ -38,6 +38,20 @@ test('the panel buttons: Open and Cancel while pending; otherwise by what is hel
   assert.deepEqual(authActions(signedIn()), ['sign-in', 'refresh', 'sign-out', 'forget']);
   assert.deepEqual(authActions(signedIn({ hasRefreshToken: false, registration: { kind: 'pre-registered', clientId: 'p', redirectUri: 'x' } })), ['sign-in', 'sign-out']);
   assert.deepEqual(authActions(report({ lastFailure: { failure: { kind: 'port-busy', port: 5 }, message: 'm', at: NOW } })), ['sign-in', 'register-again']);
+});
+
+test('the Sign-in panel shows only on a sign of OAuth, each sign alone enough', () => {
+  const idle = { status: 'idle' };
+  assert.equal(showsSignIn(report(), idle), false, 'nothing entered, held, waiting or refused: no panel');
+  assert.equal(showsSignIn(report(), { status: 'connected' }), false);
+  assert.equal(showsSignIn(report(), { status: 'failed', failure: { kind: 'exited' } }), false, 'a failure that is not about authorization');
+  assert.equal(showsSignIn(report({ preRegistered: true }), idle), true, 'a client entered in the settings');
+  assert.equal(showsSignIn(signedIn(), idle), true);
+  assert.equal(showsSignIn(report({ registration: { kind: 'dynamic', clientId: 'c1', redirectUri: 'x' } }), idle), true, 'registered, not signed in');
+  assert.equal(showsSignIn(report({ pending: { authorizationUrl: 'u', startedAt: NOW } }), idle), true, 'waiting for the browser, as after a call refused with 401');
+  assert.equal(showsSignIn(report({ lastFailure: { failure: { kind: 'port-busy', port: 5 }, message: 'm', at: NOW } }), idle), true, 'a sign-in that stopped');
+  assert.equal(showsSignIn(report(), { status: 'failed', failure: { kind: 'unauthorized', challenge: { status: 401 } } }), true, 'a refused connect, the usual first sign');
+  assert.equal(showsSignIn(report(), { status: 'failed', failure: { kind: 'unauthorized', challenge: { status: 401 } }, auth: { kind: 'refresh-refused', error: 'invalid_grant' } }), true, 'a refused refresh, after which nothing is held');
 });
 
 test('scope union: each token once, in first-seen order', () => {

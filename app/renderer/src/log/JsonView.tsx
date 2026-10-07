@@ -49,10 +49,12 @@ type Parsed = { ok: true; value: unknown } | { ok: false };
 
 /**
  * One JSON block. Give it a parsed `value`, or `text` that is already JSON;
- * text that does not parse is shown as it is.
+ * text that does not parse is shown as it is. `mode` overrides the pane's,
+ * for a block with a switch of its own (a surface entry's Definition).
  */
-export function JsonView(props: { value: unknown } | { text: string }) {
-  const mode = useJsonMode();
+export function JsonView(props: ({ value: unknown } | { text: string }) & { mode?: JsonMode }) {
+  const paneMode = useJsonMode();
+  const mode = props.mode ?? paneMode;
   const isText = 'text' in props;
   const input = isText ? props.text : props.value;
   const parsed = useMemo<Parsed>(() => {

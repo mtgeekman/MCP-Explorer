@@ -116,6 +116,7 @@ test('both eras connect over all three transports from the GUI, and every unit s
     for (const s of servers) {
       const era = s.name.endsWith('legacy') ? 'legacy' : 'modern';
       assert.match(await connect(page, s.name), new RegExp(`Connected, ${era} era`), s.name);
+      if (s.transport !== 'stdio') assert.equal(await page.locator('.auth').count(), 0, `${s.name}: no sign of OAuth, so no Sign-in panel`);
       shown += await page.locator('.log-line').count();
       await disconnect(page);
     }
@@ -340,6 +341,23 @@ test('surface: connecting captures it; a tool opens on its exact bytes and the p
     const pane = page.locator('.readable-pane');
     await pane.getByText('Hints the server declares about itself').waitFor();
     assert.ok(await pane.locator('.params .param-desc', { hasText: 'What to echo.' }).first().isVisible(), 'the parameter description');
+    // Raw first, with a switch to two readings of the same bytes (spec D10, amended 2026-10-07).
+    const view = (name) => page.locator('.surface-entry .json-toggle').getByRole('button', { name, exact: true });
+    assert.equal(await view('Raw').getAttribute('aria-pressed'), 'true', 'the definition opens raw');
+    await view('Pretty').click();
+    const json = page.locator('.entry-json .json-view');
+    assert.match(await json.innerText(), /^\{\n {2}"/, 'Pretty is indented');
+    assert.match(await json.innerText(), /"name": "echo"/);
+    await page.locator('.entry-source', { hasText: 'parsed: not the bytes as sent' }).waitFor();
+    await shot(page, 'definition-pretty');
+    await view('Compact').click();
+    assert.match(await page.locator('.entry-json .json-view.compact').innerText(), /^\{[^\n]*"name":"echo"[^\n]*\}$/, 'Compact is one line, in whatever order the fixture shuffled the keys');
+    await view('Raw').click();
+    assert.ok(await page.locator('.entry-definition .raw-viewer').isVisible(), 'and back to the bytes');
+    await view('Pretty').click();
+    await page.locator('.surface-items .item', { hasText: 'needs_input' }).click();
+    await page.locator('.entry-definition .raw-viewer').waitFor();
+    assert.equal(await view('Raw').getAttribute('aria-pressed'), 'true', 'the next entry chosen opens raw again');
     await page.getByRole('tab', { name: 'Instructions' }).click();
     assert.equal(await page.locator('pre.instructions').innerText(), 'Phase 01 fixture. Modern era.');
     assert.ok(await page.getByText('only on a listen stream: open one under Session').isVisible(), 'modern change notices are said to need a listen stream (phase 10)');
@@ -403,7 +421,10 @@ async function openCall(page, tool) {
   await page.getByRole('tab', { name: 'Call', exact: true }).click();
 }
 
-const callButton = (page) => page.locator('.call-panel > .actions').getByRole('button', { name: 'Call', exact: true });
+/** One of the server view's tabs (Surface, Calls, Notifications, Versions); the others stay mounted and hidden. */
+const serverTab = (page, name) => page.locator('.server-tabs').getByRole('tab', { name, exact: true }).click();
+
+const callButton = (page) => page.locator('.call-form-view > .actions').getByRole('button', { name: 'Call', exact: true });
 const transcriptStatus = (page, text) => page.locator('.call-panel .transcript .call-status', { hasText: text });
 
 test('calls: a read-only tool runs from the form without a confirm, and its result is read in the pane', async () => {
@@ -426,7 +447,66 @@ test('calls: a read-only tool runs from the form without a confirm, and its resu
     await page.locator('.readable-pane .part-text', { hasText: '42' }).waitFor();
     await page.locator('.readable-pane .ok-line', { hasText: 'Matches the outputSchema' }).waitFor();
     await shot(page, '07-2-result');
+    await serverTab(page, 'Calls');
     await page.locator('.call-history td', { hasText: 'add' }).first().waitFor();
+  } finally {
+    await app.close();
+  }
+});
+
+test('calls: a call opens its Response tab; the form keeps its arguments, and Replay takes them back to Call', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'responding', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'responding');
+    await openCall(page, 'add');
+    const entryTab = (name) => page.locator('.surface-entry .tabs').getByRole('tab', { name, exact: true });
+    const editor = page.locator('.call-editor textarea');
+    assert.equal(await entryTab('Response').count(), 0, 'no Response tab before a call');
+    await editor.fill('{ "a": 1, "b": 2 }');
+    await callButton(page).click();
+    await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
+    assert.equal(await entryTab('Response').getAttribute('aria-selected'), 'true', 'the call opened its response');
+    assert.equal(await editor.isVisible(), false, 'the form is a tab away');
+    await entryTab('Definition').click();
+    await page.locator('.entry-definition .raw-viewer').waitFor();
+    assert.equal(await page.locator('.call-panel .transcript').isVisible(), false);
+    await entryTab('Call').click();
+    assert.equal(await editor.inputValue(), '{ "a": 1, "b": 2 }', 'the arguments sent are still in the form');
+    await editor.fill('{}');
+    await entryTab('Response').click();
+    await page.locator('.call-panel .transcript').getByRole('button', { name: 'Replay' }).click();
+    assert.equal(await entryTab('Call').getAttribute('aria-selected'), 'true', 'Replay shows the form');
+    assert.match(await editor.inputValue(), /"a": 1/, 'with the arguments the call sent');
+    assert.equal(await page.locator('.call-panel .transcript').count(), 1, 'the response is still a tab away');
+  } finally {
+    await app.close();
+  }
+});
+
+test('R-tabs-1: a raw view hidden by a tab keeps its rows; it is not re-flowed at zero width', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'hiding', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'hiding');
+    await page.locator('.surface-items button', { hasText: /^add/ }).first().click();
+    const rows = page.locator('.entry-definition .raw-toolbar .muted').first();
+    await rows.waitFor();
+    const shown = await rows.textContent();
+    // A ResizeObserver reports after layout: two frames, then read the hidden view.
+    const frames = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await page.locator('.surface-entry .tabs').getByRole('tab', { name: 'Call', exact: true }).click();
+    await page.locator('.call-editor textarea').waitFor();
+    await frames();
+    assert.equal(await rows.textContent(), shown, 'hidden by the entry Call tab, the definition keeps the rows it had');
+    await page.locator('.surface-entry .tabs').getByRole('tab', { name: 'Definition', exact: true }).click();
+    await frames();
+    assert.equal(await rows.textContent(), shown);
+    await serverTab(page, 'Versions');
+    await frames();
+    assert.equal(await rows.textContent(), shown, 'hidden by the server Versions tab, the same');
   } finally {
     await app.close();
   }
@@ -509,13 +589,13 @@ test('calls: a prompt is got from its argument form, and a template resource is 
     await page.locator('.surface-items button', { hasText: 'review' }).click();
     await page.getByRole('tab', { name: 'Get', exact: true }).click();
     await page.locator('.call-form label', { hasText: 'language' }).locator('input').fill('rust');
-    await page.locator('.call-panel > .actions').getByRole('button', { name: 'Get', exact: true }).click();
+    await page.locator('.call-form-view > .actions').getByRole('button', { name: 'Get', exact: true }).click();
     await page.locator('.readable-pane .part-text', { hasText: 'Review this rust code' }).waitFor({ timeout: 10_000 });
     await page.getByRole('tab', { name: /^Templates/ }).click();
     await page.locator('.surface-items button', { hasText: 'fixture://notes/{day}' }).click();
     await page.getByRole('tab', { name: 'Read', exact: true }).click();
     await page.locator('.call-form label', { hasText: 'day' }).locator('input').fill('monday');
-    await page.locator('.call-panel > .actions').getByRole('button', { name: 'Read', exact: true }).click();
+    await page.locator('.call-form-view > .actions').getByRole('button', { name: 'Read', exact: true }).click();
     await page.locator('.readable-pane .part-text', { hasText: 'Notes for monday.' }).waitFor({ timeout: 10_000 });
     await shot(page, '07-6-template');
   } finally {
@@ -847,10 +927,13 @@ test('versions: a changed description is a new version whose diff opens on what 
   try {
     await openWorkspace(page);
     await connectAndCapture(page, 'versioned', 2);
+    await serverTab(page, 'Versions');
     const rows = page.locator('.versions-table tr');
     await rows.nth(1).waitFor();
     assert.equal(await rows.count(), 2, 'the connect captured the identity entry again: still two rows');
+    await serverTab(page, 'Surface');
     await page.getByRole('button', { name: 'Refresh' }).click();
+    await serverTab(page, 'Versions');
     await rows.nth(2).waitFor({ timeout: 20_000 });
     assert.deepEqual(await rows.locator('.version-title').allInnerTexts(), ['Version 2', 'Identity only', 'Version 1'], 'newest first');
     assert.equal(await rows.nth(1).getAttribute('data-kind'), 'identity');
@@ -895,6 +978,7 @@ test('versions: every recent capture a different version is flagged unstable (de
   try {
     await openWorkspace(page);
     await page.locator('.server-row', { hasText: 'flaky' }).click();
+    await serverTab(page, 'Versions');
     await page.locator('.versions .warn').waitFor();
     assert.equal(await page.locator('.versions .warn').innerText(), 'Unstable: the last 4 captures each produced a different version, over 3 hours.');
     assert.equal(await page.locator('.versions-table tr.identity').count(), 3, 'identity rows stay compact');
@@ -941,7 +1025,7 @@ test('logging: a level set on a legacy session, and its messages in the notifica
     await callButton(page).click();
     await transcriptStatus(page, 'Completed').waitFor({ timeout: 10_000 });
     const panel = page.locator('.notifications');
-    await panel.getByRole('button', { name: 'Show' }).click();
+    await serverTab(page, 'Notifications');
     // Raw first (D10, R10-4): the unit as it arrived, then the Readable view.
     await panel.locator('.raw-params', { hasText: '"level":"critical"' }).waitFor({ timeout: 10_000 });
     await panel.getByLabel('Readable').check();
@@ -1077,22 +1161,58 @@ test('OAuth: a refused refresh on Connect says to sign in again, and offers it',
   }
 });
 
+// The server view's tabs: one view shown at a time, every view kept mounted,
+// and the tab chosen kept when another server is chosen.
+test('tabs: a half-typed call survives a switch of tab, and the tab chosen stays with the next server', async () => {
+  const { dataDir } = seed([
+    { id: randomUUID(), name: 'tabbed', transport: 'stdio', command: process.execPath, args: [modern], env: { CALL_TOOLS: '1' } },
+    { id: randomUUID(), name: 'other', transport: 'stdio', command: process.execPath, args: [legacy] },
+  ]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connect(page, 'tabbed');
+    const tab = (name) => page.locator('.server-tabs').getByRole('tab', { name, exact: true });
+    assert.equal(await tab('Surface').getAttribute('aria-selected'), 'true', 'opens on Surface');
+    await openCall(page, 'add');
+    const editor = page.locator('.call-editor textarea');
+    await editor.fill('{ "a": 20 }');
+    for (const name of ['Calls', 'Notifications', 'Versions']) {
+      await serverTab(page, name);
+      assert.equal(await page.locator('.surface').isVisible(), false, `${name} hides the surface`);
+    }
+    await serverTab(page, 'Surface');
+    assert.equal(await editor.inputValue(), '{ "a": 20 }', 'the arguments typed are still there');
+    await serverTab(page, 'Versions');
+    await page.locator('.server-row', { hasText: 'other' }).click();
+    await page.locator('.detail-head h2', { hasText: 'other' }).waitFor();
+    assert.equal(await tab('Versions').getAttribute('aria-selected'), 'true', 'still on Versions');
+    assert.ok(await page.locator('.versions').isVisible());
+  } finally {
+    await app.close();
+  }
+});
+
+/** Drags a handle in two moves, from its middle, or from `fromTop` px below its top when its middle may be out of sight. */
+async function dragBy(target, dx, dy, fromTop) {
+  const page = target.page();
+  const box = await target.boundingBox();
+  const x = box.x + box.width / 2;
+  const y = fromTop === undefined ? box.y + box.height / 2 : box.y + fromTop;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx / 2, y + dy / 2);
+  await page.mouse.move(x + dx, y + dy);
+  await page.mouse.up();
+}
+const handle = (page, label) => page.getByRole('separator', { name: label, exact: true });
+
 // Pane sizes: the wire log's height and the readable pane's width follow a
 // drag, the log collapses to its header, and all of it survives a restart.
 test('panes: the wire log and the readable pane resize by drag, the log collapses, and the sizes survive a restart', async () => {
   const { dataDir } = seed([{ id: randomUUID(), name: 'panes', transport: 'stdio', command: process.execPath, args: [modern] }]);
   const height = (page) => page.locator('.log-slot').evaluate((el) => el.getBoundingClientRect().height);
   const width = (page) => page.locator('.readable-pane').evaluate((el) => el.getBoundingClientRect().width);
-  const dragBy = async (page, selector, dx, dy) => {
-    const box = await page.locator(selector).boundingBox();
-    const x = box.x + box.width / 2;
-    const y = box.y + box.height / 2;
-    await page.mouse.move(x, y);
-    await page.mouse.down();
-    await page.mouse.move(x + dx / 2, y + dy / 2);
-    await page.mouse.move(x + dx, y + dy);
-    await page.mouse.up();
-  };
   let grown;
   let wide;
   {
@@ -1101,11 +1221,11 @@ test('panes: the wire log and the readable pane resize by drag, the log collapse
       await openWorkspace(page);
       await connect(page, 'panes');
       const before = await height(page);
-      await dragBy(page, '.splitter.y', 0, -150);
+      await dragBy(handle(page, 'Wire log height'), 0, -150);
       grown = await height(page);
       assert.ok(Math.abs(grown - (before + 150)) <= 2, `the log grew by the drag: ${before} to ${grown}`);
       const w0 = await width(page);
-      await dragBy(page, '.splitter.x', -100, 0);
+      await dragBy(handle(page, 'Readable pane width'), -100, 0);
       wide = await width(page);
       assert.ok(Math.abs(wide - (w0 + 100)) <= 2, `the readable pane grew by the drag: ${w0} to ${wide}`);
       await page.locator('.log-toggle').click();
@@ -1131,6 +1251,69 @@ test('panes: the wire log and the readable pane resize by drag, the log collapse
   }
 });
 
+test('surface: the list is a column left of the entry; its width follows a drag and the keys, and survives a restart', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'listed', transport: 'stdio', command: process.execPath, args: [modern] }]);
+  const listWidth = (page) => page.locator('.surface-items').evaluate((el) => el.getBoundingClientRect().width);
+  let wide;
+  {
+    const { app, page } = await launch(dataDir);
+    try {
+      await openWorkspace(page);
+      await connectAndCapture(page, 'listed', 2);
+      await page.locator('.surface-items .item', { hasText: 'echo' }).click();
+      await page.locator('.surface-entry .raw-viewer').waitFor();
+      const list = await page.locator('.surface-items').boundingBox();
+      const entry = await page.locator('.surface-entry').boundingBox();
+      assert.ok(entry.x >= list.x + list.width, 'the entry sits right of the list');
+      assert.ok(entry.y < list.y + list.height, 'beside it, not below it');
+      const before = await listWidth(page);
+      // From near its top: the main column scrolls, and the wire log covers the handle's lower part.
+      await dragBy(handle(page, 'Surface list width'), 80, 0, 20);
+      wide = await listWidth(page);
+      assert.ok(Math.abs(wide - (before + 80)) <= 2, `dragged right, the list grew: ${before} to ${wide}`);
+      await handle(page, 'Surface list width').focus();
+      await page.keyboard.press('ArrowRight');
+      assert.ok(Math.abs((await listWidth(page)) - (wide + 16)) <= 2, 'ArrowRight grows it, toward the entry');
+      await page.keyboard.press('ArrowLeft');
+      assert.ok(Math.abs((await listWidth(page)) - wide) <= 2, 'ArrowLeft takes it back');
+      await shot(page, 'surface-list');
+    } finally {
+      await app.close();
+    }
+  }
+  {
+    const { app, page } = await launch(dataDir);
+    try {
+      await openWorkspace(page);
+      await page.locator('.server-row', { hasText: 'listed' }).click();
+      await page.locator('.surface-items').waitFor({ timeout: 20_000 });
+      assert.ok(Math.abs((await listWidth(page)) - wide) <= 2, 'the list width survived the restart');
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test('R-tabs-2: a list dragged wide gives way when the readable pane widens; the entry keeps its minimum', async () => {
+  const { dataDir } = seed([{ id: randomUUID(), name: 'squeezed', transport: 'stdio', command: process.execPath, args: [modern] }]);
+  const { app, page } = await launch(dataDir);
+  try {
+    await openWorkspace(page);
+    await connectAndCapture(page, 'squeezed', 2);
+    await page.locator('.surface-items .item', { hasText: 'echo' }).click();
+    const entryWidth = () => page.locator('.surface-entry').evaluate((el) => el.getBoundingClientRect().width);
+    const paneWidth = () => page.locator('.readable-pane').evaluate((el) => el.getBoundingClientRect().width);
+    await handle(page, 'Surface list width').focus();
+    await page.keyboard.press('End');
+    const pane = await paneWidth();
+    await dragBy(handle(page, 'Readable pane width'), -200, 0, 20);
+    assert.ok((await paneWidth()) - pane >= 190, `the readable pane widened: ${pane} to ${await paneWidth()}`);
+    assert.ok(await entryWidth() >= 318, `the list gave up the space, not the entry: entry ${await entryWidth()} px`);
+  } finally {
+    await app.close();
+  }
+});
+
 test('surface: at the narrowest readable pane a parameter\'s type stays on one line', async () => {
   const { dataDir } = seed([{ id: randomUUID(), name: 'narrow', transport: 'stdio', command: process.execPath, args: [modern] }]);
   const { app, page } = await launch(dataDir);
@@ -1138,7 +1321,7 @@ test('surface: at the narrowest readable pane a parameter\'s type stays on one l
     await openWorkspace(page);
     await connectAndCapture(page, 'narrow', 2);
     await page.locator('.surface-items .item', { hasText: 'echo' }).click();
-    await page.locator('.splitter.x').focus();
+    await handle(page, 'Readable pane width').focus();
     await page.keyboard.press('Home');
     const pane = page.locator('.readable-pane');
     assert.equal(Math.round((await pane.boundingBox()).width), 240, 'the pane is at its minimum');

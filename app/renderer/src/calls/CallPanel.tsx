@@ -2,7 +2,9 @@
 // and the JSON editor sit side by side on one arguments value: a field the
 // form cannot render is the editor's, and the editor can always write what
 // the schema allows (D9). Validation is advisory (decision 4). A tool not
-// declared read-only is confirmed first, by the backend's rule (D7).
+// declared read-only is confirmed first, by the backend's rule (D7). The form
+// and the call it started are two views of one panel, so neither loses its
+// state while the other is shown; the parent holds the call and says which.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CallView, ConfirmPrompt, Verdict } from '../../../../packages/backend/dist/index.js';
 import type { NormalizedTool } from '../../../../packages/protocol/dist/index.js';
@@ -39,13 +41,20 @@ function promptSchema(args: unknown): Record<string, unknown> {
   };
 }
 
-export function CallPanel({ client, serverId, serverName, connected, target, onRead, era, revision, completions }: {
+export function CallPanel({ client, serverId, serverName, connected, target, onRead, era, revision, completions, view, callId, onStarted, onShowForm }: {
   client: BackendClient;
   serverId: string;
   serverName?: string;
   connected: boolean;
   target: CallTarget;
   onRead: (view: CallView) => void;
+  /** Which view shows: the form, or the transcript of the call it started. */
+  view: 'form' | 'response';
+  /** The call the form last started, or null before the first. */
+  callId: number | null;
+  onStarted: (callId: number) => void;
+  /** Replay put a call's arguments back in the form: show it. */
+  onShowForm: () => void;
   /** The captured surface's era and revision: what the tool's own fields mean. */
   era?: 'legacy' | 'modern';
   revision?: string;
@@ -84,7 +93,6 @@ export function CallPanel({ client, serverId, serverName, connected, target, onR
   const [editorError, setEditorError] = useState<string | null>(null);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [confirm, setConfirm] = useState<ConfirmPrompt | null>(null);
-  const [callId, setCallId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [variables, setVariables] = useState<string[]>([]);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -139,7 +147,7 @@ export function CallPanel({ client, serverId, serverName, connected, target, onR
       });
       if (reply.started) {
         setConfirm(null);
-        setCallId(reply.callId);
+        onStarted(reply.callId);
       } else {
         setConfirm(reply.confirm);
       }
@@ -153,58 +161,63 @@ export function CallPanel({ client, serverId, serverName, connected, target, onR
   const verb = target.kind === 'tool' ? 'Call' : target.kind === 'prompt' ? 'Get' : 'Read';
   return (
     <div className="call-panel">
-      {target.kind === 'tool' && target.tool.annotations !== undefined && <Hints annotations={target.tool.annotations} />}
-      {plan && (
-        <div className="call-inputs">
+      <div className="call-form-view" hidden={view !== 'form'}>
+        {target.kind === 'tool' && target.tool.annotations !== undefined && <Hints annotations={target.tool.annotations} />}
+        {plan && (
+          <div className="call-inputs">
+            <div className="call-form">
+              <h4>Form</h4>
+              {plan.kind === 'editor-only'
+                ? <p className="muted">{plan.reason} The JSON editor beside this takes any arguments.</p>
+                : plan.fields.length === 0
+                  ? <p className="muted">{plan.open ? 'No declared arguments. Anything else goes in the JSON editor.' : 'Takes no arguments.'}</p>
+                  : <Fields fields={plan.fields} args={args} onChange={fromForm} />}
+            </div>
+            <div className="call-editor">
+              <h4>JSON</h4>
+              <textarea className="mono" spellCheck={false} value={text} onChange={(e) => fromEditor(e.target.value)} aria-label="Arguments as JSON" />
+              {editorError && <p className="error">Not sent until it parses: {editorError}</p>}
+            </div>
+          </div>
+        )}
+        {target.kind === 'template' && (
           <div className="call-form">
-            <h4>Form</h4>
-            {plan.kind === 'editor-only'
-              ? <p className="muted">{plan.reason} The JSON editor beside this takes any arguments.</p>
-              : plan.fields.length === 0
-                ? <p className="muted">{plan.open ? 'No declared arguments. Anything else goes in the JSON editor.' : 'Takes no arguments.'}</p>
-                : <Fields fields={plan.fields} args={args} onChange={fromForm} />}
+            <p className="mono">{target.uriTemplate}</p>
+            {variables.map((v) => (
+              <label key={v} className="field"><span className="mono">{v}</span>
+                <input className="mono" value={values[v] ?? ''} onChange={(e) => setValues((s) => ({ ...s, [v]: e.target.value }))} />
+              </label>
+            ))}
           </div>
-          <div className="call-editor">
-            <h4>JSON</h4>
-            <textarea className="mono" spellCheck={false} value={text} onChange={(e) => fromEditor(e.target.value)} aria-label="Arguments as JSON" />
-            {editorError && <p className="error">Not sent until it parses: {editorError}</p>}
-          </div>
+        )}
+        {completions && connected && revision && (target.kind === 'prompt' || target.kind === 'template') && (
+          <Suggest client={client} serverId={serverId} revision={revision}
+            target={target.kind === 'prompt' ? { kind: 'prompt', name: target.name } : { kind: 'template', uriTemplate: target.uriTemplate }}
+            names={target.kind === 'prompt' ? Object.keys((schema as { properties?: object } | undefined)?.properties ?? {}) : variables}
+            values={target.kind === 'prompt' ? args : values}
+            onPick={(name, value) => (target.kind === 'prompt' ? fromForm({ ...args, [name]: value }) : setValues((s) => ({ ...s, [name]: value })))} />
+        )}
+        {support && (
+          <label className="check">
+            <input type="checkbox" checked={runAsTask} disabled={support === 'required'} onChange={(e) => setAsTask(e.target.checked)} />
+            {' '}Run as a task {support === 'required' ? '(the tool requires it)' : '(the tool allows it)'}: the call answers with a task, and nothing checks on it until you ask
+          </label>
+        )}
+        {verdict && verdict.valid === false && <p className="warn">The arguments do not match the schema: {verdict.message}. They can still be sent; the server decides.</p>}
+        {verdict && verdict.valid === null && <p className="muted">The schema could not be used to check the arguments: {verdict.message}</p>}
+        {verdict && verdict.valid === true && plan && <p className="ok-line">The arguments match the schema.</p>}
+        <div className="actions left">
+          <button className="primary" disabled={!connected || busy || editorError !== null} onClick={() => send(false)} title={connected ? undefined : 'Connect the server first'}>{verb}</button>
+          {!connected && <span className="muted">Connect the server to {verb.toLowerCase()}.</span>}
         </div>
-      )}
-      {target.kind === 'template' && (
-        <div className="call-form">
-          <p className="mono">{target.uriTemplate}</p>
-          {variables.map((v) => (
-            <label key={v} className="field"><span className="mono">{v}</span>
-              <input className="mono" value={values[v] ?? ''} onChange={(e) => setValues((s) => ({ ...s, [v]: e.target.value }))} />
-            </label>
-          ))}
-        </div>
-      )}
-      {completions && connected && revision && (target.kind === 'prompt' || target.kind === 'template') && (
-        <Suggest client={client} serverId={serverId} revision={revision}
-          target={target.kind === 'prompt' ? { kind: 'prompt', name: target.name } : { kind: 'template', uriTemplate: target.uriTemplate }}
-          names={target.kind === 'prompt' ? Object.keys((schema as { properties?: object } | undefined)?.properties ?? {}) : variables}
-          values={target.kind === 'prompt' ? args : values}
-          onPick={(name, value) => (target.kind === 'prompt' ? fromForm({ ...args, [name]: value }) : setValues((s) => ({ ...s, [name]: value })))} />
-      )}
-      {support && (
-        <label className="check">
-          <input type="checkbox" checked={runAsTask} disabled={support === 'required'} onChange={(e) => setAsTask(e.target.checked)} />
-          {' '}Run as a task {support === 'required' ? '(the tool requires it)' : '(the tool allows it)'}: the call answers with a task, and nothing checks on it until you ask
-        </label>
-      )}
-      {verdict && verdict.valid === false && <p className="warn">The arguments do not match the schema: {verdict.message}. They can still be sent; the server decides.</p>}
-      {verdict && verdict.valid === null && <p className="muted">The schema could not be used to check the arguments: {verdict.message}</p>}
-      {verdict && verdict.valid === true && plan && <p className="ok-line">The arguments match the schema.</p>}
-      <div className="actions left">
-        <button className="primary" disabled={!connected || busy || editorError !== null} onClick={() => send(false)} title={connected ? undefined : 'Connect the server first'}>{verb}</button>
-        {!connected && <span className="muted">Connect the server to {verb.toLowerCase()}.</span>}
+        {error && <p className="error">{error}</p>}
+        {confirm && <ConfirmDialog prompt={confirm} busy={busy} onCancel={() => setConfirm(null)} onConfirm={() => send(true)} />}
       </div>
-      {error && <p className="error">{error}</p>}
-      {confirm && <ConfirmDialog prompt={confirm} busy={busy} onCancel={() => setConfirm(null)} onConfirm={() => send(true)} />}
       {callId !== null && (
-        <CallTranscript key={callId} client={client} callId={callId} serverName={serverName} onRead={onRead} onReplay={plan ? (a) => fromForm(a) : undefined} />
+        <div className="call-response" hidden={view !== 'response'}>
+          <CallTranscript key={callId} client={client} callId={callId} serverName={serverName} onRead={onRead}
+            onReplay={plan ? (a) => { fromForm(a); onShowForm(); } : undefined} />
+        </div>
       )}
     </div>
   );

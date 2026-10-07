@@ -1,7 +1,7 @@
 // Every notification the server sent, both eras, one timeline (phase 10
 // decision 6), read from the wire log. The default view is each unit exactly
 // as it arrived (D10, R10-4); one-line summaries are the Readable view. Read
-// only while open (R10-5).
+// only while its tab is shown (R10-5).
 import { useCallback, useEffect, useState } from 'react';
 import type { LogUnit, NotificationRow } from '../../../../packages/backend/dist/index.js';
 import type { BackendClient } from '../lib/client';
@@ -10,9 +10,8 @@ import { ARRIVAL_ORDER_NOTE, notificationSummary, reloadsTimeline } from '../lib
 
 const PAGE = 200;
 
-export function NotificationsPanel({ client, serverId, modernStdio }: { client: BackendClient; serverId: string; modernStdio: boolean }) {
+export function NotificationsPanel({ client, serverId, modernStdio, open }: { client: BackendClient; serverId: string; modernStdio: boolean; open: boolean }) {
   const [rows, setRows] = useState<NotificationRow[]>([]);
-  const [open, setOpen] = useState(false);
   const [readable, setReadable] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,11 +30,9 @@ export function NotificationsPanel({ client, serverId, modernStdio }: { client: 
   return (
     <section className="notifications">
       <div className="surface-head">
-        <h3>Notifications</h3>
-        <span className="muted">{!open ? 'Every notification the server sent, from the wire log.' : rows.length === 0 ? 'None yet.' : `${rows.length}${rows.length === PAGE ? '+' : ''}, oldest first.`}</span>
+        <span className="muted">Every notification the server sent, from the wire log. {rows.length === 0 ? 'None yet.' : `${rows.length}${rows.length === PAGE ? '+' : ''}, oldest first.`}</span>
         <span className="header-spacer" />
-        {open && <label className="check"><input type="checkbox" checked={readable} onChange={(e) => setReadable(e.target.checked)} /> Readable</label>}
-        <button onClick={() => setOpen(!open)}>{open ? 'Hide' : 'Show'}</button>
+        <label className="check"><input type="checkbox" checked={readable} onChange={(e) => setReadable(e.target.checked)} /> Readable</label>
       </div>
       {error && <p className="error">{error}</p>}
       {open && (

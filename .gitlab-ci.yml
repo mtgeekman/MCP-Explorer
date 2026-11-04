@@ -208,3 +208,32 @@ mirror:github:
       fi
       git push --prune "https://x-access-token:${GH_TOKEN}@${GITHUB_REPO}" \
         '+refs/heads/main:refs/heads/main' '+refs/tags/*:refs/tags/*'
+
+# The GitHub release for a version tag: the tag's message as its notes, and the
+# installers both package jobs kept. After mirror:github, since the tag must be
+# on GitHub first. The message must be release-notes/<tag>.txt as committed,
+# so the notes are the ones reviewed in a diff: tag with
+#   git tag -a vX.Y.Z -F release-notes/vX.Y.Z.txt --cleanup=verbatim
+# ci/github-release.mjs (tested by test/github-release.test.mjs) starts a
+# draft and takes it down if an upload fails, so the job can run again.
+release:github:
+  <<: *node_container
+  stage: publish
+  resource_group: github-mirror
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v[0-9]/
+  needs:
+    - job: package:windows
+      artifacts: true
+    - job: package:linux
+      artifacts: true
+    - job: mirror:github
+      artifacts: false
+  variables:
+    GITHUB_REPO: mtgeekman/MCP-Explorer
+  script:
+    - |
+      podman run --rm -v "$CI_PROJECT_DIR:/w:Z" -w /w \
+        -e GH_TOKEN -e GITHUB_REPO -e CI_COMMIT_TAG -e CI_COMMIT_TAG_MESSAGE "$NODE_IMAGE" bash -euo pipefail -c '
+          node ci/github-release.mjs release/*.exe release/*.AppImage release/*.deb
+        '

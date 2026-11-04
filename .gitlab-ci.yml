@@ -161,36 +161,38 @@ package:windows:
 
 # A copy on GitHub of main and the tags, with the agent material taken out of
 # every commit: CLAUDE.md, .claude/ and docs/reconcile/ (doc-reconcile's working
-# files, which point into the private wiki). Runs once every job above passed.
-# Commit messages are not rewritten.
+# files, which point into the private wiki). Runs for a version tag only (v0.1.0,
+# matching package.json's version), once every job above passed; a push to main
+# goes nowhere until the next release. Commit messages are not rewritten.
 #
 # GH_TOKEN is a masked, protected CI/CD variable: a GitHub token with write
-# access to the repository's contents. Protected, it reaches main and protected
-# tags only. filter-repo gives the same commits the same ids on every run, so
+# access to the repository's contents. Protected, it reaches protected tags
+# only, so v* must be a protected tag. filter-repo gives the same commits the same ids on every run, so
 # each push adds to the last. The pushes are forced (+) because GitHub is only a
 # copy: a change to what is filtered rewrites its commits, and anything made
 # only on GitHub is overwritten. --prune deletes a tag GitHub holds that GitLab
 # does not. Only main and tags go: the phase branches stay here.
 #
-# The rule names main, not $CI_DEFAULT_BRANCH: GitLab's default branch for this
-# project is phase-00-build-spike. git and python3 are on llama's host; no
-# checkout, filter-repo works on a fresh mirror of its own in a folder that
-# goes with the job.
+# main is pushed as GitLab holds it when the tag's pipeline runs. git and
+# python3 are on llama's host. The checkout is kept for package.json; the
+# filtering works on a fresh mirror of its own in a folder that goes with the job.
 mirror:github:
   stage: publish
   tags: [fedora, podman]
   resource_group: github-mirror
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_TAG =~ /^v[0-9]/
   variables:
-    GIT_STRATEGY: none
     FILTER_REPO_VERSION: "2.47.0"
     GITHUB_REPO: github.com/mtgeekman/MCP-Explorer.git
   script:
     - |
       set -euo pipefail
       : "${GH_TOKEN:?GH_TOKEN is not set for this pipeline}"
+      version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+      if [ "$CI_COMMIT_TAG" != "v$version" ]; then
+        echo "the tag $CI_COMMIT_TAG is not v$version, the version in package.json"; exit 1
+      fi
       scratch="$(mktemp -d)"
       trap 'rm -rf "$scratch"' EXIT
       python3 -m venv "$scratch/venv"

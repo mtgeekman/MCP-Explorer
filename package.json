@@ -1,6 +1,6 @@
 {
   "name": "mcp-explorer",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Desktop workbench for MCP servers",
   "main": "dist/main/main.mjs",

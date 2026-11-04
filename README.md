@@ -98,9 +98,10 @@ model families count differently, and the screen says so.
 
 ## Install
 
-Download the Windows installer, the AppImage or the `.deb` from
-[Releases](https://github.com/mtgeekman/MCP-Explorer/releases), or build from
-source.
+Download from [Releases](https://github.com/mtgeekman/MCP-Explorer/releases):
+for Windows a zip (unzip it into a folder of its own and run
+`MCP Explorer.exe`; there is no installer), for Linux an AppImage or a `.deb`.
+Or build from source.
 
 To build, you need: Node.js 24 or later, and git. No compiler is needed: the native
 modules ship prebuilt binaries.
@@ -130,7 +131,7 @@ step that the prebuilt binary makes unnecessary, and skipping it keeps the
 install from needing a compiler. Because it also skips Electron's own download,
 `install.js` fetches the Electron binary by hand.
 
-To package: `npm run dist:win` (an NSIS installer) or `npm run dist:linux`
+To package: `npm run dist:win` (a zip of the app) or `npm run dist:linux`
 (AppImage and `.deb`). On Windows, `scripts/build.ps1` builds the unpacked app
 into `release/win-unpacked`.
 

@@ -17,4 +17,5 @@ up, and have no downloads.
   out of the wire log. Verified against a test authorization server; testing
   against hosted providers is under way.
 
-Downloads: the Windows installer (.exe), and for Linux an AppImage and a .deb.
+Downloads: for Windows a zip (unzip it into a folder of its own and run
+MCP Explorer.exe; there is no installer), and for Linux an AppImage and a .deb.

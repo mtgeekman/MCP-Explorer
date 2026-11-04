@@ -181,3 +181,8 @@ SDK.
 
 Windows and Linux are built and tested in CI. macOS is not built yet; the code
 is written not to rule it out.
+
+## License
+
+[MIT](LICENSE). The app bundles the IBM Plex Sans and JetBrains Mono fonts,
+which are under the SIL Open Font License 1.1.

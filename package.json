@@ -53,6 +53,7 @@
   "build": {
     "appId": "com.mtgeekman.mcpexplorer",
     "productName": "MCP Explorer",
+    "publish": null,
     "directories": {
       "output": "release",
       "buildResources": "build"

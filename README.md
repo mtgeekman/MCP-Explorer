@@ -12,7 +12,7 @@ do: no background calls, no automatic retries, and no automatic answers to a
 server that asks for input. When a server asks for a sampling completion, you
 type it.
 
-**Status:** 0.1.1, the first public release. Windows and Linux.
+**Status:** 0.1.2, the first public release. Windows and Linux.
 
 ## What it does
 
@@ -98,9 +98,11 @@ model families count differently, and the screen says so.
 
 ## Install
 
-There are no published installers yet; build from source.
+Download the Windows installer, the AppImage or the `.deb` from
+[Releases](https://github.com/mtgeekman/MCP-Explorer/releases), or build from
+source.
 
-Requirements: Node.js 24 or later, and git. No compiler is needed: the native
+To build, you need: Node.js 24 or later, and git. No compiler is needed: the native
 modules ship prebuilt binaries.
 
 ```bash

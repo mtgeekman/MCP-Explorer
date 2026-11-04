@@ -12,7 +12,7 @@ do: no background calls, no automatic retries, and no automatic answers to a
 server that asks for input. When a server asks for a sampling completion, you
 type it.
 
-**Status:** 0.1.0, the first release. Windows and Linux.
+**Status:** 0.1.1, the first public release. Windows and Linux.
 
 ## What it does
 

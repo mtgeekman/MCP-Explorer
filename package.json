@@ -16,7 +16,7 @@
     "dev:renderer": "vite -c app/renderer/vite.config.mts",
     "start": "npm run build && electron .",
     "pack:dir": "npm run build && electron-builder --dir",
-    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:win": "npm run build && electron-builder --win zip",
     "dist:linux": "npm run build && electron-builder --linux AppImage deb",
     "test": "node --test \"test/*.test.mjs\"",
     "test:smoke": "node --test --test-concurrency=1 --test-timeout=180000 \"test/smoke/*.test.mjs\"",
@@ -75,7 +75,7 @@
     "win": {
       "target": [
         {
-          "target": "nsis",
+          "target": "zip",
           "arch": [
             "x64"
           ]

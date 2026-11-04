@@ -1,4 +1,4 @@
-// Makes the GitHub release for a version tag and uploads the installers the
+// Makes the GitHub release for a version tag and uploads the packages the
 // package jobs kept. Run by CI's release:github, once mirror:github has pushed
 // the tag. Modelled on Hive's ci/github-release.sh, in Node so that
 // test/github-release.test.mjs can drive it against a fake GitHub.

@@ -22,7 +22,7 @@
 # node-gyp would accept. The flag makes all three environments behave the same
 # and keeps the no-compile property from depending on an npm default.
 
-stages: [check, package]
+stages: [check, package, publish]
 
 variables:
   NODE_IMAGE: docker.io/library/node:24-bookworm
@@ -158,3 +158,51 @@ package:windows:
   artifacts:
     paths: [release/*.exe]
     expire_in: 1 week
+
+# A copy on GitHub of main and the tags, with the agent material taken out of
+# every commit: CLAUDE.md, .claude/ and docs/reconcile/ (doc-reconcile's working
+# files, which point into the private wiki). Runs once every job above passed.
+# Commit messages are not rewritten.
+#
+# GH_TOKEN is a masked, protected CI/CD variable: a GitHub token with write
+# access to the repository's contents. Protected, it reaches main and protected
+# tags only. filter-repo gives the same commits the same ids on every run, so
+# each push adds to the last. The pushes are forced (+) because GitHub is only a
+# copy: a change to what is filtered rewrites its commits, and anything made
+# only on GitHub is overwritten. --prune deletes a tag GitHub holds that GitLab
+# does not. Only main and tags go: the phase branches stay here.
+#
+# The rule names main, not $CI_DEFAULT_BRANCH: GitLab's default branch for this
+# project is phase-00-build-spike. git and python3 are on llama's host; no
+# checkout, filter-repo works on a fresh mirror of its own in a folder that
+# goes with the job.
+mirror:github:
+  stage: publish
+  tags: [fedora, podman]
+  resource_group: github-mirror
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+  variables:
+    GIT_STRATEGY: none
+    FILTER_REPO_VERSION: "2.47.0"
+    GITHUB_REPO: github.com/mtgeekman/MCP-Explorer.git
+  script:
+    - |
+      set -euo pipefail
+      : "${GH_TOKEN:?GH_TOKEN is not set for this pipeline}"
+      scratch="$(mktemp -d)"
+      trap 'rm -rf "$scratch"' EXIT
+      python3 -m venv "$scratch/venv"
+      "$scratch/venv/bin/pip" install --quiet "git-filter-repo==$FILTER_REPO_VERSION"
+      git clone --mirror "$CI_REPOSITORY_URL" "$scratch/work"
+      cd "$scratch/work"
+      "$scratch/venv/bin/git-filter-repo" --invert-paths \
+        --path CLAUDE.md --path-glob '*/CLAUDE.md' --path .claude/ --path docs/reconcile/
+      # Nothing filtered may survive in any commit that is about to leave.
+      leaked="$(git log --all --format= --name-only | grep -E '(^|/)CLAUDE\.md$|^\.claude/|^docs/reconcile/' || true)"
+      if [ -n "$leaked" ]; then
+        echo "filtered paths are still in the history:"; echo "$leaked" | sort -u; exit 1
+      fi
+      git push --prune "https://x-access-token:${GH_TOKEN}@${GITHUB_REPO}" \
+        '+refs/heads/main:refs/heads/main' '+refs/tags/*:refs/tags/*'

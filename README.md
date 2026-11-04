@@ -1,57 +1,183 @@
 # MCP Explorer
 
-A desktop workbench for MCP servers. Connect to local `stdio` servers and
-remote HTTP servers, see everything an agent would see, call the tools by
-hand, and find out what a release actually changed.
+A desktop workbench for [Model Context Protocol](https://modelcontextprotocol.io)
+servers. Connect to a local `stdio` server or a remote HTTP one, see everything
+an agent would see, call its tools by hand, read every byte on the wire, and find
+out what a new release of a server actually changed.
 
-**Status: Phase 02 complete (2026-09-14).** The toolchain is proven end to end
--- an Electron app builds and packages on Windows and Linux from CI. The
-protocol core connects to a server over any of the three transports, detects
-the protocol era, captures the whole surface, and diffs it across versions.
-Storage now keeps it: per-workspace encrypted databases with keychain-held or
-passphrase-derived keys and recovery keys, server definitions whose secrets
-never sit readable on disk, every call and frame, surface version history, and
-retention. There is no user interface yet. Phase 03 is the design pass.
+![A server's surface, a tool definition as the exact bytes it arrived in, and the wire log](docs/screenshots/01-surface-and-wire-log.png)
+
+MCP Explorer has no model and no API key. Nothing happens that you did not
+do: no background calls, no automatic retries, and no automatic answers to a
+server that asks for input. When a server asks for a sampling completion, you
+type it.
+
+**Status:** 0.1.0, the first release. Windows and Linux.
 
 ## What it does
 
-- Connects over `stdio`, Streamable HTTP, and the deprecated HTTP+SSE
-  transport, with bearer/header auth or full OAuth 2.1.
-- Shows the complete agent-facing surface: server instructions, tools with
-  their schemas and annotations, prompts, resources and resource templates.
-- Renders the **context preview** — the exact block a client would hand a
-  model, across every server in a workspace — and what it costs in tokens.
-- Calls tools through forms generated from their schemas, with a raw JSON
-  editor always available beside the form.
-- Speaks **every published protocol revision**, 2024-11-05 through
-  2026-07-28, including surfaces later revisions deprecated. A tool that only
-  opens the newest thing is not an explorer.
-- Answers the server's own requests with a human in the loop: when a server
-  asks for sampling, you type the completion yourself — whether it asks the
-  old way or through a modern multi-round-trip call.
-- Logs every JSON-RPC frame, raw, in both directions.
-- Stores every version of every server's surface and diffs them, including
-  a diff of the rendered context block and the token delta.
+### The whole surface, as the server sent it
 
-## What it is not
+Instructions, capabilities, tools, prompts, resources and resource templates,
+captured on every connect. A definition opens on the exact bytes it arrived in,
+with readable Pretty and Compact views one click away, and a readable pane that
+lays out parameters, annotations and every field. A field the connected
+protocol revision cannot carry is labelled as such, never shown as missing.
+Malformed entries are flagged rather than dropped.
 
-Not a harness for testing servers with an AI model. There is no model, no
-API key, and no background activity: what you see, you caused. Driving the
-servers with a real agent is a separate, deliberately deferred enhancement.
+### Every revision, both eras
+
+MCP Explorer speaks every published protocol revision, `2024-11-05` through
+`2026-07-28`: the legacy `initialize` handshake and the modern `server/discover`
+era, including surfaces later revisions deprecated (sampling, roots, tasks). The
+era is detected once and remembered, so a `stdio` server is not started twice to
+find out.
+
+### Calls through generated forms
+
+![A structured result, checked against the tool's outputSchema](docs/screenshots/02-call-result.png)
+
+Tools, prompts and resources are called through forms generated from their
+schemas, with the JSON editor always beside the form. The transcript shows the
+exact request and response bytes; the readable pane shows the result, checks
+`structuredContent` against the tool's `outputSchema`, and renders every content
+type. Progress shows while a call runs, and Cancel sends the cancellation.
+
+![A tool not declared read-only asks before it runs](docs/screenshots/03-confirm.png)
+
+A tool that does not declare `readOnlyHint: true` asks first and shows exactly
+what will be sent. Annotations are hints from the server, and the app treats
+them that way.
+
+### A person answers the server's questions
+
+![An elicitation request from the server, answered by hand](docs/screenshots/04-input-request.png)
+
+When a server needs input mid-call, whether as a modern multi-round-trip result
+or as a legacy server-to-client request, the call waits for you: sampling,
+form and URL elicitation, and roots. Server defaults are shown, never filled in
+for you. Nothing is retried until you send your answer.
+
+### Versions and what changed
+
+![Two releases of a server compared: what the model sees, with the token delta](docs/screenshots/05-versions.png)
+
+Every capture is kept. Captures of the same surface collapse into one version,
+a version bump with an identical surface is marked as identity only, and any two
+versions can be compared three ways: what the model sees (with the token delta),
+item by item (down to the JSON path that changed), and the raw stored
+snapshots.
+
+### The context an agent pays for
+
+![The context preview for two servers](docs/screenshots/06-context.png)
+
+The context preview builds the block a client would hand a model from every
+server in a workspace, counts its tokens, lists the most expensive tools, and
+flags tool names that collide across servers. Counts use `o200k_base`; other
+model families count differently, and the screen says so.
+
+### And the rest
+
+- Transports: `stdio`, Streamable HTTP, and the deprecated HTTP+SSE.
+- OAuth sign-in, one visible step at a time: discovery, dynamic or
+  pre-registered client registration, a browser sign-in with PKCE, refresh, and
+  sign-out. Token and secret values are redacted in the wire log. Verified
+  against a test authorization server; testing against hosted providers is
+  under way.
+- Session controls: log level, subscriptions and listen streams, ping,
+  completions with a Suggest button, a notifications timeline, and a one-press
+  health check.
+- Server definitions imported from the config files of Claude Desktop, Claude
+  Code, VS Code and Cursor, with each one reviewed before it is saved.
+- Encrypted workspaces: keys held by the OS keychain or derived from a
+  passphrase, a recovery key, and server secrets that are never readable on
+  disk. An unencrypted workspace never stores a secret.
+- Retention limits by age and size, with a preview of what a purge removes.
+- Server process trees are ended whole on disconnect and on quit.
+
+## Install
+
+There are no published installers yet; build from source.
+
+Requirements: Node.js 24 or later, and git. No compiler is needed: the native
+modules ship prebuilt binaries.
+
+```bash
+git clone https://github.com/mtgeekman/MCP-Explorer.git
+```
+
+```bash
+cd MCP-Explorer
+```
+
+```bash
+npm ci --ignore-scripts
+```
+
+```bash
+node node_modules/electron/install.js
+```
+
+```bash
+npm start
+```
+
+`npm start` builds, then opens the app. `--ignore-scripts` matters: one dependency declares a `node-gyp rebuild` install
+step that the prebuilt binary makes unnecessary, and skipping it keeps the
+install from needing a compiler. Because it also skips Electron's own download,
+`install.js` fetches the Electron binary by hand.
+
+To package: `npm run dist:win` (an NSIS installer) or `npm run dist:linux`
+(AppImage and `.deb`). On Windows, `scripts/build.ps1` builds the unpacked app
+into `release/win-unpacked`.
+
+## Develop
+
+```bash
+npm test
+```
+
+The unit and integration suite, `node:test` with no framework. It runs against
+a deliberately hostile fixture server in `scripts/fixture/` that speaks both
+eras on every transport.
+
+```bash
+npm run test:smoke
+```
+
+Drives the real app through Playwright after `npm run build`. It needs a display;
+CI runs it under Xvfb on Linux.
+
+```bash
+npm run dev:renderer
+```
+
+The renderer with hot reload. Start Electron alongside it with
+`VITE_DEV_SERVER_URL=http://localhost:5199`.
+
+The screenshots above come from `node scripts/screenshots.mjs`, which drives
+the built app against `@modelcontextprotocol/server-everything` and
+`@modelcontextprotocol/server-memory`, fetched with `npx`.
+
+## Layout
+
+- `packages/protocol` - the Electron-free core: the SDK adapter, the only
+  module that writes a JSON-RPC frame, and the byte tap that feeds the wire
+  log; surface capture, canonical hashing and diffs; OAuth; the tokenizer.
+- `packages/storage` - encrypted SQLite workspaces, migrations, history,
+  snapshots, retention, and the keychain.
+- `packages/platform` - process-tree handling per OS, and where other clients
+  keep their config files.
+- `packages/backend` - the plain Node host that runs in an Electron utility
+  process: connections, calls, sessions, sign-in.
+- `app` - the Electron main process, the backend host, and the React renderer.
+
+Built on the official
+[`@modelcontextprotocol/client`](https://www.npmjs.com/package/@modelcontextprotocol/client)
+SDK.
 
 ## Platforms
 
-Windows and Linux. macOS is deferred pending build hardware; the code is
-written not to foreclose it.
-
-## Documentation
-
-Everything lives in the wiki under `claude/projects/mcp-explorer`:
-
-- **spec** — goal, pillars, constraints, non-goals, decision blocks D1–D31,
-  verifiers
-- **plans/v1-development-plan** — twelve phases, sequencing rationale, risks
-- **reference/** — runbooks and design records
-- **enhancements/** — proposed work with the case for it
-
-Working conventions for this tree are in `CLAUDE.md`.
+Windows and Linux are built and tested in CI. macOS is not built yet; the code
+is written not to rule it out.

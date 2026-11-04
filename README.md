@@ -14,6 +14,10 @@ type it.
 
 **Status:** 0.1.2, the first public release. Windows and Linux.
 
+This GitHub repository is a read-only mirror of a private GitLab project. It is
+overwritten from there on each release, so pull requests and commits made here
+cannot be merged.
+
 ## What it does
 
 ### The whole surface, as the server sent it

@@ -1,0 +1,20 @@
+MCP Explorer 0.1.2
+
+The first public release: a desktop workbench for MCP servers, on Windows and
+Linux. 0.1.0 and 0.1.1 were tagged while the release pipeline was being set
+up, and have no downloads.
+
+- Connects to stdio, Streamable HTTP and SSE servers on every revision from
+  2024-11-05 to 2026-07-28, legacy and modern eras.
+- Shows a server's whole surface (tools, prompts, resources, templates,
+  instructions) and what it costs a model as context.
+- Calls tools, gets prompts and reads resources through generated forms,
+  with a confirm before anything not marked read-only; answers sampling,
+  elicitation and roots by hand, never automatically.
+- Keeps every byte on the wire, every call and every captured surface in an
+  encrypted workspace, and diffs a server's surface across versions.
+- Signs in to OAuth-protected servers, one step at a time, with tokens kept
+  out of the wire log. Verified against a test authorization server; testing
+  against hosted providers is under way.
+
+Downloads: the Windows installer (.exe), and for Linux an AppImage and a .deb.

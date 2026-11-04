@@ -13,8 +13,8 @@ Linux. (0.1.0 was tagged but never released: its Windows packaging failed.)
 - Keeps every byte on the wire, every call and every captured surface in an
   encrypted workspace, and diffs a server's surface across versions.
 - Signs in to OAuth-protected servers, one step at a time, with tokens kept
-  out of the wire log. Verified against a test authorization server; testing
-  against hosted providers is under way.
+  out of the wire log.
 
 Fixed since 0.1.0: packaging no longer fails when a GitHub token is in the
 build environment.
+

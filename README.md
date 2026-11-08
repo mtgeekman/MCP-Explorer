@@ -1,3 +1,5 @@
+[![M8ven Verified](https://m8ven.ai/badge/mcp/mtgeekman/mcp-explorer?variant=verified)](https://m8ven.ai/mcp/mtgeekman/mcp-explorer?s=readme)
+
 # MCP Explorer
 
 A desktop workbench for [Model Context Protocol](https://modelcontextprotocol.io)

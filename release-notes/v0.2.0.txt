@@ -1,0 +1,15 @@
+MCP Explorer 0.2.0
+
+A security and dependency update.
+
+- The MCP client SDK is now @modelcontextprotocol/client 2.4.0, up from
+  2.0.0, which was affected by GHSA-6qxp-vccf-f47h (an MCP server could
+  choose the authorization server that stored OAuth credentials are sent
+  to). MCP Explorer does not use the SDK's affected sign-in paths, and a
+  token refresh goes only to the authorization server it was signed in
+  with; the update takes the fixed SDK anyway.
+- Electron 44.10.2, with its Chromium security fixes.
+- Updated build and test tooling (Vite, electron-builder, Playwright).
+
+Downloads: for Windows a zip (unzip it into a folder of its own and run
+MCP Explorer.exe; there is no installer), and for Linux an AppImage and a .deb.

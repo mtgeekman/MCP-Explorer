@@ -14,7 +14,7 @@ do: no background calls, no automatic retries, and no automatic answers to a
 server that asks for input. When a server asks for a sampling completion, you
 type it.
 
-**Status:** 0.1.2, the first public release. Windows and Linux.
+**Status:** 0.2.0. Windows and Linux.
 
 This GitHub repository is a read-only mirror of a private GitLab project. It is
 overwritten from there on each release, so pull requests and commits made here

@@ -5,7 +5,8 @@
 //
 // They never skip for want of a keychain. A CI job without one must fail here,
 // not pass with nothing checked. On Linux the job provides one: a D-Bus session
-// with an unlocked gnome-keyring (see .gitlab-ci.yml).
+// with an unlocked gnome-keyring, started by gnome-keyring-daemon --unlock
+// inside dbus-run-session.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';

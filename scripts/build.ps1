@@ -52,10 +52,10 @@ Push-Location $repo
 try {
   Write-Host "node $(node --version), npm $(npm --version)"
   # --ignore-scripts is load-bearing: the SQLite package's install script runs
-  # node-gyp rebuild, which needs a compiler and a Python this build never uses
-  # (see the header of .gitlab-ci.yml).
+  # node-gyp rebuild, which needs a compiler and a Python this build never uses:
+  # the module ships prebuilt binaries.
   # The flag also skips electron's postinstall, which fetches the binary that
-  # npm start and the smoke tests run; it is run by hand, as smoke:windows does.
+  # npm start and the smoke tests run; it is run by hand, as CI does.
   # The packaged app does not need it: electron-builder fetches its own copy.
   if ($Clean -or -not (Test-Path 'node_modules')) {
     Invoke-Step 'npm ci --ignore-scripts' { npm ci --ignore-scripts }
